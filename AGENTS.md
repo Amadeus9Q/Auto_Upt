@@ -55,14 +55,16 @@ Adapters should own platform limits, rendering rules, validation rules, simulati
 
 ## Development Commands
 
-Only infrastructure is defined right now:
+Install and run the MVP backend with:
 
 ```powershell
+python -m pip install -r requirements.txt
 docker compose up -d postgres redis
+uvicorn backend.app.main:app --reload
 docker compose down
 ```
 
-There is not yet a backend package manifest, frontend package manifest, or configured test command. Add those before introducing runtime code that depends on FastAPI, Celery, Vue, or Playwright.
+There is not yet a frontend package manifest or configured automated test suite. Add those before introducing frontend runtime code or relying on CI-style checks.
 
 ## Editing Guidance
 
