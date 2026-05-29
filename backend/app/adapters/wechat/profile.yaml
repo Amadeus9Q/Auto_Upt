@@ -1,0 +1,20 @@
+platform: wechat
+display_name: 公众号
+content_types:
+  - article
+  - mixed
+publish_modes:
+  - simulate
+auth:
+  type: oauth_or_cookie
+  required_for_real_publish: true
+limits:
+  title_max_length: 64
+  body_max_length: 20000
+  tags_max_count: 5
+  assets_min_count: 0
+style:
+  tone: structured long-form
+  title_hint: keep clear and benefit-oriented
+assets:
+  cover_required: false
