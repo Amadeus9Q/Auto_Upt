@@ -4,13 +4,15 @@ param(
     [int]$Port = 8000,
     [string]$PythonPath = "C:\Users\17325\.conda\envs\auto_upt\python.exe",
     [switch]$Reload,
-    [switch]$Foreground
+    [switch]$Foreground,
+    [switch]$Worker
 )
 
 $ErrorActionPreference = "Stop"
 
 $StartContainers = Join-Path $PSScriptRoot "start-containers.ps1"
 $StartBackend = Join-Path $PSScriptRoot "start-backend.ps1"
+$StartWorker = Join-Path $PSScriptRoot "start-worker.ps1"
 
 & $StartContainers -Services $Services
 
@@ -29,3 +31,7 @@ if ($Foreground) {
 }
 
 & $StartBackend @BackendParams
+
+if ($Worker -and -not $Foreground) {
+    & $StartWorker -PythonPath $PythonPath
+}

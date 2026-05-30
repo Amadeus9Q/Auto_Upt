@@ -71,11 +71,23 @@ class PublishTaskCreateRequest(BaseModel):
     preview_id: str = Field(description="预览记录 ID。必须来自 POST /api/v1/previews 的返回值。")
     mode: PublishModeLiteral = Field(
         default="simulate",
-        description="发布模式。当前 MVP 仅支持 simulate，draft 和 publish 会返回 400。",
+        description="发布模式。simulate 为模拟发布，draft/publish 用于第二阶段公众号和 B站真实发布。",
     )
     platforms: list[PlatformLiteral] | None = Field(
         default=None,
-        description="需要模拟发布的平台列表。为空时使用该预览记录中已有的全部平台草稿。",
+        description="需要发布的平台列表。为空时使用该预览记录中已有的全部平台草稿。",
+    )
+    account_ids: dict[PlatformLiteral, str] = Field(
+        default_factory=dict,
+        description="真实发布使用的平台账号 ID 映射，例如 {'wechat': 'account-id'}。",
+    )
+    asset_ids: dict[PlatformLiteral, list[str]] = Field(
+        default_factory=dict,
+        description="真实发布使用的平台素材 ID 映射，素材必须先通过 /api/v1/assets 上传。",
+    )
+    platform_options: dict[PlatformLiteral, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="平台发布参数。公众号和 B站可传各自的发布选项。",
     )
 
 
@@ -112,7 +124,7 @@ class PublishTaskResponse(BaseModel):
     status: TaskStatusLiteral = Field(description="任务状态，例如 succeeded 或 failed。")
     platforms: list[str] = Field(description="本次任务覆盖的平台列表。")
     results: dict[str, Any] = Field(
-        description="按平台分组的模拟发布结果，包含预览 URL、截图占位路径和状态信息。",
+        description="按平台分组的发布结果。模拟发布包含预览 URL；真实发布包含 publication_id、external_id、external_status 等字段。",
     )
     error_message: str | None = Field(default=None, description="任务级错误信息。成功时为空。")
     created_at: datetime | None = Field(default=None, description="任务创建时间。")
