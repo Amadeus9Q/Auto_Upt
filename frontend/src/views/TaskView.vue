@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Check, Clock, Close, DocumentChecked, Loading } from "@element-plus/icons-vue";
+import { Check, Clock, Close, DocumentChecked, Loading, Promotion, Refresh } from "@element-plus/icons-vue";
 
 import type { PlatformKey, PublishResult, PublishTaskResponse } from "@/api/client";
 
@@ -10,9 +10,16 @@ interface TaskStep {
 }
 
 const props = defineProps<{
-  task: PublishTaskResponse | null;
+  tasks: PublishTaskResponse[];
   loading: boolean;
   errorMessage: string;
+  actionLoading: string | null;
+}>();
+
+const emit = defineEmits<{
+  refreshTasks: [];
+  refreshTask: [taskId: string];
+  publishDraft: [publicationId: string];
 }>();
 
 const platformLabels: Record<PlatformKey, string> = {
@@ -24,7 +31,7 @@ const platformLabels: Record<PlatformKey, string> = {
 
 const statusText = {
   pending: "等待中",
-  running: "上传中",
+  running: "处理中",
   succeeded: "已完成",
   failed: "失败"
 } as const;
@@ -35,49 +42,83 @@ const modeText = {
   publish: "真实发布"
 } as const;
 
-const finalStepText = computed(() => {
-  if (!props.task) return "已发布";
-  if (props.task.mode === "draft") return "草稿已创建";
-  if (props.task.mode === "simulate") return "模拟完成";
+function finalStepTextForMode(mode: PublishTaskResponse["mode"]) {
+  if (mode === "draft") return "草稿已创建";
+  if (mode === "simulate") return "模拟完成";
   return "已发布";
-});
+}
 
-const platformTasks = computed(() => {
-  if (!props.task) return [];
+function stepNamesForMode(mode: PublishTaskResponse["mode"]): [string, string, string] {
+  if (mode === "draft") {
+    return ["准备素材", "创建草稿", "草稿已创建"];
+  }
+  if (mode === "simulate") {
+    return ["生成任务", "模拟校验", "模拟完成"];
+  }
+  return ["提交发布", "平台处理", "发布完成"];
+}
 
-  return props.task.platforms.map((platform) => {
-    const key = platform as PlatformKey;
-    const result = props.task?.results[key] as PublishResult | undefined;
-    const failed = result?.status === "failed" || props.task?.status === "failed";
-    const succeeded = result?.status === "succeeded";
-    const steps: TaskStep[] = failed
-      ? [
-          { name: "上传中", state: "finish" },
-          { name: "审核中", state: "error" },
-          { name: "失败", state: "error" }
-        ]
-      : succeeded
+function progressTextForMode(mode: PublishTaskResponse["mode"]) {
+  if (mode === "draft") return "创建中";
+  if (mode === "simulate") return "模拟中";
+  return "处理中";
+}
+
+const taskItems = computed(() =>
+  props.tasks.map((task) => {
+    const finalStepText = finalStepTextForMode(task.mode);
+    const platformTasks = task.platforms.map((platform) => {
+      const key = platform as PlatformKey;
+      const result = task.results[key] as PublishResult | undefined;
+      const failed = result?.status === "failed" || task.status === "failed";
+      const succeeded = result?.status === "succeeded";
+      const [startStep, processStep, finishStep] = stepNamesForMode(task.mode);
+      const steps: TaskStep[] = failed
         ? [
-            { name: "上传中", state: "finish" },
-            { name: "审核中", state: "finish" },
-            { name: finalStepText.value, state: "finish" }
+            { name: startStep, state: "finish" },
+            { name: processStep, state: "error" },
+            { name: "失败", state: "error" }
           ]
-        : [
-            { name: "上传中", state: props.loading ? "process" : "wait" },
-            { name: "审核中", state: "wait" },
-            { name: finalStepText.value, state: "wait" }
-          ];
+        : succeeded
+          ? [
+              { name: startStep, state: "finish" },
+              { name: processStep, state: "finish" },
+              { name: finishStep, state: "finish" }
+            ]
+          : [
+              { name: startStep, state: props.loading ? "process" : "wait" },
+              { name: processStep, state: "wait" },
+              { name: finishStep, state: "wait" }
+            ];
+
+      return {
+        platform: key,
+        label: result?.display_name ?? platformLabels[key] ?? platform,
+        result,
+        failed,
+        succeeded,
+        progressText: progressTextForMode(task.mode),
+        canPublishDraft:
+          task.mode === "draft" &&
+          key === "wechat" &&
+          Boolean(result?.publication_id) &&
+          (result?.external_status === "draft_created" || result?.mode === "draft"),
+        steps
+      };
+    });
 
     return {
-      platform: key,
-      label: result?.display_name ?? platformLabels[key] ?? platform,
-      result,
-      failed,
-      succeeded,
-      steps
+      task,
+      finalStepText,
+      canRefresh: task.mode !== "simulate" && !task.task_id.startsWith("local-failed-"),
+      platformTasks
     };
-  });
-});
+  })
+);
+
+function isActionLoading(action: string, id: string) {
+  return props.actionLoading === `${action}:${id}`;
+}
 
 function stepIcon(step: TaskStep) {
   if (step.state === "error") return Close;
@@ -92,56 +133,82 @@ function stepIcon(step: TaskStep) {
     <div class="section-title">
       <div>
         <p>任务看板</p>
-        <h2>一行一个平台确认发布状态</h2>
+        <h2>从数据库恢复草稿与发布任务</h2>
       </div>
-      <el-icon :size="24"><Clock /></el-icon>
+      <el-button :icon="Refresh" :loading="loading" @click="emit('refreshTasks')">刷新列表</el-button>
     </div>
 
     <el-alert v-if="errorMessage" class="task-alert" :title="errorMessage" type="error" show-icon :closable="false" />
-    <el-empty v-if="!task && !loading && !errorMessage" description="还没有发布任务" />
+    <el-empty v-if="!tasks.length && !loading && !errorMessage" description="还没有发布任务" />
 
-    <template v-if="task">
-      <div class="task-meta">
-        <el-tag :type="task.status === 'succeeded' ? 'success' : task.status === 'failed' ? 'danger' : 'info'">
-          {{ statusText[task.status] }}
-        </el-tag>
-        <el-tag type="info">{{ modeText[task.mode] }}</el-tag>
-        <span>Task ID：{{ task.task_id }}</span>
-      </div>
+    <div v-if="taskItems.length" class="task-list">
+      <article v-for="taskItem in taskItems" :key="taskItem.task.task_id" class="task-card">
+        <div class="task-meta">
+          <el-tag :type="taskItem.task.status === 'succeeded' ? 'success' : taskItem.task.status === 'failed' ? 'danger' : 'info'">
+            {{ statusText[taskItem.task.status] }}
+          </el-tag>
+          <el-tag type="info">{{ modeText[taskItem.task.mode] }}</el-tag>
+          <span>Task ID：{{ taskItem.task.task_id }}</span>
+          <span v-if="taskItem.task.created_at">创建时间：{{ taskItem.task.created_at }}</span>
+          <el-button
+            v-if="taskItem.canRefresh"
+            class="task-action"
+            size="small"
+            :icon="Refresh"
+            :loading="isActionLoading('refresh', taskItem.task.task_id)"
+            @click="emit('refreshTask', taskItem.task.task_id)"
+          >
+            刷新状态
+          </el-button>
+        </div>
 
-      <div class="platform-task-grid">
-        <article v-for="item in platformTasks" :key="item.platform" class="platform-task-card" :class="{ 'is-failed': item.failed }">
-          <header>
-            <div>
-              <strong>{{ item.label }}</strong>
-              <small>{{ modeText[task.mode] }}任务</small>
+        <div class="platform-task-grid">
+          <article v-for="item in taskItem.platformTasks" :key="`${taskItem.task.task_id}-${item.platform}`" class="platform-task-card" :class="{ 'is-failed': item.failed }">
+            <header>
+              <div>
+                <strong>{{ item.label }}</strong>
+                <small>{{ modeText[taskItem.task.mode] }}任务</small>
+              </div>
+              <el-tag :type="item.failed ? 'danger' : item.succeeded ? 'success' : 'info'">
+                {{ item.failed ? "失败" : item.succeeded ? taskItem.finalStepText : item.progressText }}
+              </el-tag>
+            </header>
+
+            <div class="workflow-track" aria-label="平台发布流程">
+              <div v-for="(step, index) in item.steps" :key="step.name" class="workflow-step" :class="`is-${step.state}`">
+                <span class="workflow-dot">
+                  <el-icon><component :is="stepIcon(step)" /></el-icon>
+                </span>
+                <span class="workflow-label">{{ step.name }}</span>
+                <span v-if="index < item.steps.length - 1" class="workflow-line" />
+              </div>
             </div>
-            <el-tag :type="item.failed ? 'danger' : item.succeeded ? 'success' : 'info'">
-              {{ item.failed ? "失败" : item.succeeded ? finalStepText : "处理中" }}
-            </el-tag>
-          </header>
 
-          <div class="workflow-track" aria-label="平台发布流程">
-            <div v-for="(step, index) in item.steps" :key="step.name" class="workflow-step" :class="`is-${step.state}`">
-              <span class="workflow-dot">
-                <el-icon><component :is="stepIcon(step)" /></el-icon>
-              </span>
-              <span class="workflow-label">{{ step.name }}</span>
-              <span v-if="index < item.steps.length - 1" class="workflow-line" />
+            <div class="platform-result">
+              <el-icon><DocumentChecked /></el-icon>
+              <div>
+                <span>{{ item.result?.message || "任务已提交，等待平台返回状态。" }}</span>
+                <small v-if="item.result?.external_status">平台状态：{{ item.result.external_status }}</small>
+                <small v-if="item.result?.external_url">{{ item.result.external_url }}</small>
+                <small v-if="item.result?.preview_url">{{ item.result.preview_url }}</small>
+                <small v-if="item.result?.screenshot_path">{{ item.result.screenshot_path }}</small>
+              </div>
+              <el-button
+                v-if="item.canPublishDraft && item.result?.publication_id"
+                class="platform-action"
+                size="small"
+                type="primary"
+                :icon="Promotion"
+                :loading="isActionLoading('publish', item.result.publication_id)"
+                @click="emit('publishDraft', item.result.publication_id)"
+              >
+                发布草稿
+              </el-button>
             </div>
-          </div>
-
-          <div class="platform-result">
-            <el-icon><DocumentChecked /></el-icon>
-            <div>
-              <span>{{ item.result?.message || "任务已提交，等待平台返回状态。" }}</span>
-              <small v-if="item.result?.preview_url">{{ item.result.preview_url }}</small>
-              <small v-if="item.result?.screenshot_path">{{ item.result.screenshot_path }}</small>
-            </div>
-          </div>
-        </article>
-      </div>
-    </template>
+          </article>
+        </div>
+      </article>
+    </div>
   </section>
 </template>
 
@@ -196,6 +263,19 @@ function stepIcon(step: TaskStep) {
   color: #607086;
   font-size: 13px;
   word-break: break-all;
+}
+
+.task-list {
+  display: grid;
+  gap: 18px;
+}
+
+.task-card {
+  min-width: 0;
+}
+
+.task-action {
+  margin-left: auto;
 }
 
 .platform-task-grid {
@@ -329,8 +409,17 @@ function stepIcon(step: TaskStep) {
   line-height: 1.45;
 }
 
+.platform-result > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .platform-result small {
   word-break: break-all;
+}
+
+.platform-action {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 980px) {
@@ -346,6 +435,11 @@ function stepIcon(step: TaskStep) {
 
   .workflow-step {
     min-width: 120px;
+  }
+
+  .task-action,
+  .platform-action {
+    margin-left: 0;
   }
 }
 </style>

@@ -82,11 +82,23 @@ class PublishTaskCreateRequest(BaseModel):
     preview_id: str = Field(description="预览记录 ID。必须来自 POST /api/v1/previews 的返回值。")
     mode: PublishModeLiteral = Field(
         default="simulate",
-        description="发布模式。当前支持 simulate；draft 和 publish 用于第二阶段前端联调，后端返回模拟结果。",
+        description="发布模式。simulate 为模拟发布，draft/publish 用于第二阶段公众号和 B站真实发布。",
     )
     platforms: list[PlatformLiteral] | None = Field(
         default=None,
         description="需要发布的平台列表。为空时使用该预览记录中已有的全部平台草稿。",
+    )
+    account_ids: dict[PlatformLiteral, str] = Field(
+        default_factory=dict,
+        description="真实发布使用的平台账号 ID 映射，例如 {'wechat': 'account-id'}。",
+    )
+    asset_ids: dict[PlatformLiteral, list[str]] = Field(
+        default_factory=dict,
+        description="真实发布使用的平台素材 ID 映射，素材必须先通过 /api/v1/assets 上传。",
+    )
+    platform_options: dict[PlatformLiteral, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="平台发布参数。公众号和 B站可传各自的发布选项。",
     )
 
 
@@ -126,6 +138,10 @@ class PublishTaskResponse(BaseModel):
     error_message: str | None = Field(default=None, description="任务级错误信息。成功时为空。")
     created_at: datetime | None = Field(default=None, description="任务创建时间。")
     updated_at: datetime | None = Field(default=None, description="任务最后更新时间。")
+
+
+class PublishTaskListResponse(BaseModel):
+    tasks: list[PublishTaskResponse] = Field(description="发布任务列表，默认按创建时间倒序返回。")
 
 
 class PlatformListResponse(BaseModel):

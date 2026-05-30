@@ -6,13 +6,27 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $RepoRoot "logs"
+$PidFile = Join-Path $LogDir "worker.pid"
 $OutLog = Join-Path $LogDir "worker.out.log"
+$ErrLog = Join-Path $LogDir "worker.err.log"
 
 if (-not (Test-Path $PythonPath)) {
     throw "Python executable not found: $PythonPath"
 }
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+if (-not $Foreground -and (Test-Path $PidFile)) {
+    $ExistingPid = (Get-Content $PidFile -Raw).Trim()
+    if ($ExistingPid) {
+        $ExistingProcess = Get-Process -Id $ExistingPid -ErrorAction SilentlyContinue
+        if ($ExistingProcess) {
+            Write-Host "Celery worker is already running with PID $ExistingPid."
+            Write-Host "Logs: $OutLog"
+            exit 0
+        }
+    }
+}
 
 $ArgsList = @(
     "-m",
@@ -21,19 +35,50 @@ $ArgsList = @(
     "backend.app.tasks.celery_app.celery_app",
     "worker",
     "--loglevel=info",
-    "--logfile=$OutLog",
     "--pool=threads",
     "--concurrency=1",
     "--without-mingle"
 )
 
+if (-not $Foreground) {
+    $ArgsList += "--logfile=$OutLog"
+}
+
 Push-Location $RepoRoot
 try {
-    Write-Host "Starting Celery worker in foreground."
-    Write-Host "Press Ctrl+C to stop the worker."
+    if ($Foreground) {
+        Write-Host "Starting Celery worker in foreground."
+        Write-Host "Press Ctrl+C to stop the worker."
+        & $PythonPath @ArgsList
+        exit $LASTEXITCODE
+    }
+
+    Write-Host "Starting Celery worker in background."
+    $Process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList $ArgsList `
+        -WorkingDirectory $RepoRoot `
+        -RedirectStandardOutput $OutLog `
+        -RedirectStandardError $ErrLog `
+        -WindowStyle Hidden `
+        -PassThru
+
+    $Process.Id | Set-Content -Encoding ASCII $PidFile
+    Start-Sleep -Seconds 2
+
+    $RunningProcess = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
+    if (-not $RunningProcess) {
+        Remove-Item $PidFile -ErrorAction SilentlyContinue
+        Write-Host "Celery worker failed to stay running."
+        Write-Host "Error log: $ErrLog"
+        if (Test-Path $ErrLog) {
+            Get-Content -Tail 80 $ErrLog
+        }
+        exit 1
+    }
+
+    Write-Host "Celery worker started with PID $($Process.Id)."
     Write-Host "Logs: $OutLog"
-    & $PythonPath @ArgsList
-    exit $LASTEXITCODE
 }
 finally {
     Pop-Location

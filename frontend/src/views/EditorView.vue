@@ -14,6 +14,10 @@ export interface LocalAsset {
   mimeType: string;
   previewUrl: string;
   kind: MediaKind;
+  file: File;
+  backendAssetId?: string;
+  backendUrl?: string;
+  uploadPurpose?: string;
 }
 
 export interface EditorAssets {
@@ -84,7 +88,8 @@ function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
     size: file.size ?? file.raw.size,
     mimeType: file.raw.type || "application/octet-stream",
     previewUrl: URL.createObjectURL(file.raw),
-    kind: kindFromTab(tab)
+    kind: kindFromTab(tab),
+    file: file.raw
   };
 }
 
