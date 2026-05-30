@@ -14,7 +14,7 @@ import html
 import re
 from typing import Any
 
-from backend.app.adapters.base import clip_text, first_non_empty, split_paragraphs
+from backend.app.adapters.base import clip_tags, clip_text, first_non_empty, split_paragraphs
 
 # 匹配正文中的中文媒体标记：【图片：xxx.jpg】【视频：xxx.mp4】【音频：xxx.mp3】
 CN_MEDIA_MARKER_RE = re.compile(r"【(?:图片|视频|音频)[：:]\s*[^】]+】")
@@ -370,13 +370,13 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         "title": title,
         "body": "\n".join(body_parts),
         "summary": clip_text(summary, 120),
-        "tags": content_ir.get("tags", [])[: limits.get("tags_max_count", 5)],
+        "tags": clip_tags(content_ir.get("tags", []), max_count=4),
         "assets": content_ir.get("assets", []),
         "body_blocks": body_blocks,
         "media_slots": media_slots,
         "rich_body": _build_rich_body(paragraphs, content_ir.get("assets", []), body_blocks),
         "cover_image": media_slots.get("cover") or _pick_cover(content_ir.get("assets", [])),
-        "author": content_ir.get("author", "Auto_Upt"),
+        "author": content_ir.get("author", "匿名"),
         "publish_date": content_ir.get("created_at", ""),
         # ---- 新增字段 ----
         "wechat_html": wechat_html,
