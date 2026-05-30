@@ -96,6 +96,10 @@ const drafts = computed<PlatformDraft[]>(() => {
       tags: draft?.tags ?? [],
       status: warnings > 0 ? "warning" : "ready",
       issues,
+      rich_body: draft?.rich_body ?? [],
+      cover_image: draft?.cover_image ?? null,
+      author: draft?.author,
+      metadata: draft?.metadata,
       metrics: [
         { label: "标题", value: `${draft?.title?.length ?? 0} 字` },
         { label: "正文", value: `${draft?.body?.length ?? 0} 字` },

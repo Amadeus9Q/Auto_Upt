@@ -2,6 +2,8 @@
 import { computed, ref } from "vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
+import WechatPreview from "@/views/WechatPreview.vue";
+import type { RichBlock } from "@/views/WechatPreview.vue";
 
 export interface PlatformDraft {
   key: PlatformKey;
@@ -13,6 +15,10 @@ export interface PlatformDraft {
   status: "ready" | "warning" | "pending";
   issues: ValidationIssue[];
   metrics: Array<{ label: string; value: string }>;
+  rich_body?: RichBlock[];
+  cover_image?: { url?: string; name?: string } | null;
+  author?: string;
+  metadata?: { estimated_read_time_minutes?: number; source_word_count?: number };
 }
 
 const props = defineProps<{
@@ -86,9 +92,22 @@ function issueType(issue: ValidationIssue) {
       description="还没有生成预览"
     />
 
-    <!-- 表单式预览内容 -->
+    <!-- 公众号：手机框预览 -->
     <template v-if="activeDraft">
-      <el-form label-position="top" class="preview-form">
+      <WechatPreview
+        v-if="activeDraft.key === 'wechat'"
+        :title="activeDraft.title"
+        :summary="activeDraft.summary"
+        :body="activeDraft.body"
+        :tags="activeDraft.tags"
+        :rich-body="activeDraft.rich_body"
+        :cover-image="activeDraft.cover_image"
+        :author="activeDraft.author"
+        :metadata="activeDraft.metadata"
+      />
+
+      <!-- 其他平台：表单式 -->
+      <el-form v-else label-position="top" class="preview-form">
         <el-form-item label="标题">
           <el-input
             :model-value="activeDraft.title"
