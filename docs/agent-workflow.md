@@ -1,6 +1,6 @@
 # AI Agent 工作流
 
-第一阶段先预留多 Agent 编排接口，不直接调用真实模型。
+第一阶段提供模拟多 Agent 编排接口，不直接调用真实模型。
 
 ## Agent 角色
 
@@ -23,5 +23,11 @@ raw input
   -> simulate publish
   -> preview report
 ```
+
+后端接口：
+
+- `POST /api/v1/agent-runs/preview`
+
+当前接口执行规则模拟流程：复用内容标准化、平台 Adapter 渲染、格式校验和模拟发布能力，返回每个 Agent 步骤的结构化输出、合规提示和恢复建议。该接口不落库，不调用真实模型，也不会访问真实平台账号。
 
 后续接入 OpenAI Responses API / Agents SDK 时，应把 Adapter 操作封装成工具调用，并开启 tracing 记录每一步决策。
