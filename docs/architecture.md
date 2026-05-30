@@ -44,7 +44,7 @@ flowchart LR
 
 第二阶段开始接入公众号和 B站真实发布：
 
-- 账号凭据加密保存，公众号使用 AppID/AppSecret，B站使用官方 OAuth。
+- 账号凭据加密保存，公众号使用 AppID/AppSecret，B站使用 passport 登录后获取的 Cookie 凭据。
 - 发布素材先上传到后端本地存储，再由平台 Adapter 上传到目标平台。
 - 真实发布任务交给 Celery worker 执行，FastAPI 只负责创建任务和查询状态。
 - `publication_records` 保存平台外部 ID、外部状态、响应快照和错误信息。

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.schemas.content import PlatformLiteral
 
@@ -33,9 +33,27 @@ class WechatConnectRequest(BaseModel):
     display_name: str | None = Field(default=None, description="前端展示的账号名称。")
 
 
-class OAuthStartResponse(BaseModel):
-    authorization_url: str | None = Field(default=None, description="真实 OAuth 授权地址；模拟阶段为空。")
-    callback_message: str = Field(description="授权流程启动或回调结果说明。")
+class BilibiliCaptchaResponse(BaseModel):
+    gt: str = Field(description="Geetest captcha gt 参数，前端初始化极验组件使用。")
+    challenge: str = Field(description="Geetest challenge，前端初始化极验组件使用。")
+    token: str = Field(description="B站 captcha token，登录时回传。")
+
+
+class BilibiliLoginRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    username: str = Field(description="B站登录用户名（手机号或邮箱）。")
+    password: str = Field(description="B站登录密码。")
+    token: str = Field(description="captcha 接口返回的 token。")
+    challenge: str = Field(description="Geetest challenge 值。")
+    geetest_validate: str = Field(alias="validate", description="Geetest 验证结果 validate。")
+    seccode: str = Field(description="Geetest seccode，通常为 validate 加后缀。")
+    display_name: str | None = Field(default=None, description="前端展示用账号名称。")
+
+
+class BilibiliLoginResponse(BaseModel):
+    account: AccountPlatformResponse = Field(description="登录成功后保存的账号信息。")
+    message: str = Field(description="登录结果说明。")
 
 
 class AccountTestResponse(BaseModel):

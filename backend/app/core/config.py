@@ -27,23 +27,16 @@ class Settings(BaseSettings):
 
     credential_encryption_key: str = ""
 
-    frontend_account_success_url: str = "http://127.0.0.1:5173/accounts?status=success"
-    frontend_account_error_url: str = "http://127.0.0.1:5173/accounts?status=error"
-
     wechat_api_base_url: str = "https://api.weixin.qq.com"
 
-    bilibili_client_id: str = ""
-    bilibili_client_secret: str = ""
-    bilibili_redirect_uri: str = "http://127.0.0.1:8000/api/v1/accounts/bilibili/oauth/callback"
-    bilibili_authorize_url: str = "https://open.bilibili.com/oauth2/authorize"
-    bilibili_token_url: str = "https://open.bilibili.com/oauth2/access_token"
-    bilibili_refresh_token_url: str = "https://open.bilibili.com/oauth2/refresh_token"
-    bilibili_api_base_url: str = "https://open.bilibili.com/api"
-    bilibili_video_upload_path: str = "/video/upload"
-    bilibili_cover_upload_path: str = "/video/cover"
-    bilibili_video_submit_path: str = "/video/submit"
-    bilibili_video_status_path: str = "/video/status"
-    bilibili_video_delete_path: str = "/video/delete"
+    bilibili_passport_base: str = "https://passport.bilibili.com"
+    bilibili_member_base: str = "https://member.bilibili.com"
+    bilibili_api_base_url: str = "https://api.bilibili.com"
+    bilibili_preupload_path: str = "/x/vu/client/preupload"
+    bilibili_cover_upload_path: str = "/x/vu/client/cover/up"
+    bilibili_video_submit_path: str = "/x/vu/client/add"
+    bilibili_video_status_path: str = "/x/vu/client/archive/status"
+    bilibili_video_delete_path: str = "/x/vu/client/archive/delete"
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [
@@ -51,6 +44,7 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173",
         ]
     )
+    cors_origin_regex: str = r"^http://(localhost|127\.0\.0\.1):517[3-9]$"
     sql_echo: bool = False
 
     model_config = SettingsConfigDict(

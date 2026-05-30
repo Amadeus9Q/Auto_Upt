@@ -79,12 +79,18 @@
 
 ## 账号
 
-- `GET /api/v1/accounts`：查询全部平台账号状态，直接返回账号状态数组。
-- `GET /api/v1/accounts/{platform}`：查询单个平台账号状态。
-- `POST /api/v1/accounts/wechat/connect`：保存公众号 AppID / AppSecret 配置，返回公众号连接状态。
-- `GET /api/v1/accounts/bilibili/oauth/start`：启动 B站 OAuth 授权流程；当前返回模拟授权结果。
-- `GET /api/v1/accounts/bilibili/oauth/callback`：接收 B站 OAuth 回调；当前记录模拟授权状态。
-- `POST /api/v1/accounts/{platform}/test`：测试平台账号连接状态。
-- `DELETE /api/v1/accounts/{platform}`：断开平台账号连接。
+- `GET /api/v1/accounts`：查询全部平台账号占位状态。
+- `GET /api/v1/accounts/{platform}`：查询单个平台账号占位状态。
+- `POST /api/v1/accounts/wechat/connect`：保存公众号 AppID/AppSecret，并可测试 access token。
+- `GET /api/v1/accounts/bilibili/login/captcha`：获取 B站登录所需的 Geetest 初始化参数 `gt`、`challenge`、`token`。
+- `POST /api/v1/accounts/bilibili/login/password`：提交账号、密码、captcha token 和极验校验结果，后端加密密码后调用 B站 passport 登录，并加密保存 Cookie 凭据。
+- `POST /api/v1/accounts/{platform}/test`：测试账号连接。
+- `DELETE /api/v1/accounts/connections/{account_id}`：断开账号连接。
+
+账号凭据会加密保存到 PostgreSQL。公众号使用 AppID/AppSecret；B站使用 `SESSDATA`、`bili_jct`、`DedeUserID` 等 Cookie 凭据，不保存明文密码。
+
+B站密码登录前端集成：先调用 `/bilibili/login/captcha` 获取 `gt`、`challenge`、`token`，再在前端加载 Geetest 组件完成验证。验证成功后，将用户输入的 `username`、`password`，以及 `token`、`challenge`、`validate`、`seccode` 提交到 `/bilibili/login/password`。后端会获取 B站 RSA 公钥并加密密码，不会保存或返回明文密码。如果 B站返回风控或短信验证要求，接口会返回可读错误，用户需要先在浏览器中完成 B站验证后再重试。
+
+## 发布记录
 
 账号接口当前用于前端账号管理页联调，公众号和 B站返回进程内模拟连接状态；知乎、小红书继续展示“第三阶段浏览器辅助发布接入”。真实凭据加密落库、Token 刷新和平台联调在后续后端任务中接入。
