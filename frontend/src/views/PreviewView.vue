@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { Collection, WarningFilled } from "@element-plus/icons-vue";
 
-interface PlatformDraft {
-  key: string;
+import type { PlatformKey, ValidationIssue } from "@/api/client";
+
+export interface PlatformDraft {
+  key: PlatformKey;
   label: string;
   title: string;
   summary: string;
+  body: string;
+  tags: string[];
   status: "ready" | "warning" | "pending";
+  issues: ValidationIssue[];
   metrics: Array<{
     label: string;
     value: string;
@@ -15,26 +20,34 @@ interface PlatformDraft {
 
 defineProps<{
   drafts: PlatformDraft[];
+  loading: boolean;
+  errorMessage: string;
+  previewId: string;
+  createdAt: string;
 }>();
 
 const statusMap = {
   ready: { label: "可预览", type: "success" },
-  warning: { label: "需补充", type: "warning" },
-  pending: { label: "待素材", type: "info" }
+  warning: { label: "需检查", type: "warning" },
+  pending: { label: "待生成", type: "info" }
 } as const;
 </script>
 
 <template>
-  <section class="preview-view">
+  <section class="preview-view" v-loading="loading">
     <div class="section-title">
       <div>
         <p>平台预览</p>
-        <h2>四平台模拟草稿</h2>
+        <h2>后端生成草稿</h2>
       </div>
       <el-icon :size="24"><Collection /></el-icon>
     </div>
 
-    <div class="draft-grid">
+    <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
+
+    <el-empty v-if="!loading && drafts.length === 0 && !errorMessage" description="还没有生成预览" />
+
+    <div v-else class="draft-grid">
       <article v-for="draft in drafts" :key="draft.key" class="draft-card">
         <header>
           <strong>{{ draft.label }}</strong>
@@ -47,12 +60,27 @@ const statusMap = {
             {{ metric.label }}：{{ metric.value }}
           </span>
         </div>
+        <el-collapse v-if="draft.body || draft.issues.length" class="draft-detail">
+          <el-collapse-item title="草稿详情" name="body">
+            <pre>{{ draft.body }}</pre>
+            <div v-if="draft.tags.length" class="tag-row">
+              <el-tag v-for="tag in draft.tags" :key="tag" size="small">{{ tag }}</el-tag>
+            </div>
+          </el-collapse-item>
+          <el-collapse-item v-if="draft.issues.length" title="校验报告" name="issues">
+            <ul>
+              <li v-for="issue in draft.issues" :key="`${issue.code}-${issue.field}`">
+                {{ issue.level }} / {{ issue.field }}：{{ issue.message }}
+              </li>
+            </ul>
+          </el-collapse-item>
+        </el-collapse>
       </article>
     </div>
 
-    <div class="notice">
+    <div v-if="previewId" class="notice">
       <el-icon><WarningFilled /></el-icon>
-      <span>预览结果来自前端模拟数据，后续可替换为后端 adapter render 和 validate 输出。</span>
+      <span>Preview ID：{{ previewId }}<template v-if="createdAt">，创建时间：{{ createdAt }}</template></span>
     </div>
   </section>
 </template>
@@ -92,7 +120,6 @@ const statusMap = {
 
 .draft-card {
   min-width: 0;
-  min-height: 190px;
   padding: 18px;
   background: #ffffff;
   border: 1px solid #dfe5ee;
@@ -127,16 +154,38 @@ const statusMap = {
   flex-wrap: wrap;
 }
 
+.draft-detail {
+  margin-top: 12px;
+}
+
+pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #253247;
+  font-family: inherit;
+  line-height: 1.55;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
 .notice {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 18px;
   padding: 12px 14px;
-  color: #7a541f;
-  background: #fff6e3;
+  color: #4f6279;
+  background: #eef3f8;
   border-radius: 8px;
   font-size: 14px;
+  word-break: break-all;
 }
 
 @media (max-width: 680px) {
