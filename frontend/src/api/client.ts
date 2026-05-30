@@ -10,15 +10,48 @@ export interface ContentPayload {
   content_type: ContentType;
   tags: string[];
   assets: AssetPayload[];
+  content_blocks?: ContentBlockPayload[];
+  cover_asset_id?: string | null;
   platforms?: PlatformKey[];
 }
 
 export interface AssetPayload {
+  id: string;
   name: string;
   type: "image" | "video" | "audio" | "cover" | "body_image";
   size: number;
   mime_type: string;
   usage: string;
+  preview_url?: string;
+}
+
+export type ContentBlockPayload =
+  | { type: "text"; text: string }
+  | { type: "asset"; asset_id: string; asset_kind: "image" | "video" | "audio"; role?: "inline" | "cover" };
+
+export interface DraftAssetPayload {
+  id?: string;
+  name?: string;
+  type?: string;
+  preview_url?: string;
+  url?: string;
+  mime_type?: string;
+}
+
+export interface DraftBodyBlockPayload {
+  type: "text" | "asset";
+  text?: string;
+  asset_kind?: "image" | "video" | "audio";
+  asset?: DraftAssetPayload;
+}
+
+export interface DraftRichBlockPayload {
+  type: string;
+  text?: string;
+  level?: number;
+  src?: string;
+  alt?: string;
+  mime_type?: string;
 }
 
 export interface DraftPayload {
@@ -29,6 +62,11 @@ export interface DraftPayload {
   summary: string;
   tags: string[];
   assets: unknown[];
+  body_blocks?: DraftBodyBlockPayload[];
+  media_slots?: Record<string, unknown>;
+  rich_body?: DraftRichBlockPayload[];
+  cover_image?: DraftAssetPayload | null;
+  author?: string;
   style_notes: string[];
   metadata: Record<string, unknown>;
 }

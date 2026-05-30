@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import type { UploadFile, UploadFiles, UploadProps } from "element-plus";
 import { Connection, Delete, EditPen, MagicStick, Plus, Upload } from "@element-plus/icons-vue";
 
@@ -65,6 +65,7 @@ const platforms = defineModel<PlatformKey[]>("platforms", { required: true });
 const assets = defineModel<EditorAssets>("assets", { required: true });
 
 const dragState = ref<DragState | null>(null);
+const isContentDragOver = ref(false);
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 
@@ -113,11 +114,97 @@ function clearCoverImage() {
   assets.value.coverImage = null;
 }
 
+function assetMarker(asset: LocalAsset) {
+  const kindLabel: Record<MediaKind, string> = {
+    image: "图片",
+    video: "视频",
+    audio: "音频"
+  };
+  return `【${kindLabel[asset.kind]}：${asset.name}】`;
+}
+
+function insertTextAtCursor(text: string, textarea?: HTMLTextAreaElement | null) {
+  const marker = `\n\n${text}\n\n`;
+  if (!textarea) {
+    const prefix = content.value.trimEnd();
+    content.value = `${prefix}${prefix ? "\n\n" : ""}${text}\n\n`;
+    return;
+  }
+
+  const start = textarea.selectionStart ?? content.value.length;
+  const end = textarea.selectionEnd ?? start;
+  const before = content.value.slice(0, start).replace(/\s*$/, "");
+  const after = content.value.slice(end).replace(/^\s*/, "");
+  const inserted = `${before}${before ? marker : `${text}\n\n`}${after}`;
+  const nextCursor = before.length + (before ? marker.length : text.length + 2);
+  content.value = inserted;
+  nextTick(() => {
+    textarea.focus();
+    textarea.setSelectionRange(nextCursor, nextCursor);
+  });
+}
+
+function insertAssetReference(asset: LocalAsset, textarea?: HTMLTextAreaElement | null) {
+  insertTextAtCursor(assetMarker(asset), textarea);
+}
+
+function findDraggedAsset(event: DragEvent): LocalAsset | null {
+  const payload = event.dataTransfer?.getData("application/x-auto-upt-asset");
+  if (payload) {
+    try {
+      const parsed = JSON.parse(payload) as { tab?: MediaTab; index?: number };
+      if (parsed.tab && typeof parsed.index === "number") {
+        return assets.value[parsed.tab]?.[parsed.index] ?? null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  if (!dragState.value) {
+    return null;
+  }
+  return assets.value[dragState.value.tab]?.[dragState.value.fromIndex] ?? null;
+}
+
+function onContentDragOver(event: DragEvent) {
+  if (!findDraggedAsset(event)) {
+    return;
+  }
+  isContentDragOver.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+function onContentDrop(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  isContentDragOver.value = false;
+  if (!asset) {
+    return;
+  }
+
+  insertAssetReference(asset);
+  dragState.value = null;
+}
+
+function onContentDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) {
+    isContentDragOver.value = false;
+  }
+}
+
 function onDragStart(tab: MediaTab, index: number, event: DragEvent) {
   dragState.value = { tab, fromIndex: index, overIndex: index, position: "before" };
-  event.dataTransfer?.setData("text/plain", `${tab}:${index}`);
+  const asset = assets.value[tab][index];
+  if (asset) {
+    event.dataTransfer?.setData("text/plain", assetMarker(asset));
+    event.dataTransfer?.setData("application/x-auto-upt-asset", JSON.stringify({ tab, index, id: asset.id }));
+  }
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.effectAllowed = "copyMove";
   }
 }
 
@@ -262,7 +349,17 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
 
       <el-form-item label="正文">
-        <el-input v-model="content" type="textarea" :rows="15" resize="none" placeholder="粘贴 Markdown、富文本要点或视频简介。" />
+        <div
+          class="content-drop-zone"
+          :class="{ 'is-content-drag-over': isContentDragOver }"
+          @dragenter.prevent="onContentDragOver"
+          @dragover.prevent="onContentDragOver"
+          @dragleave="onContentDragLeave"
+          @drop.prevent="onContentDrop"
+        >
+          <el-input v-model="content" type="textarea" :rows="15" resize="none" placeholder="粘贴 Markdown、富文本要点或视频简介。" />
+          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入到正文当前位置</div>
+        </div>
       </el-form-item>
 
       <el-form-item label="多媒体">
@@ -314,6 +411,9 @@ function dropClass(tab: MediaTab, index: number) {
                 </div>
 
                 <div class="media-actions">
+                  <el-button text type="primary" :icon="Plus" @click="insertAssetReference(asset)">
+                    插入正文
+                  </el-button>
                   <el-button text type="danger" :icon="Delete" @click="removeAsset(tab.key, index)" />
                 </div>
               </article>
@@ -475,6 +575,39 @@ function dropClass(tab: MediaTab, index: number) {
 .platforms :deep(.el-checkbox-button__inner) {
   border-radius: 8px;
   border-left: 1px solid var(--el-border-color);
+}
+
+.content-drop-zone {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+}
+
+.content-drop-zone :deep(.el-textarea__inner) {
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.content-drop-zone.is-content-drag-over :deep(.el-textarea__inner) {
+  background: #f8fbff;
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.12);
+}
+
+.content-drop-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  pointer-events: none;
+  padding: 5px 8px;
+  color: #1f6feb;
+  background: #ffffff;
+  border: 1px solid #b8d3ff;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(23, 32, 51, 0.12);
+  font-size: 12px;
 }
 
 .media-tabs {

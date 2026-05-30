@@ -7,6 +7,7 @@ import {
   createPreview,
   createPublishTask,
   type AssetPayload,
+  type ContentBlockPayload,
   type PlatformKey,
   type PreviewResponse,
   type PublishMode,
@@ -98,6 +99,8 @@ const drafts = computed<PlatformDraft[]>(() => {
       issues,
       rich_body: draft?.rich_body ?? [],
       cover_image: draft?.cover_image ?? null,
+      body_blocks: draft?.body_blocks ?? [],
+      media_slots: draft?.media_slots ?? {},
       author: draft?.author,
       metadata: draft?.metadata,
       metrics: [
@@ -152,11 +155,13 @@ watch(tags, (nextTags) => {
 
 function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: string): AssetPayload {
   return {
+    id: asset.id,
     name: asset.name,
     type,
     size: asset.size,
     mime_type: asset.mimeType,
-    usage
+    usage,
+    preview_url: asset.previewUrl
   };
 }
 
@@ -169,6 +174,47 @@ function collectAssetPayloads(): AssetPayload[] {
     ...editorAssets.value.videos.map((asset, index) => assetToPayload(asset, "video", index === 0 ? "bilibili_video" : "reference_video")),
     ...editorAssets.value.audios.map((asset) => assetToPayload(asset, "audio", "reference_audio"))
   ];
+}
+
+function collectContentBlocks(): ContentBlockPayload[] {
+  const assetMap = new Map<string, LocalAsset>();
+  const assetByDisplayToken = new Map<string, LocalAsset>();
+  for (const asset of [...editorAssets.value.images, ...editorAssets.value.videos, ...editorAssets.value.audios]) {
+    assetMap.set(asset.id, asset);
+    const kindLabel = asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : "音频";
+    assetByDisplayToken.set(`${kindLabel}:${asset.name}`, asset);
+  }
+
+  const blocks: ContentBlockPayload[] = [];
+  const markerPattern = /\{\{asset:(image|video|audio):([^}]+)\}\}|【(图片|视频|音频)：([^】]+)】/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = markerPattern.exec(content.value)) !== null) {
+    const text = content.value.slice(cursor, match.index).trim();
+    if (text) {
+      blocks.push({ type: "text", text });
+    }
+
+    const asset = match[1]
+      ? assetMap.get(match[2])
+      : assetByDisplayToken.get(`${match[3]}:${match[4]}`);
+    if (asset) {
+      blocks.push({ type: "asset", asset_id: asset.id, asset_kind: asset.kind, role: "inline" });
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  const trailingText = content.value.slice(cursor).trim();
+  if (trailingText) {
+    blocks.push({ type: "text", text: trailingText });
+  }
+
+  if (!blocks.length && content.value.trim()) {
+    blocks.push({ type: "text", text: content.value.trim() });
+  }
+
+  return blocks;
 }
 
 function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode: PublishMode, message: string): PublishTaskResponse {
@@ -213,6 +259,8 @@ async function generatePreview() {
       content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads().length ? "mixed" : "article",
       tags: tagList.value,
       assets: collectAssetPayloads(),
+      content_blocks: collectContentBlocks(),
+      cover_asset_id: editorAssets.value.coverImage?.id ?? editorAssets.value.coverImageId ?? null,
       platforms: selectedPlatforms.value
     });
     previewDialogVisible.value = true;

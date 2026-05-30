@@ -5,6 +5,22 @@ import type { PlatformKey, ValidationIssue } from "@/api/client";
 import WechatPreview from "@/views/WechatPreview.vue";
 import type { RichBlock } from "@/views/WechatPreview.vue";
 
+interface DraftAsset {
+  id?: string;
+  name?: string;
+  type?: string;
+  preview_url?: string;
+  url?: string;
+  mime_type?: string;
+}
+
+interface DraftBodyBlock {
+  type: "text" | "asset";
+  text?: string;
+  asset_kind?: "image" | "video" | "audio";
+  asset?: DraftAsset;
+}
+
 export interface PlatformDraft {
   key: PlatformKey;
   label: string;
@@ -17,6 +33,8 @@ export interface PlatformDraft {
   metrics: Array<{ label: string; value: string }>;
   rich_body?: RichBlock[];
   cover_image?: { url?: string; name?: string } | null;
+  body_blocks?: DraftBodyBlock[];
+  media_slots?: Record<string, unknown>;
   author?: string;
   metadata?: { estimated_read_time_minutes?: number; source_word_count?: number };
 }
@@ -45,6 +63,10 @@ function issueType(issue: ValidationIssue) {
   if (issue.level === "error") return "danger";
   if (issue.level === "warning") return "warning";
   return "info";
+}
+
+function assetSrc(asset?: DraftAsset) {
+  return asset?.url || asset?.preview_url || "";
 }
 </script>
 
@@ -132,7 +154,24 @@ function issueType(issue: ValidationIssue) {
         </el-form-item>
 
         <el-form-item label="正文">
-          <div class="body-preview">
+          <div v-if="activeDraft.body_blocks?.length" class="block-preview">
+            <template v-for="(block, index) in activeDraft.body_blocks" :key="index">
+              <pre v-if="block.type === 'text'" class="text-block">{{ block.text }}</pre>
+              <figure v-else-if="block.asset_kind === 'image'" class="asset-block">
+                <img v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" :alt="block.asset?.name || '图片素材'" />
+                <figcaption>{{ block.asset?.name || '图片素材' }}</figcaption>
+              </figure>
+              <figure v-else-if="block.asset_kind === 'video'" class="asset-block">
+                <video v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
+                <figcaption>{{ block.asset?.name || '视频素材' }}</figcaption>
+              </figure>
+              <div v-else-if="block.asset_kind === 'audio'" class="audio-block">
+                <span>{{ block.asset?.name || '音频素材' }}</span>
+                <audio v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
+              </div>
+            </template>
+          </div>
+          <div v-else class="body-preview">
             <pre>{{ activeDraft.body }}</pre>
           </div>
         </el-form-item>
@@ -254,6 +293,75 @@ function issueType(issue: ValidationIssue) {
   font-family: inherit;
   font-size: 14px;
   line-height: 1.65;
+}
+
+.block-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #dfe5ee;
+  border-radius: 6px;
+  background: #f7f9fb;
+}
+
+.text-block {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #253247;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.asset-block {
+  margin: 0;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.asset-block img,
+.asset-block video {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: #eef3f8;
+  border-radius: 6px;
+}
+
+.asset-block figcaption {
+  margin-top: 8px;
+  color: #607086;
+  font-size: 12px;
+}
+
+.audio-block {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) minmax(240px, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.audio-block span {
+  overflow: hidden;
+  color: #253247;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-block audio {
+  width: 100%;
 }
 
 .tag-row {
