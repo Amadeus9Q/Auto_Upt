@@ -5,6 +5,8 @@ content_types:
   - mixed
 publish_modes:
   - simulate
+  - draft
+  - publish
 auth:
   type: oauth_or_cookie
   required_for_real_publish: true

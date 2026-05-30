@@ -6,6 +6,8 @@ content_types:
   - mixed
 publish_modes:
   - simulate
+  - draft
+  - publish
 auth:
   type: cookie_or_biliup
   required_for_real_publish: true
