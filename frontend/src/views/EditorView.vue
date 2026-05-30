@@ -1,12 +1,31 @@
 <script setup lang="ts">
-import { EditPen, MagicStick } from "@element-plus/icons-vue";
+import { Connection, EditPen, MagicStick, Upload } from "@element-plus/icons-vue";
+
+import type { PlatformKey } from "@/api/client";
 
 defineProps<{
   wordCount: number;
+  previewLoading: boolean;
+  taskLoading: boolean;
+  hasPreview: boolean;
 }>();
+
+defineEmits<{
+  generatePreview: [];
+  simulatePublish: [];
+}>();
+
+const platformOptions: Array<{ label: string; value: PlatformKey }> = [
+  { label: "公众号", value: "wechat" },
+  { label: "B站", value: "bilibili" },
+  { label: "知乎", value: "zhihu" },
+  { label: "小红书", value: "xiaohongshu" }
+];
 
 const title = defineModel<string>("title", { required: true });
 const content = defineModel<string>("content", { required: true });
+const tags = defineModel<string>("tags", { required: true });
+const platforms = defineModel<PlatformKey[]>("platforms", { required: true });
 </script>
 
 <template>
@@ -24,14 +43,35 @@ const content = defineModel<string>("content", { required: true });
         <el-input v-model="title" :prefix-icon="EditPen" maxlength="64" show-word-limit />
       </el-form-item>
 
+      <el-form-item label="平台">
+        <el-checkbox-group v-model="platforms" class="platforms">
+          <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </el-checkbox-button>
+        </el-checkbox-group>
+      </el-form-item>
+
+      <el-form-item label="标签">
+        <el-input v-model="tags" placeholder="用逗号或空格分隔" />
+      </el-form-item>
+
       <el-form-item label="正文">
-        <el-input v-model="content" type="textarea" :rows="18" resize="none" placeholder="粘贴 Markdown、富文本要点或视频简介。" />
+        <el-input v-model="content" type="textarea" :rows="15" resize="none" placeholder="粘贴 Markdown、富文本要点或视频简介。" />
       </el-form-item>
     </el-form>
 
+    <div class="action-row">
+      <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
+        生成预览
+      </el-button>
+      <el-button :icon="Upload" :disabled="!hasPreview" :loading="taskLoading" @click="$emit('simulatePublish')">
+        模拟发布
+      </el-button>
+    </div>
+
     <div class="lint-strip">
       <el-icon><MagicStick /></el-icon>
-      <span>当前仅生成模拟预览和校验提示，真实发布能力留给后续阶段。</span>
+      <span>当前后端只执行模拟预览和模拟发布，不会调用真实平台账号。</span>
     </div>
   </section>
 </template>
@@ -66,6 +106,24 @@ const content = defineModel<string>("content", { required: true });
 .section-title h2 {
   margin-top: 5px;
   font-size: 20px;
+}
+
+.platforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.platforms :deep(.el-checkbox-button__inner) {
+  border-radius: 8px;
+  border-left: 1px solid var(--el-border-color);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .lint-strip {
