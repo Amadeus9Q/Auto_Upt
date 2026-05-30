@@ -74,8 +74,7 @@ let geetestScriptPromise: Promise<void> | null = null;
 
 const wechatForm = reactive<WechatConnectPayload>({
   app_id: "",
-  app_secret: "",
-  display_name: "公众号"
+  app_secret: ""
 });
 
 const bilibiliForm = reactive<BilibiliLoginPayload>({
@@ -84,8 +83,7 @@ const bilibiliForm = reactive<BilibiliLoginPayload>({
   token: "",
   challenge: "",
   validate: "",
-  seccode: "",
-  display_name: "B站账号"
+  seccode: ""
 });
 
 const bilibiliCaptchaState = reactive({
@@ -344,7 +342,10 @@ async function connectWechat() {
   loadingAction.value = "wechat-connect";
 
   try {
-    const account = await connectWechatAccount({ ...wechatForm });
+    const account = await connectWechatAccount({
+      app_id: wechatForm.app_id,
+      app_secret: wechatForm.app_secret
+    });
     applyAccounts([account]);
     ElMessage.success("公众号配置已保存");
   } catch (error) {
@@ -390,8 +391,12 @@ async function connectBilibili() {
 
   try {
     const result = await loginBilibili({
-      ...bilibiliForm,
-      display_name: bilibiliForm.display_name?.trim() || undefined
+      username: bilibiliForm.username,
+      password: bilibiliForm.password,
+      token: bilibiliForm.token,
+      challenge: bilibiliForm.challenge,
+      validate: bilibiliForm.validate,
+      seccode: bilibiliForm.seccode
     });
     const platform = platformByKey("bilibili");
     applyAccounts([result.account]);
@@ -536,9 +541,6 @@ void refreshAccounts();
             </template>
 
             <el-form :ref="setWechatFormRef" class="account-form" :model="wechatForm" :rules="wechatRules" label-position="top">
-              <el-form-item label="账号显示名" prop="display_name">
-                <el-input v-model="wechatForm.display_name" placeholder="例如：品牌服务号" />
-              </el-form-item>
               <el-form-item label="AppID" prop="app_id">
                 <el-input v-model="wechatForm.app_id" autocomplete="off" placeholder="请输入公众号 AppID">
                   <template #prefix>
@@ -577,9 +579,6 @@ void refreshAccounts();
             </template>
 
             <el-form :ref="setBilibiliFormRef" class="account-form" :model="bilibiliForm" :rules="bilibiliRules" label-position="top">
-              <el-form-item label="账号显示名" prop="display_name">
-                <el-input v-model="bilibiliForm.display_name" placeholder="例如：运营号" />
-              </el-form-item>
               <el-form-item label="B站账号" prop="username">
                 <el-input v-model="bilibiliForm.username" autocomplete="username" placeholder="手机号或邮箱">
                   <template #prefix>
