@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, Monitor, Operation, User, VideoPlay } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowRight, Check, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -63,6 +63,8 @@ const task = ref<PublishTaskResponse | null>(null);
 const previewLoading = ref(false);
 const taskLoading = ref(false);
 const errorMessage = ref("");
+const previewDialogVisible = ref(false);
+const publishFormExpanded = ref<string[]>([]);
 
 const wordCount = computed(() => content.value.replace(/\s/g, "").length);
 
@@ -209,7 +211,7 @@ async function generatePreview() {
       assets: collectAssetPayloads(),
       platforms: selectedPlatforms.value
     });
-    activeTab.value = "preview";
+    previewDialogVisible.value = true;
     ElMessage.success("预览已由后端生成并保存。");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "生成预览失败。";
@@ -224,6 +226,7 @@ function enterPublishConfirm() {
     ElMessage.warning("请先生成预览。");
     return;
   }
+  previewDialogVisible.value = false;
   activeTab.value = "confirm";
 }
 
@@ -356,27 +359,69 @@ function selectTab(key: string) {
           @generate-preview="generatePreview"
           @simulate-publish="simulatePublish"
         />
+      </el-main>
+    </el-container>
 
-        <section class="result-panel">
-          <template v-if="activeTab === 'preview'">
-            <PreviewView
-              :drafts="drafts"
-              :loading="previewLoading"
-              :error-message="errorMessage"
-              :preview-id="preview?.preview_id ?? ''"
-              :created-at="preview?.created_at ?? ''"
-              @confirm-publish="enterPublishConfirm"
-            />
+    <!-- 预览弹窗 -->
+    <el-dialog
+      v-model="previewDialogVisible"
+      width="90%"
+      top="5vh"
+      destroy-on-close
+      class="preview-dialog"
+    >
+      <template #header>
+        <span class="dialog-title">多平台预览</span>
+      </template>
+
+      <div class="preview-dialog-body">
+        <PreviewView
+          :drafts="drafts"
+          :loading="previewLoading"
+          :error-message="errorMessage"
+          :preview-id="preview?.preview_id ?? ''"
+          :created-at="preview?.created_at ?? ''"
+          @confirm-publish="enterPublishConfirm"
+        />
+
+        <el-collapse v-model="publishFormExpanded" class="publish-form-collapse">
+          <el-collapse-item name="publish-params">
+            <template #title>
+              <span class="collapse-title-row">
+                <el-icon class="collapse-arrow">
+                  <ArrowDown v-if="publishFormExpanded.includes('publish-params')" />
+                  <ArrowRight v-else />
+                </el-icon>
+                <span>发布参数（可选编辑）</span>
+              </span>
+            </template>
             <PublishFormView
               v-model:forms="publishForms"
               :selected-platforms="selectedPlatforms"
               :validation-report="validationReport"
               :assets="editorAssets"
             />
-          </template>
-        </section>
-      </el-main>
-    </el-container>
+          </el-collapse-item>
+        </el-collapse>
+
+        <!-- 发布确认按钮 — 置于真实发布参数下方 -->
+        <div v-if="preview?.preview_id" class="preview-dialog-footer">
+          <div class="dialog-notice">
+            <el-icon><WarningFilled /></el-icon>
+            <span>Preview ID：{{ preview.preview_id }}<template v-if="preview.created_at">，创建时间：{{ preview.created_at }}</template></span>
+          </div>
+
+          <el-button
+            type="primary"
+            size="large"
+            :icon="Right"
+            @click="enterPublishConfirm"
+          >
+            进入发布确认
+          </el-button>
+        </div>
+      </div>
+    </el-dialog>
   </el-container>
 </template>
 
@@ -491,9 +536,6 @@ function selectTab(key: string) {
 }
 
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr);
-  gap: 24px;
   padding: 24px 32px 32px;
 }
 
@@ -503,7 +545,81 @@ function selectTab(key: string) {
   padding: 24px 32px 32px;
 }
 
-.result-panel {
+/* ---------- 预览弹窗 ---------- */
+.preview-dialog :deep(.el-dialog__header) {
+  padding: 20px 24px 0;
+}
+
+.dialog-title {
+  font-size: 18px;
+  font-weight: 650;
+  color: #172033;
+}
+
+.preview-dialog :deep(.el-dialog__body) {
+  padding: 8px 24px 24px;
+}
+
+.preview-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.publish-form-collapse {
+  border: 1px solid #e8ecf2;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.publish-form-collapse :deep(.el-collapse-item__header) {
+  padding: 0 16px;
+  font-weight: 500;
+  color: #607086;
+  background: #f7f9fb;
+  border-bottom: none;
+}
+
+.publish-form-collapse :deep(.el-collapse-item__arrow) {
+  display: none;
+}
+
+.collapse-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collapse-arrow {
+  font-size: 14px;
+  color: #9aa9bb;
+  transition: transform 0.2s ease;
+}
+
+.publish-form-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
+
+.publish-form-collapse :deep(.el-collapse-item__content) {
+  padding-bottom: 16px;
+}
+
+.preview-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e8ecf2;
+}
+
+.dialog-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #4f6279;
+  font-size: 13px;
+  word-break: break-all;
   min-width: 0;
 }
 
@@ -548,8 +664,12 @@ function selectTab(key: string) {
   .account-workspace,
   .confirm-workspace,
   .task-workspace {
-    grid-template-columns: 1fr;
     padding: 20px;
+  }
+
+  .preview-dialog-footer {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

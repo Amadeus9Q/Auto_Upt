@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Collection, Right, WarningFilled } from "@element-plus/icons-vue";
+import { computed, ref } from "vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
 
@@ -12,13 +12,10 @@ export interface PlatformDraft {
   tags: string[];
   status: "ready" | "warning" | "pending";
   issues: ValidationIssue[];
-  metrics: Array<{
-    label: string;
-    value: string;
-  }>;
+  metrics: Array<{ label: string; value: string }>;
 }
 
-defineProps<{
+const props = defineProps<{
   drafts: PlatformDraft[];
   loading: boolean;
   errorMessage: string;
@@ -30,182 +27,268 @@ defineEmits<{
   confirmPublish: [];
 }>();
 
-const statusMap = {
-  ready: { label: "可预览", type: "success" },
-  warning: { label: "需检查", type: "warning" },
-  pending: { label: "待生成", type: "info" }
-} as const;
+const currentPlatform = ref<PlatformKey>("wechat");
+
+const activeDraft = computed(() => props.drafts.find((d) => d.key === currentPlatform.value) ?? null);
+
+function selectPlatform(key: string) {
+  currentPlatform.value = key as PlatformKey;
+}
+
+function issueType(issue: ValidationIssue) {
+  if (issue.level === "error") return "danger";
+  if (issue.level === "warning") return "warning";
+  return "info";
+}
 </script>
 
 <template>
   <section class="preview-view" v-loading="loading">
-    <div class="section-title">
-      <div>
-        <p>平台预览</p>
-        <h2>后端生成草稿</h2>
+    <!-- 头部：平台切换 -->
+    <header class="preview-header">
+      <div class="platform-switcher">
+        <el-radio-group
+          v-model="currentPlatform"
+          size="default"
+          @change="selectPlatform"
+        >
+          <el-radio-button
+            v-for="draft in drafts"
+            :key="draft.key"
+            :value="draft.key"
+          >
+            {{ draft.label }}
+            <el-tag
+              v-if="draft.status === 'warning'"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="switcher-badge"
+            >
+              {{ draft.issues.length }}
+            </el-tag>
+          </el-radio-button>
+        </el-radio-group>
       </div>
-      <el-icon :size="24"><Collection /></el-icon>
-    </div>
+    </header>
 
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
+    <el-alert
+      v-if="errorMessage"
+      :title="errorMessage"
+      type="error"
+      show-icon
+      :closable="false"
+      class="preview-alert"
+    />
 
-    <el-empty v-if="!loading && drafts.length === 0 && !errorMessage" description="还没有生成预览" />
+    <el-empty
+      v-if="!loading && drafts.length === 0 && !errorMessage"
+      description="还没有生成预览"
+    />
 
-    <div v-else class="draft-grid">
-      <article v-for="draft in drafts" :key="draft.key" class="draft-card">
-        <header>
-          <strong>{{ draft.label }}</strong>
-          <el-tag :type="statusMap[draft.status].type">{{ statusMap[draft.status].label }}</el-tag>
-        </header>
-        <h3>{{ draft.title }}</h3>
-        <p>{{ draft.summary }}</p>
+    <!-- 表单式预览内容 -->
+    <template v-if="activeDraft">
+      <el-form label-position="top" class="preview-form">
+        <el-form-item label="标题">
+          <el-input
+            :model-value="activeDraft.title"
+            readonly
+            class="readonly-field"
+          >
+            <template #suffix>
+              <span class="char-count">{{ activeDraft.title.length }} 字</span>
+            </template>
+          </el-input>
+        </el-form-item>
+
+        <el-form-item label="摘要">
+          <el-input
+            :model-value="activeDraft.summary"
+            type="textarea"
+            :rows="3"
+            readonly
+            resize="none"
+            class="readonly-field"
+          />
+        </el-form-item>
+
+        <el-form-item label="正文">
+          <div class="body-preview">
+            <pre>{{ activeDraft.body }}</pre>
+          </div>
+        </el-form-item>
+
+        <el-form-item v-if="activeDraft.tags.length" label="标签">
+          <div class="tag-row">
+            <el-tag
+              v-for="tag in activeDraft.tags"
+              :key="tag"
+              effect="plain"
+              round
+            >
+              {{ tag }}
+            </el-tag>
+          </div>
+        </el-form-item>
+
+        <!-- 指标行 -->
         <div class="metric-row">
-          <span v-for="metric in draft.metrics" :key="metric.label"> {{ metric.label }}：{{ metric.value }} </span>
+          <span v-for="metric in activeDraft.metrics" :key="metric.label">
+            {{ metric.label }}：<strong>{{ metric.value }}</strong>
+          </span>
         </div>
-        <el-collapse v-if="draft.body || draft.issues.length" class="draft-detail">
-          <el-collapse-item title="草稿详情" name="body">
-            <pre>{{ draft.body }}</pre>
-            <div v-if="draft.tags.length" class="tag-row">
-              <el-tag v-for="tag in draft.tags" :key="tag" size="small">{{ tag }}</el-tag>
+
+        <!-- 校验报告 -->
+        <el-collapse v-if="activeDraft.issues.length" class="issues-collapse">
+          <el-collapse-item :title="`校验报告（${activeDraft.issues.length} 项）`" name="issues">
+            <div class="issue-list">
+              <div
+                v-for="issue in activeDraft.issues"
+                :key="`${issue.code}-${issue.field}`"
+                class="issue-item"
+              >
+                <el-tag :type="issueType(issue)" size="small" effect="plain">
+                  {{ issue.level }}
+                </el-tag>
+                <span class="issue-field">{{ issue.field }}</span>
+                <span class="issue-msg">{{ issue.message }}</span>
+              </div>
             </div>
           </el-collapse-item>
-          <el-collapse-item v-if="draft.issues.length" title="校验报告" name="issues">
-            <ul>
-              <li v-for="issue in draft.issues" :key="`${issue.code}-${issue.field}`">
-                {{ issue.level }} / {{ issue.field }}：{{ issue.message }}
-              </li>
-            </ul>
-          </el-collapse-item>
         </el-collapse>
-      </article>
-    </div>
-
-    <div v-if="previewId" class="notice">
-      <el-icon><WarningFilled /></el-icon>
-      <span>Preview ID：{{ previewId }}<template v-if="createdAt">，创建时间：{{ createdAt }}</template></span>
-    </div>
-
-    <div v-if="previewId" class="confirm-entry">
-      <el-button type="primary" :icon="Right" @click="$emit('confirmPublish')">进入发布确认</el-button>
-    </div>
+      </el-form>
+    </template>
   </section>
 </template>
 
 <style scoped>
 .preview-view {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.section-title {
+/* ---------- 头部 ---------- */
+.preview-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-}
-
-.section-title p,
-.section-title h2 {
-  margin: 0;
-}
-
-.section-title p {
-  color: #607086;
-  font-size: 13px;
-}
-
-.section-title h2 {
-  margin-top: 5px;
-  font-size: 20px;
-}
-
-.draft-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: flex-end;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
   gap: 16px;
 }
 
-.draft-card {
-  min-width: 0;
-  padding: 18px;
-  background: #ffffff;
-  border: 1px solid #dfe5ee;
-  border-radius: 8px;
+.platform-switcher {
+  flex-shrink: 0;
 }
 
-.draft-card header,
-.metric-row,
-.notice,
-.confirm-entry {
-  display: flex;
+.platform-switcher :deep(.el-radio-button__inner) {
+  display: inline-flex;
   align-items: center;
+  gap: 6px;
 }
 
-.draft-card header,
-.metric-row {
-  justify-content: space-between;
-  gap: 10px;
+.switcher-badge {
+  margin-left: 2px;
+  font-size: 11px;
+  padding: 0 4px;
+  height: 18px;
+  line-height: 18px;
 }
 
-.draft-card h3 {
-  margin: 18px 0 10px;
-  font-size: 17px;
-  line-height: 1.4;
+.preview-alert {
+  margin-bottom: 18px;
 }
 
-.draft-card p {
-  min-height: 66px;
-  margin: 0;
-  color: #4f6279;
-  line-height: 1.55;
+/* ---------- 表单 ---------- */
+.preview-form {
+  flex: 1;
 }
 
-.metric-row {
-  margin-top: 18px;
-  color: #607086;
-  font-size: 13px;
-  flex-wrap: wrap;
+.readonly-field :deep(.el-input__inner),
+.readonly-field :deep(.el-textarea__inner) {
+  background: #f7f9fb;
+  color: #253247;
+  cursor: default;
 }
 
-.draft-detail {
-  margin-top: 12px;
+.char-count {
+  color: #9aa9bb;
+  font-size: 12px;
+  user-select: none;
 }
 
-pre {
-  max-height: 240px;
+.body-preview {
+  max-height: 260px;
   overflow: auto;
+  border: 1px solid #dfe5ee;
+  border-radius: 6px;
+  background: #f7f9fb;
+}
+
+.body-preview pre {
+  margin: 0;
+  padding: 14px 16px;
   white-space: pre-wrap;
   word-break: break-word;
   color: #253247;
   font-family: inherit;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .tag-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.notice {
   gap: 8px;
-  margin-top: 18px;
-  padding: 12px 14px;
-  color: #4f6279;
-  background: #eef3f8;
-  border-radius: 8px;
-  font-size: 14px;
-  word-break: break-all;
 }
 
-.confirm-entry {
-  justify-content: flex-end;
-  margin-top: 14px;
+.metric-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  background: #f0f3f7;
+  border-radius: 6px;
+  color: #607086;
+  font-size: 13px;
+}
+
+.metric-row strong {
+  color: #172033;
+}
+
+/* ---------- 校验 ---------- */
+.issues-collapse {
+  margin-top: 4px;
+}
+
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.issue-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.issue-field {
+  color: #607086;
+  min-width: 60px;
+}
+
+.issue-msg {
+  color: #253247;
 }
 
 @media (max-width: 680px) {
-  .draft-grid {
-    grid-template-columns: 1fr;
+  .preview-header {
+    justify-content: flex-start;
   }
 }
 </style>
