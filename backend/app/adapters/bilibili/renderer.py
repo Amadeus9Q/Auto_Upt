@@ -11,6 +11,7 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         limits.get("title_max_length", 80),
     )
     tags = content_ir.get("tags", [])[: limits.get("tags_max_count", 10)]
+    media_slots = content_ir.get("media_slots", {})
     body_parts = [
         "视频简介",
         content_ir.get("summary", ""),
@@ -29,6 +30,10 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         "summary": clip_text(content_ir.get("summary", ""), 120),
         "tags": tags,
         "assets": content_ir.get("assets", []),
+        "body_blocks": content_ir.get("body_blocks", []),
+        "media_slots": media_slots,
+        "cover_image": media_slots.get("cover"),
+        "main_video": media_slots.get("main_video"),
         "style_notes": [
             "Keep searchable title and concise description.",
             "Map article sections into video description bullet points.",
