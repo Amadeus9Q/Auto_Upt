@@ -1,6 +1,6 @@
 # API 契约
 
-当前后端已实现第一阶段最小闭环：内容标准化、多平台草稿适配、预览落库和模拟发布任务。
+当前后端已实现第一阶段最小闭环，并在第二阶段新增公众号和 B站真实发布接口。
 
 ## 内容
 
@@ -32,10 +32,30 @@
 
 ## 发布任务
 
-- `POST /api/v1/publish-tasks`：基于预览创建模拟发布任务。
+- `POST /api/v1/publish-tasks`：基于预览创建模拟发布或真实发布任务。
 - `GET /api/v1/publish-tasks/{task_id}`：查询任务状态。
+- `POST /api/v1/publish-tasks/{task_id}/refresh`：刷新真实平台发布状态。
 
-当前 MVP 只支持 `mode=simulate`。`draft` 和 `publish` 会返回 400，真实发布在后续阶段接入。
+发布请求字段：
+
+- `preview_id`
+- `mode`：`simulate`、`draft` 或 `publish`
+- `platforms[]?`
+- `account_ids?`：真实发布账号 ID 映射
+- `asset_ids?`：真实发布素材 ID 映射
+- `platform_options?`：平台发布参数
+
+当前真实发布只支持 `wechat` 和 `bilibili`。知乎和小红书仍保持模拟发布或后续浏览器辅助发布。
+
+## 素材
+
+- `POST /api/v1/assets`：上传图片、封面、视频等本地素材。
+- `GET /api/v1/assets`：查询素材列表。
+- `GET /api/v1/assets/{asset_id}`：查询素材详情。
+- `GET /api/v1/assets/{asset_id}/download`：下载素材文件。
+- `DELETE /api/v1/assets/{asset_id}`：删除素材记录和本地文件。
+
+真实发布任务通过 `asset_id` 引用素材，不直接接收服务器文件路径。
 
 ## Agent 编排
 
@@ -72,5 +92,15 @@
 
 - `GET /api/v1/accounts`：查询全部平台账号占位状态。
 - `GET /api/v1/accounts/{platform}`：查询单个平台账号占位状态。
+- `POST /api/v1/accounts/wechat/connect`：保存公众号 AppID/AppSecret，并可测试 access token。
+- `GET /api/v1/accounts/bilibili/oauth/start`：生成 B站 OAuth 授权地址。
+- `GET /api/v1/accounts/bilibili/oauth/callback`：处理 B站 OAuth 回调并保存 token。
+- `POST /api/v1/accounts/{platform}/test`：测试账号连接。
+- `DELETE /api/v1/accounts/connections/{account_id}`：断开账号连接。
 
-账号接口当前只为前端账号页面提供占位数据，统一返回 `not_configured` 状态。真实账号授权、校验和发布确认在后续阶段接入。
+账号凭据会加密保存到 PostgreSQL。公众号使用 AppID/AppSecret；B站使用官方开放平台 OAuth。
+
+## 发布记录
+
+- `GET /api/v1/publications/{publication_id}`：查询真实发布记录。
+- `DELETE /api/v1/publications/{publication_id}`：删除平台侧发布内容。第二阶段仅 B站支持删除测试稿件，公众号按平台能力返回不支持。
