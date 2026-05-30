@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +26,8 @@ class PreviewService:
         title = self._normalize_title(request.title, body)
         tags = self._normalize_tags(request.tags)
         summary = self._summarize(body)
+        assets = [asset.model_dump() for asset in request.assets]
+        body_blocks = self._normalize_blocks(body, assets, [block.model_dump() for block in request.content_blocks])
 
         return {
             "id": str(uuid4()),
@@ -33,7 +36,10 @@ class PreviewService:
             "summary": summary,
             "content_type": request.content_type,
             "tags": tags,
-            "assets": [asset.model_dump() for asset in request.assets],
+            "assets": assets,
+            "body_blocks": body_blocks,
+            "media_slots": self._build_media_slots(assets, body_blocks, request.cover_asset_id),
+            "cover_asset_id": request.cover_asset_id,
             "word_count": self._count_words(body),
             "created_at": datetime.now(UTC).isoformat(),
         }
@@ -50,7 +56,7 @@ class PreviewService:
         for platform, adapter in adapters.items():
             draft = adapter.render(content_ir)
             drafts[platform] = draft
-            validation_report[platform] = adapter.validate(draft)
+            validation_report[platform] = adapter.validate(draft) + self._validate_media_for_platform(platform, draft)
 
         return content_ir, drafts, validation_report
 
@@ -123,3 +129,124 @@ class PreviewService:
         if any(char.isspace() for char in body):
             return len([part for part in body.split() if part.strip()])
         return len(body)
+
+    @staticmethod
+    def _normalize_blocks(body: str, assets: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        asset_map = {asset.get("id"): asset for asset in assets if asset.get("id")}
+        normalized: list[dict[str, Any]] = []
+
+        source_blocks = blocks or PreviewService._parse_asset_markers(body)
+        for block in source_blocks:
+            if block.get("type") == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    normalized.append({"type": "text", "text": text})
+                continue
+
+            asset_id = block.get("asset_id")
+            asset = asset_map.get(asset_id)
+            if not asset:
+                continue
+            kind = block.get("asset_kind") or asset.get("type")
+            normalized.append(
+                {
+                    "type": "asset",
+                    "asset_id": asset_id,
+                    "asset_kind": kind,
+                    "role": block.get("role") or "inline",
+                    "asset": asset,
+                }
+            )
+
+        if not normalized and body:
+            normalized.append({"type": "text", "text": body})
+        return normalized
+
+    @staticmethod
+    def _parse_asset_markers(body: str) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        pattern = re.compile(r"\{\{asset:(image|video|audio):([^}]+)\}\}")
+        cursor = 0
+
+        for match in pattern.finditer(body):
+            text = body[cursor : match.start()].strip()
+            if text:
+                blocks.append({"type": "text", "text": text})
+            blocks.append({"type": "asset", "asset_kind": match.group(1), "asset_id": match.group(2), "role": "inline"})
+            cursor = match.end()
+
+        trailing_text = body[cursor:].strip()
+        if trailing_text:
+            blocks.append({"type": "text", "text": trailing_text})
+        return blocks
+
+    @staticmethod
+    def _build_media_slots(
+        assets: list[dict[str, Any]],
+        body_blocks: list[dict[str, Any]],
+        cover_asset_id: str | None,
+    ) -> dict[str, Any]:
+        asset_map = {asset.get("id"): asset for asset in assets if asset.get("id")}
+        cover = asset_map.get(cover_asset_id) if cover_asset_id else None
+        if cover is None:
+            cover = next((asset for asset in assets if asset.get("usage") == "default_cover"), None)
+        if cover is None:
+            cover = next((asset for asset in assets if asset.get("type") in ("cover", "image")), None)
+
+        body_assets = [block["asset"] for block in body_blocks if block.get("type") == "asset" and block.get("asset")]
+        return {
+            "cover": cover,
+            "main_video": next((asset for asset in assets if asset.get("usage") == "bilibili_video"), None),
+            "body_images": [asset for asset in body_assets if asset.get("type") in ("image", "body_image")],
+            "body_videos": [asset for asset in body_assets if asset.get("type") == "video"],
+            "body_audios": [asset for asset in body_assets if asset.get("type") == "audio"],
+            "unsupported": [],
+        }
+
+    @staticmethod
+    def _validate_media_for_platform(platform: str, draft: dict[str, Any]) -> list[dict[str, Any]]:
+        slots = draft.get("media_slots") or {}
+        issues: list[dict[str, Any]] = []
+
+        if platform == "bilibili":
+            if not slots.get("main_video"):
+                issues.append(
+                    {
+                        "level": "error",
+                        "code": "BILIBILI_VIDEO_REQUIRED",
+                        "field": "media_slots.main_video",
+                        "message": "B站真实发布需要选择一个视频文件。",
+                    }
+                )
+            if not slots.get("cover"):
+                issues.append(
+                    {
+                        "level": "warning",
+                        "code": "BILIBILI_COVER_RECOMMENDED",
+                        "field": "media_slots.cover",
+                        "message": "建议为 B站稿件选择封面图。",
+                    }
+                )
+
+        if platform == "wechat":
+            if slots.get("body_videos") or slots.get("body_audios"):
+                issues.append(
+                    {
+                        "level": "warning",
+                        "code": "WECHAT_INLINE_MEDIA_PLACEHOLDER",
+                        "field": "body_blocks",
+                        "message": "公众号正文中的视频和音频当前仅作为预览占位，真实上传规则需在后续联调中确认。",
+                    }
+                )
+
+        if platform in {"zhihu", "xiaohongshu"} and (slots.get("body_videos") or slots.get("body_audios")):
+            issues.append(
+                {
+                    "level": "info",
+                    "code": "BROWSER_ASSISTED_MEDIA_PENDING",
+                    "field": "body_blocks",
+                    "message": "该平台的多媒体真实发布将在第三阶段浏览器辅助发布中接入。",
+                }
+            )
+
+        return issues

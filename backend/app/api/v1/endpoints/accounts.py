@@ -3,11 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.adapters.clients import PlatformClientError
-from backend.app.core.security import CredentialCryptoError
-from backend.app.db.session import get_session
 from backend.app.schemas.account import (
-    AccountListResponse,
     AccountPlatformResponse,
     AccountTestResponse,
     BilibiliCaptchaResponse,
@@ -23,15 +19,12 @@ router = APIRouter(prefix="/accounts", tags=["账号管理"])
 
 @router.get(
     "",
-    response_model=AccountListResponse,
-    summary="查询账号状态",
-    description="查询当前支持平台的账号连接状态。第二阶段支持公众号和 B站真实发布账号。",
-    response_description="平台账号状态列表。",
+    response_model=list[AccountPlatformResponse],
+    summary="查询账号状态列表",
 )
-async def list_accounts(
-    session: AsyncSession = Depends(get_session),
-) -> AccountListResponse:
-    return await AccountService(session).list_accounts()
+async def list_accounts() -> list[AccountPlatformResponse]:
+    service = AccountService()
+    return service.list_accounts()
 
 
 # ── 微信公众号 ──────────────────────────────────────────────────────────
@@ -159,8 +152,8 @@ async def test_account(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete(
-    "/connections/{account_id}",
+@router.post(
+    "/wechat/connect",
     response_model=AccountPlatformResponse,
     summary="断开账号连接",
     description=(
@@ -172,23 +165,10 @@ async def test_account(
     responses={404: {"description": "账号连接不存在。"}},
 )
 async def disconnect_account(
-    account_id: Annotated[str, Path(description="账号连接 ID。")],
-    session: AsyncSession = Depends(get_session),
-) -> AccountPlatformResponse:
-    service = AccountService(session)
-    record = await service.disconnect_account(account_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Account connection not found.")
-    return AccountPlatformResponse(
-        account_id=record.id,
-        platform=record.platform,
-        display_name=record.display_name,
-        status="not_configured",
-        auth_type=record.auth_type,
-        real_publish_supported=record.platform in {"wechat", "bilibili"},
-        required_for_real_publish=True,
-        capabilities={},
-        external_user_id=record.external_user_id,
-        token_expires_at=record.token_expires_at,
-        message="账号连接已断开。",
-    )
+    platform: Annotated[str, Path(description="平台标识。")],
+) -> dict[str, str]:
+    service = AccountService()
+    try:
+        return service.disconnect(platform)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
