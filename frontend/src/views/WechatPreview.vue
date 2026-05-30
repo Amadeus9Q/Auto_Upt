@@ -1,20 +1,12 @@
 <script setup lang="ts">
-export interface RichBlock {
-  type: string;
-  text?: string;
-  level?: number;
-  src?: string;
-  alt?: string;
-  media_type?: "video" | "audio";
-  mime_type?: string;
-}
+import type { BodySegment } from "@/views/PreviewView.vue";
 
 defineProps<{
   title: string;
   summary: string;
   body: string;
   tags: string[];
-  richBody?: RichBlock[];
+  bodySegments?: BodySegment[];
   coverImage?: { url?: string; name?: string } | null;
   author?: string;
   metadata?: { estimated_read_time_minutes?: number };
@@ -46,39 +38,28 @@ defineProps<{
       </div>
     </div>
 
-    <!-- 正文（结构化渲染） -->
+    <!-- 正文（从 body 解析渲染） -->
     <div class="article-body">
-      <template v-if="richBody?.length">
-        <template v-for="(block, idx) in richBody" :key="idx">
-          <h2 v-if="block.type === 'heading' && block.level === 1" class="wx-h1">
-            {{ block.text }}
-          </h2>
-          <h3 v-else-if="block.type === 'heading'" class="wx-h2">
-            {{ block.text }}
-          </h3>
-          <blockquote v-else-if="block.type === 'quote'" class="wx-quote">
-            {{ block.text }}
-          </blockquote>
-          <div v-else-if="block.type === 'image'" class="wx-image">
-            <img v-if="block.src" :src="block.src" :alt="block.alt || '图片'" class="wx-media-img" />
+      <template v-if="bodySegments?.length">
+        <template v-for="(segment, idx) in bodySegments" :key="idx">
+          <div v-if="segment.type === 'image'" class="wx-image">
+            <img v-if="segment.src" :src="segment.src" :alt="segment.name || '图片'" class="wx-media-img" />
             <div v-else class="wx-image-placeholder">
-              <span>📷 {{ block.alt || '图片' }}</span>
+              <span>📷 {{ segment.name || '图片' }}</span>
             </div>
-            <p v-if="block.alt">{{ block.alt }}</p>
+            <p v-if="segment.name">{{ segment.name }}</p>
           </div>
-          <div v-else-if="block.type === 'video' || (block.type === 'unsupported_media' && block.media_type === 'video')" class="wx-link-card">
+          <div v-else-if="segment.type === 'video'" class="wx-link-card">
             <span class="wx-link-card-icon">视频号</span>
-            <strong>{{ block.alt || '视频素材' }}</strong>
-            <p>{{ block.text || '公众号正文不支持直接嵌入视频，请替换为外链或视频号卡片。' }}</p>
-            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
+            <strong>{{ segment.name || '视频素材' }}</strong>
+            <p>公众号正文不支持直接嵌入视频，请替换为外链或视频号卡片。</p>
           </div>
-          <div v-else-if="block.type === 'audio' || (block.type === 'unsupported_media' && block.media_type === 'audio')" class="wx-link-card">
+          <div v-else-if="segment.type === 'audio'" class="wx-link-card">
             <span class="wx-link-card-icon">外链</span>
-            <strong>{{ block.alt || '音频素材' }}</strong>
-            <p>{{ block.text || '公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。' }}</p>
-            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
+            <strong>{{ segment.name || '音频素材' }}</strong>
+            <p>公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。</p>
           </div>
-          <p v-else class="wx-paragraph">{{ block.text }}</p>
+          <p v-else class="wx-paragraph">{{ segment.text }}</p>
         </template>
       </template>
       <pre v-else class="wx-fallback">{{ body }}</pre>
@@ -175,27 +156,6 @@ defineProps<{
 .wx-paragraph {
   margin: 0 0 14px;
 }
-.wx-h1 {
-  margin: 22px 0 10px;
-  font-size: 20px;
-  font-weight: 700;
-  color: #1a1a1a;
-}
-.wx-h2 {
-  margin: 20px 0 8px;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-.wx-quote {
-  margin: 14px 0;
-  padding: 10px 12px;
-  border-left: 3px solid #07c160;
-  background: #f6f6f6;
-  color: #5a5a5a;
-  font-size: 14px;
-  line-height: 1.65;
-}
 .wx-image {
   margin: 16px 0;
   text-align: center;
@@ -250,13 +210,6 @@ defineProps<{
   color: #6b7280;
   font-size: 12px;
   line-height: 1.6;
-}
-.wx-link-card a {
-  display: inline-block;
-  margin-top: 6px;
-  color: #576b95;
-  font-size: 12px;
-  text-decoration: none;
 }
 .wx-fallback {
   margin: 0;

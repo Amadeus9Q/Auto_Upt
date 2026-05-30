@@ -483,8 +483,7 @@ void refreshAccounts();
   <section class="account-view">
     <div class="section-title">
       <div>
-        <p>账号管理</p>
-        <h2>B站与公众号真实发布接入准备</h2>
+        <h2>平台授权状态</h2>
       </div>
       <el-button :icon="Refresh" :loading="loadingAction === 'refresh'" @click="refreshAccounts(true)">刷新状态</el-button>
     </div>
@@ -492,7 +491,7 @@ void refreshAccounts();
     <el-alert
       v-if="loadError"
       class="phase-note"
-      :title="`账号接口暂未就绪：${loadError}`"
+      :title="`账号接口暂不可用：${loadError}`"
       type="warning"
       show-icon
       :closable="false"
@@ -579,21 +578,21 @@ void refreshAccounts();
             </template>
 
             <el-form :ref="setBilibiliFormRef" class="account-form" :model="bilibiliForm" :rules="bilibiliRules" label-position="top">
-              <el-form-item label="B站账号" prop="username">
+              <el-form-item label="B 站账号" prop="username">
                 <el-input v-model="bilibiliForm.username" autocomplete="username" placeholder="手机号或邮箱">
                   <template #prefix>
                     <el-icon><Key /></el-icon>
                   </template>
                 </el-input>
               </el-form-item>
-              <el-form-item label="B站密码" prop="password">
+              <el-form-item label="B 站密码" prop="password">
                 <el-input v-model="bilibiliForm.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码">
                   <template #prefix>
                     <el-icon><Key /></el-icon>
                   </template>
                 </el-input>
               </el-form-item>
-              <el-form-item label="极验验证码">
+              <el-form-item label="验证码">
                 <div class="captcha-panel">
                   <div ref="bilibiliCaptchaRef" class="captcha-box"></div>
                   <div class="captcha-actions">
@@ -625,7 +624,7 @@ void refreshAccounts();
             </el-form>
           </el-popover>
 
-          <el-tag v-if="platform.disabled" type="info">第三阶段浏览器辅助发布接入</el-tag>
+          <el-tag v-if="platform.disabled" type="info">后续阶段接入</el-tag>
 
           <el-button
             v-if="!platform.disabled"
