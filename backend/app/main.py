@@ -18,6 +18,10 @@ from backend.app.core.config import get_settings
 from backend.app.db.session import close_db, init_db
 from backend.app.schemas.system import HealthResponse
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 settings = get_settings()
 
@@ -25,8 +29,37 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    _log_startup_config()
     yield
     await close_db()
+
+
+def _log_startup_config() -> None:
+    has_key = bool(settings.openai_api_key)
+    has_model = bool(settings.openai_model)
+    has_endpoint = bool(settings.openai_base_url)
+
+    if has_key and has_model:
+        logger.info(
+            "LLM configured: model=%s endpoint=%s",
+            settings.openai_model,
+            settings.openai_base_url,
+        )
+    elif has_key:
+        logger.warning(
+            "LLM API key set but no model configured: model=%s endpoint=%s",
+            settings.openai_model or "(empty)",
+            settings.openai_base_url,
+        )
+    elif has_model:
+        logger.warning(
+            "LLM model configured but no API key: model=%s",
+            settings.openai_model,
+        )
+    else:
+        logger.info(
+            "LLM not configured (no API key or model). Agent 优化将使用规则引擎。"
+        )
 
 
 app = FastAPI(
@@ -52,7 +85,7 @@ app = FastAPI(
         },
         {
             "name": "Agent 编排",
-            "description": "第一阶段模拟多 Agent 内容分析、平台适配、校验和模拟发布流程。",
+            "description": "模拟 Agent 编排，以及内置 MCP 风格工具编排、风格改写和多平台适配流程。",
         },
         {
             "name": "发布任务",

@@ -1,6 +1,6 @@
 # AI Agent 工作流
 
-第一阶段提供模拟多 Agent 编排接口，不直接调用真实模型。
+当前提供两条 Agent 链路：旧的模拟预览编排，以及新的内置 MCP 风格工具编排。工具编排默认使用规则引擎，可在配置 `OPENAI_API_KEY` 后尝试 LLM 增强，并在失败时回退到规则结果。
 
 ## Agent 角色
 
@@ -27,7 +27,26 @@ raw input
 后端接口：
 
 - `POST /api/v1/agent-runs/preview`
+- `GET /api/v1/agent-runs/tools`
+- `POST /api/v1/agent-runs/adapt-preview`
+- `GET /api/v1/agent-runs/{run_id}`
 
 当前接口执行规则模拟流程：复用内容标准化、平台 Adapter 渲染、格式校验和模拟发布能力，返回每个 Agent 步骤的结构化输出、合规提示和恢复建议。该接口不落库，不调用真实模型，也不会访问真实平台账号。
 
-后续接入 OpenAI Responses API / Agents SDK 时，应把 Adapter 操作封装成工具调用，并开启 tracing 记录每一步决策。
+## 工具编排
+
+`adapt-preview` 使用白名单工具注册表执行：
+
+```text
+raw input
+  -> content.normalize
+  -> content.analyze
+  -> metadata.extract
+  -> style.rewrite
+  -> platform.render
+  -> platform.validate
+  -> compliance.review
+  -> save preview + agent run
+```
+
+工具编排会返回 `tool_calls`，前端可展示每一步工具调用轨迹。它只生成内容建议和 preview，不自动调用真实发布接口。后续接入真实 MCP server 时，应保持工具名称和输入输出结构稳定，将当前内置工具替换为 MCP tool call。
