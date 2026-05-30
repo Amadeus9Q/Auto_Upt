@@ -25,7 +25,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def init_db() -> None:
-    from backend.app.models import content, platform  # noqa: F401
+    from backend.app.models import account, asset, content, platform, publication  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
