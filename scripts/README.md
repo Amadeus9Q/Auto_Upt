@@ -28,6 +28,12 @@ http://127.0.0.1:8000/docs
 .\scripts\start.ps1 -Foreground
 ```
 
+启动后端后继续以前台方式启动 Celery worker，用于执行公众号和 B站真实发布任务：
+
+```powershell
+.\scripts\start.ps1 -Worker
+```
+
 只启动指定容器服务后再启动后端：
 
 ```powershell
@@ -87,6 +93,28 @@ logs/backend.pid
 ```text
 logs/backend.out.log
 logs/backend.err.log
+```
+
+## 单独启动 Celery Worker
+
+前台启动真实发布任务 worker：
+
+```powershell
+.\scripts\start-worker.ps1
+```
+
+worker 日志会写入：
+
+```text
+logs/worker.out.log
+```
+
+## 单独关闭 Celery Worker
+
+前台 worker 使用 `Ctrl+C` 关闭。如果未来改为后台方式运行，可使用：
+
+```powershell
+.\scripts\stop-worker.ps1
 ```
 
 ## 单独关闭后端服务
@@ -152,4 +180,10 @@ uvicorn backend.app.main:app --reload
 
 ```text
 postgresql+asyncpg://auto_upt:auto_upt@localhost:5432/auto_upt
+```
+
+第二阶段引入 Alembic 管理数据库结构。空库初始化可以运行：
+
+```powershell
+alembic upgrade head
 ```
