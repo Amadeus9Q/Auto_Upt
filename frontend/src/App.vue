@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { Monitor, Operation, User, VideoPlay } from "@element-plus/icons-vue";
 
 import {
   createPreview,
   createPublishTask,
+  type AssetPayload,
   type PlatformKey,
   type PreviewResponse,
   type PublishTaskResponse
 } from "@/api/client";
 import AccountView from "@/views/AccountView.vue";
-import EditorView from "@/views/EditorView.vue";
+import EditorView, { type EditorAssets, type LocalAsset } from "@/views/EditorView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
+import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView, { type TaskStep } from "@/views/TaskView.vue";
 
 type WorkspaceTab = "preview" | "task" | "account";
@@ -25,16 +27,37 @@ const platformLabels: Record<PlatformKey, string> = {
 };
 
 const activeTab = ref<WorkspaceTab>("preview");
-const title = ref("AI Agent 发布助手第一阶段说明");
+const title = ref("AI Agent 发布助手第二阶段说明");
 const content = ref(
   [
     "输入一篇内容后，系统会生成公众号、B站、知乎和小红书的模拟草稿。",
     "",
-    "第一阶段只处理预览、格式校验、任务状态和截图占位，不接入真实发布。"
+    "第二阶段前端开始准备素材与真实发布参数，真实发布提交仍会在后续确认流程中二次确认。"
   ].join("\n")
 );
 const tags = ref("AI Agent, 内容运营, 自动化");
 const selectedPlatforms = ref<PlatformKey[]>(["wechat", "bilibili", "zhihu", "xiaohongshu"]);
+const editorAssets = ref<EditorAssets>({
+  images: [],
+  videos: [],
+  audios: [],
+  coverImage: null,
+  coverImageId: null
+});
+const publishForms = ref<PublishForms>({
+  bilibili: {
+    title: title.value,
+    description: content.value,
+    tags: tags.value,
+    category: ""
+  },
+  wechat: {
+    title: title.value,
+    summary: content.value.slice(0, 80),
+    author: "",
+    directPublish: false
+  }
+});
 const preview = ref<PreviewResponse | null>(null);
 const task = ref<PublishTaskResponse | null>(null);
 const previewLoading = ref(false);
@@ -49,6 +72,8 @@ const tagList = computed(() =>
     .map((tag) => tag.trim())
     .filter(Boolean)
 );
+
+const validationReport = computed(() => preview.value?.validation_report ?? {});
 
 const drafts = computed<PlatformDraft[]>(() => {
   if (!preview.value) {
@@ -88,6 +113,40 @@ const taskSteps = computed<TaskStep[]>(() => [
   }
 ]);
 
+watch(title, (nextTitle) => {
+  if (!publishForms.value.bilibili.title || publishForms.value.bilibili.title === "AI Agent 发布助手第二阶段说明") {
+    publishForms.value.bilibili.title = nextTitle;
+  }
+  if (!publishForms.value.wechat.title || publishForms.value.wechat.title === "AI Agent 发布助手第二阶段说明") {
+    publishForms.value.wechat.title = nextTitle;
+  }
+});
+
+watch(tags, (nextTags) => {
+  publishForms.value.bilibili.tags = nextTags;
+});
+
+function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: string): AssetPayload {
+  return {
+    name: asset.name,
+    type,
+    size: asset.size,
+    mime_type: asset.mimeType,
+    usage
+  };
+}
+
+function collectAssetPayloads(): AssetPayload[] {
+  const coverImageId = editorAssets.value.coverImageId ?? editorAssets.value.images[0]?.id;
+
+  return [
+    ...(editorAssets.value.coverImage ? [assetToPayload(editorAssets.value.coverImage, "cover", "default_cover")] : []),
+    ...editorAssets.value.images.map((asset) => assetToPayload(asset, "image", asset.id === coverImageId ? "default_cover" : "body_image")),
+    ...editorAssets.value.videos.map((asset, index) => assetToPayload(asset, "video", index === 0 ? "bilibili_video" : "reference_video")),
+    ...editorAssets.value.audios.map((asset) => assetToPayload(asset, "audio", "reference_audio"))
+  ];
+}
+
 async function generatePreview() {
   if (!content.value.trim()) {
     ElMessage.warning("请先输入正文内容。");
@@ -102,9 +161,9 @@ async function generatePreview() {
     preview.value = await createPreview({
       title: title.value.trim() || undefined,
       body: content.value,
-      content_type: "article",
+      content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads().length ? "mixed" : "article",
       tags: tagList.value,
-      assets: [],
+      assets: collectAssetPayloads(),
       platforms: selectedPlatforms.value
     });
     activeTab.value = "preview";
@@ -173,8 +232,8 @@ function selectTab(key: string) {
     <el-container>
       <el-header class="topbar">
         <div>
-          <p>第一阶段工作台</p>
-          <h1>生成平台草稿、校验报告和模拟任务状态</h1>
+          <p>第二阶段工作台</p>
+          <h1>准备素材、平台草稿和真实发布参数</h1>
         </div>
         <el-tag effect="dark" type="success">Backend Connected</el-tag>
       </el-header>
@@ -189,6 +248,7 @@ function selectTab(key: string) {
           v-model:content="content"
           v-model:tags="tags"
           v-model:platforms="selectedPlatforms"
+          v-model:assets="editorAssets"
           :word-count="wordCount"
           :preview-loading="previewLoading"
           :task-loading="taskLoading"
@@ -198,14 +258,21 @@ function selectTab(key: string) {
         />
 
         <section class="result-panel">
-          <PreviewView
-            v-if="activeTab === 'preview'"
-            :drafts="drafts"
-            :loading="previewLoading"
-            :error-message="errorMessage"
-            :preview-id="preview?.preview_id ?? ''"
-            :created-at="preview?.created_at ?? ''"
-          />
+          <template v-if="activeTab === 'preview'">
+            <PreviewView
+              :drafts="drafts"
+              :loading="previewLoading"
+              :error-message="errorMessage"
+              :preview-id="preview?.preview_id ?? ''"
+              :created-at="preview?.created_at ?? ''"
+            />
+            <PublishFormView
+              v-model:forms="publishForms"
+              :selected-platforms="selectedPlatforms"
+              :validation-report="validationReport"
+              :assets="editorAssets"
+            />
+          </template>
           <TaskView v-else :steps="taskSteps" :task="task" :loading="taskLoading" :error-message="errorMessage" />
         </section>
       </el-main>
