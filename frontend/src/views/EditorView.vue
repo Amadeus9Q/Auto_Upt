@@ -70,6 +70,7 @@ const assets = defineModel<EditorAssets>("assets", { required: true });
 
 const dragState = ref<DragState | null>(null);
 const isContentDragOver = ref(false);
+const contentDropIndex = ref<number | null>(null);
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 
@@ -153,6 +154,127 @@ function insertAssetReference(asset: LocalAsset, textarea?: HTMLTextAreaElement 
   insertTextAtCursor(assetMarker(asset), textarea);
 }
 
+function textareaFromDropEvent(event: DragEvent): HTMLTextAreaElement | null {
+  const current = event.currentTarget as HTMLElement | null;
+  return current?.querySelector("textarea") ?? null;
+}
+
+function measureTextareaCaret(textarea: HTMLTextAreaElement, index: number, mirror: HTMLDivElement, marker: HTMLSpanElement) {
+  mirror.textContent = "";
+  mirror.append(document.createTextNode(textarea.value.slice(0, index)));
+  mirror.append(marker);
+  return {
+    left: marker.offsetLeft,
+    top: marker.offsetTop
+  };
+}
+
+function buildTextareaMirror(textarea: HTMLTextAreaElement) {
+  const style = window.getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  const marker = document.createElement("span");
+  const copiedProperties = [
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "borderRightWidth",
+    "borderTopWidth",
+    "boxSizing",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "letterSpacing",
+    "lineHeight",
+    "paddingBottom",
+    "paddingLeft",
+    "paddingRight",
+    "paddingTop",
+    "textAlign",
+    "textTransform",
+    "wordSpacing"
+  ] as const;
+
+  for (const property of copiedProperties) {
+    mirror.style[property] = style[property];
+  }
+
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "break-word";
+  mirror.style.top = "0";
+  mirror.style.left = "-9999px";
+  mirror.style.width = `${textarea.clientWidth}px`;
+  marker.textContent = "\u200b";
+  document.body.append(mirror);
+
+  return { mirror, marker };
+}
+
+function caretIndexFromPoint(textarea: HTMLTextAreaElement, event: DragEvent) {
+  const rect = textarea.getBoundingClientRect();
+  const targetX = event.clientX - rect.left + textarea.scrollLeft;
+  const targetY = event.clientY - rect.top + textarea.scrollTop;
+  const { mirror, marker } = buildTextareaMirror(textarea);
+  const valueLength = textarea.value.length;
+
+  try {
+    let low = 0;
+    let high = valueLength;
+    let lineCandidate = 0;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const position = measureTextareaCaret(textarea, mid, mirror, marker);
+      if (position.top <= targetY) {
+        lineCandidate = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    const lineTop = measureTextareaCaret(textarea, lineCandidate, mirror, marker).top;
+    let lineStart = lineCandidate;
+    while (lineStart > 0 && measureTextareaCaret(textarea, lineStart - 1, mirror, marker).top === lineTop) {
+      lineStart -= 1;
+    }
+
+    let lineEnd = lineCandidate;
+    while (lineEnd < valueLength && measureTextareaCaret(textarea, lineEnd + 1, mirror, marker).top === lineTop) {
+      lineEnd += 1;
+    }
+
+    let bestIndex = lineStart;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let index = lineStart; index <= lineEnd; index += 1) {
+      const position = measureTextareaCaret(textarea, index, mirror, marker);
+      const distance = Math.abs(position.left - targetX);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+
+    return bestIndex;
+  } finally {
+    mirror.remove();
+  }
+}
+
+function previewContentDropPosition(event: DragEvent) {
+  const textarea = textareaFromDropEvent(event);
+  if (!textarea) {
+    contentDropIndex.value = null;
+    return null;
+  }
+
+  const index = caretIndexFromPoint(textarea, event);
+  contentDropIndex.value = index;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(index, index);
+  return textarea;
+}
+
 function findDraggedAsset(event: DragEvent): LocalAsset | null {
   const payload = event.dataTransfer?.getData("application/x-auto-upt-asset");
   if (payload) {
@@ -177,6 +299,7 @@ function onContentDragOver(event: DragEvent) {
     return;
   }
   isContentDragOver.value = true;
+  previewContentDropPosition(event);
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = "copy";
   }
@@ -189,7 +312,12 @@ function onContentDrop(event: DragEvent) {
     return;
   }
 
-  insertAssetReference(asset);
+  const textarea = previewContentDropPosition(event);
+  if (textarea && contentDropIndex.value !== null) {
+    textarea.setSelectionRange(contentDropIndex.value, contentDropIndex.value);
+  }
+  insertAssetReference(asset, textarea);
+  contentDropIndex.value = null;
   dragState.value = null;
 }
 
@@ -198,6 +326,7 @@ function onContentDragLeave(event: DragEvent) {
   const related = event.relatedTarget as Node | null;
   if (!related || !current.contains(related)) {
     isContentDragOver.value = false;
+    contentDropIndex.value = null;
   }
 }
 
