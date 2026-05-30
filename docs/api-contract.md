@@ -93,12 +93,14 @@
 - `GET /api/v1/accounts`：查询全部平台账号占位状态。
 - `GET /api/v1/accounts/{platform}`：查询单个平台账号占位状态。
 - `POST /api/v1/accounts/wechat/connect`：保存公众号 AppID/AppSecret，并可测试 access token。
-- `GET /api/v1/accounts/bilibili/oauth/start`：生成 B站 OAuth 授权地址。
-- `GET /api/v1/accounts/bilibili/oauth/callback`：处理 B站 OAuth 回调并保存 token。
+- `GET /api/v1/accounts/bilibili/login/captcha`：获取 B站登录所需的 Geetest 初始化参数 `gt`、`challenge`、`token`。
+- `POST /api/v1/accounts/bilibili/login/password`：提交账号、密码、captcha token 和极验校验结果，后端加密密码后调用 B站 passport 登录，并加密保存 Cookie 凭据。
 - `POST /api/v1/accounts/{platform}/test`：测试账号连接。
 - `DELETE /api/v1/accounts/connections/{account_id}`：断开账号连接。
 
-账号凭据会加密保存到 PostgreSQL。公众号使用 AppID/AppSecret；B站使用官方开放平台 OAuth。
+账号凭据会加密保存到 PostgreSQL。公众号使用 AppID/AppSecret；B站使用 `SESSDATA`、`bili_jct`、`DedeUserID` 等 Cookie 凭据，不保存明文密码。
+
+B站密码登录前端集成：先调用 `/bilibili/login/captcha` 获取 `gt`、`challenge`、`token`，再在前端加载 Geetest 组件完成验证。验证成功后，将用户输入的 `username`、`password`，以及 `token`、`challenge`、`validate`、`seccode` 提交到 `/bilibili/login/password`。后端会获取 B站 RSA 公钥并加密密码，不会保存或返回明文密码。如果 B站返回风控或短信验证要求，接口会返回可读错误，用户需要先在浏览器中完成 B站验证后再重试。
 
 ## 发布记录
 

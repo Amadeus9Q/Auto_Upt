@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.adapters.base import PlatformAdapter
-from backend.app.adapters.clients import BilibiliOpenPlatformClient, PlatformClientError, WechatOfficialAccountClient
+from backend.app.adapters.clients import BilibiliWebClient, PlatformClientError, WechatOfficialAccountClient
 from backend.app.adapters.registry import get_adapter, list_adapters
 from backend.app.core.security import CredentialCipher
 from backend.app.models.account import ConnectedAccountRecord
@@ -16,8 +15,9 @@ from backend.app.schemas.account import (
     AccountListResponse,
     AccountPlatformResponse,
     AccountTestResponse,
-    BilibiliOAuthCallbackResponse,
-    BilibiliOAuthStartResponse,
+    BilibiliCaptchaResponse,
+    BilibiliLoginRequest,
+    BilibiliLoginResponse,
     WechatConnectRequest,
 )
 
@@ -78,63 +78,62 @@ class AccountService:
         await self.session.refresh(record)
         return self._to_response(get_adapter("wechat"), record)
 
-    def start_bilibili_oauth(self) -> BilibiliOAuthStartResponse:
-        state = self.cipher.make_state(
-            {
-                "platform": "bilibili",
-                "nonce": uuid4().hex,
-                "created_at": datetime.now(UTC).isoformat(),
-            }
+    async def get_bilibili_captcha(self) -> BilibiliCaptchaResponse:
+        captcha = await BilibiliWebClient().get_captcha()
+        return BilibiliCaptchaResponse(
+            gt=captcha["gt"],
+            challenge=captcha["challenge"],
+            token=captcha["token"],
         )
-        authorize_url = BilibiliOpenPlatformClient().build_authorize_url(state)
-        return BilibiliOAuthStartResponse(authorize_url=authorize_url, state=state)
 
-    async def handle_bilibili_callback(
-        self,
-        code: str,
-        state: str,
-    ) -> BilibiliOAuthCallbackResponse:
+    async def login_bilibili(self, request: BilibiliLoginRequest) -> BilibiliLoginResponse:
         if self.session is None:
-            raise RuntimeError("AccountService.handle_bilibili_callback requires a database session.")
-        state_payload = self.cipher.read_state(state)
-        if state_payload.get("platform") != "bilibili":
-            raise PlatformClientError(
-                "Invalid Bilibili OAuth state.",
-                platform_code="INVALID_STATE",
-                next_action="请从账号页面重新发起 B站授权。",
-            )
+            raise RuntimeError("AccountService.login_bilibili requires a database session.")
 
-        token_payload = await BilibiliOpenPlatformClient().exchange_code(code)
-        data = token_payload.get("data", token_payload)
-        expires_in = int(data.get("expires_in", token_payload.get("expires_in", 0)) or 0)
-        token_expires_at = (
-            datetime.now(UTC) + timedelta(seconds=max(expires_in - 300, 60))
-            if expires_in
-            else None
+        client = BilibiliWebClient()
+        key_payload = await client.get_web_key()
+        encrypted_password = client.encrypt_password(
+            request.password,
+            key_payload["public_key"],
+            key_payload["salt"],
         )
+        login_payload = await client.password_login(
+            request.username,
+            encrypted_password,
+            request.token,
+            request.challenge,
+            request.geetest_validate,
+            request.seccode,
+        )
+        cookies = login_payload["cookies"]
+
+        nav_payload: dict[str, Any] = {}
+        try:
+            nav_payload = await client.nav_info(cookies)
+        except PlatformClientError:
+            # 登录接口已经返回 Cookie 时先保存账号，后续 /test 可单独验证 Cookie 是否可用。
+            nav_payload = {}
+
+        nav_data = nav_payload.get("data") or {}
         record = ConnectedAccountRecord(
             platform="bilibili",
-            display_name=data.get("uname") or data.get("name") or "B站账号",
+            display_name=request.display_name or nav_data.get("uname") or "B站账号",
             status="connected",
-            auth_type="oauth2",
-            external_user_id=str(data.get("mid") or data.get("user_id") or ""),
-            encrypted_credentials=self.cipher.encrypt_json(
-                {
-                    "access_token": data.get("access_token", token_payload.get("access_token")),
-                    "refresh_token": data.get("refresh_token", token_payload.get("refresh_token")),
-                    "scope": data.get("scope", token_payload.get("scope")),
-                }
-            ),
-            credential_metadata={"scope": data.get("scope", token_payload.get("scope"))},
-            token_expires_at=token_expires_at,
+            auth_type="cookie",
+            external_user_id=str(nav_data.get("mid") or cookies.get("DedeUserID") or ""),
+            encrypted_credentials=self.cipher.encrypt_json(cookies),
+            credential_metadata={
+                "login_method": "password",
+                "nav_checked": bool(nav_payload),
+            },
+            token_expires_at=None,
         )
         self.session.add(record)
         await self.session.commit()
         await self.session.refresh(record)
-        safe_payload = self._redact_token_payload(token_payload)
-        return BilibiliOAuthCallbackResponse(
+        return BilibiliLoginResponse(
             account=self._to_response(get_adapter("bilibili"), record),
-            raw_response=safe_payload,
+            message="B站登录成功，Cookie 凭据已加密保存。",
         )
 
     async def test_account(self, platform: str) -> AccountTestResponse:
@@ -157,10 +156,7 @@ class AccountService:
                     credentials.get("app_secret", ""),
                 )
             elif platform == "bilibili":
-                details = {
-                    "access_token_present": bool(credentials.get("access_token")),
-                    "expires_at": record.token_expires_at.isoformat() if record.token_expires_at else None,
-                }
+                details = await BilibiliWebClient().nav_info(credentials)
             else:
                 raise PlatformClientError(
                     f"{platform} real account testing is not supported.",
@@ -173,7 +169,7 @@ class AccountService:
                 account=self._to_response(get_adapter(platform), record),
                 ok=False,
                 message=str(exc),
-                details=getattr(exc, "details", {}),
+                details=self._redact_token_payload(getattr(exc, "details", {})),
             )
 
         record.status = "connected"
@@ -252,16 +248,25 @@ class AccountService:
             message=(
                 "账号已连接，可用于真实发布。"
                 if record and record.status == "connected"
-                else "账号尚未连接，真实发布前需要完成授权。"
+                else "账号尚未连接，真实发布前需要完成授权或登录。"
             ),
         )
 
-    @staticmethod
-    def _redact_token_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        redacted = dict(payload)
-        for key in ("access_token", "refresh_token", "app_secret"):
-            if key in redacted and redacted[key]:
-                redacted[key] = "***"
-        if isinstance(redacted.get("data"), dict):
-            redacted["data"] = AccountService._redact_token_payload(redacted["data"])
-        return redacted
+    @classmethod
+    def _redact_token_payload(cls, payload: Any) -> Any:
+        if isinstance(payload, dict):
+            sensitive = {
+                "access_token",
+                "refresh_token",
+                "app_secret",
+                "SESSDATA",
+                "bili_jct",
+                "password",
+            }
+            return {
+                key: ("***" if key in sensitive and value else cls._redact_token_payload(value))
+                for key, value in payload.items()
+            }
+        if isinstance(payload, list):
+            return [cls._redact_token_payload(item) for item in payload]
+        return payload

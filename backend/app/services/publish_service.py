@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -8,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.adapters.base import UnsupportedPublishModeError
 from backend.app.adapters.clients import (
-    BilibiliOpenPlatformClient,
+    BilibiliWebClient,
     LocalAsset,
     PlatformClientError,
     WechatOfficialAccountClient,
@@ -233,10 +232,7 @@ class PublishService:
             )
 
         credentials = await self._credentials_for_publication(publication)
-        details = await BilibiliOpenPlatformClient().delete_video(
-            credentials.get("access_token", ""),
-            publication.external_id,
-        )
+        details = await BilibiliWebClient().delete_video(credentials, publication.external_id)
         publication.status = "deleted"
         publication.external_status = "deleted"
         publication.response_payload = {
@@ -445,10 +441,7 @@ class PublishService:
                     "external_status": publication.external_status,
                     "message": "Bilibili publication has no external_id yet.",
                 }
-            details = await BilibiliOpenPlatformClient().get_video_status(
-                credentials.get("access_token", ""),
-                publication.external_id,
-            )
+            details = await BilibiliWebClient().get_video_status(credentials, publication.external_id)
         else:
             raise UnsupportedPublishModeError(f"{publication.platform} refresh is not supported.")
 
@@ -497,36 +490,20 @@ class PublishService:
         if account.platform != "bilibili":
             return credentials
 
-        expires_at = account.token_expires_at
-        if expires_at is None or expires_at > datetime.now(UTC) + timedelta(minutes=5):
-            return credentials
-
-        refresh_token = credentials.get("refresh_token")
-        if not refresh_token:
+        if not credentials.get("SESSDATA"):
             account.status = "expired"
             await self.session.commit()
             raise PlatformClientError(
-                "Bilibili access token is expired and no refresh_token is available.",
-                platform_code="TOKEN_EXPIRED",
-                next_action="请重新完成 B站 OAuth 授权。",
+                "B站登录凭据缺少 SESSDATA，无法执行真实发布。",
+                platform_code="COOKIE_MISSING",
+                next_action="请重新完成 B站登录。",
             )
-
-        refreshed = await BilibiliOpenPlatformClient().refresh_token(refresh_token)
-        data = refreshed.get("data", refreshed)
-        expires_in = int(data.get("expires_in", refreshed.get("expires_in", 0)) or 0)
-        credentials.update(
-            {
-                "access_token": data.get("access_token", refreshed.get("access_token")),
-                "refresh_token": data.get("refresh_token", refreshed.get("refresh_token", refresh_token)),
-                "scope": data.get("scope", refreshed.get("scope", credentials.get("scope"))),
-            }
-        )
-        account.encrypted_credentials = account_service.cipher.encrypt_json(credentials)
-        account.status = "connected"
-        account.token_expires_at = (
-            datetime.now(UTC) + timedelta(seconds=max(expires_in - 300, 60))
-            if expires_in
-            else None
-        )
-        await self.session.commit()
+        if not credentials.get("bili_jct"):
+            account.status = "expired"
+            await self.session.commit()
+            raise PlatformClientError(
+                "B站登录凭据缺少 bili_jct，无法执行需要 CSRF 的接口。",
+                platform_code="CSRF_COOKIE_MISSING",
+                next_action="请重新完成 B站登录。",
+            )
         return credentials

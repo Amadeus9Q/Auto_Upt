@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from backend.app.core.config import get_settings
 
@@ -155,97 +157,271 @@ class WechatOfficialAccountClient:
         return data
 
 
-class BilibiliOpenPlatformClient:
+class BilibiliWebClient:
+    """B站 Web 登录和会员中心接口客户端。
+
+    当前实现使用 B站 passport 登录流程获取 Cookie 凭据，不依赖开放平台
+    Client ID/Secret。前端仍需负责 Geetest 组件交互，后端只接收校验结果。
+    """
+
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.passport_base = self.settings.bilibili_passport_base.rstrip("/")
+        self.member_base = self.settings.bilibili_member_base.rstrip("/")
+        self.api_base = self.settings.bilibili_api_base_url.rstrip("/")
 
-    def build_authorize_url(self, state: str) -> str:
-        if not self.settings.bilibili_client_id:
+    async def get_captcha(self) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(base_url=self.passport_base, timeout=30) as client:
+                response = await client.get(
+                    "/x/passport-login/captcha",
+                    params={"source": "main_web"},
+                    headers=self._browser_headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站验证码接口", exc) from exc
+        data = self._ensure_ok(response)
+        payload = data.get("data") or {}
+        geetest = payload.get("geetest") or payload.get("result") or payload
+        gt = geetest.get("gt")
+        challenge = geetest.get("challenge")
+        token = payload.get("token") or geetest.get("token")
+        if not gt or not challenge or not token:
             raise PlatformClientError(
-                "BILIBILI_CLIENT_ID is not configured.",
-                platform_code="CONFIG_MISSING",
-                next_action="请先在 .env 中配置 B站开放平台应用信息。",
+                "B站验证码接口没有返回完整的 gt/challenge/token。",
+                platform_code="CAPTCHA_PAYLOAD_INVALID",
+                retryable=True,
+                next_action="请稍后重试获取验证码；如果持续失败，请检查 B站 passport 接口是否调整。",
+                details=data,
+            )
+        return {
+            "gt": gt,
+            "challenge": challenge,
+            "token": token,
+            "raw": data,
+        }
+
+    async def get_web_key(self) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(base_url=self.passport_base, timeout=30) as client:
+                response = await client.get(
+                    "/x/passport-login/web/key",
+                    headers=self._browser_headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站登录公钥接口", exc) from exc
+        data = self._ensure_ok(response)
+        payload = data.get("data") or {}
+        public_key = payload.get("key") or payload.get("public_key")
+        salt = payload.get("hash") or payload.get("salt")
+        if not public_key or not salt:
+            raise PlatformClientError(
+                "B站登录公钥接口没有返回完整的 public key/hash。",
+                platform_code="WEB_KEY_PAYLOAD_INVALID",
+                retryable=True,
+                next_action="请稍后重试登录；如果持续失败，请检查 B站 passport 接口是否调整。",
+                details=data,
+            )
+        return {
+            "public_key": public_key,
+            "salt": salt,
+            "raw": data,
+        }
+
+    @staticmethod
+    def encrypt_password(password: str, public_key_pem: str, salt: str) -> str:
+        key_text = public_key_pem.strip()
+        if "BEGIN PUBLIC KEY" not in key_text:
+            key_text = f"-----BEGIN PUBLIC KEY-----\n{key_text}\n-----END PUBLIC KEY-----"
+        public_key = serialization.load_pem_public_key(key_text.encode("utf-8"))
+        encrypted = public_key.encrypt(f"{salt}{password}".encode("utf-8"), padding.PKCS1v15())
+        return base64.b64encode(encrypted).decode("utf-8")
+
+    async def password_login(
+        self,
+        username: str,
+        encrypted_password: str,
+        token: str,
+        challenge: str,
+        validate: str,
+        seccode: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "source": "main_web",
+            "username": username,
+            "password": encrypted_password,
+            "keep": "true",
+            "token": token,
+            "challenge": challenge,
+            "validate": validate,
+            "seccode": seccode,
+        }
+        try:
+            async with httpx.AsyncClient(base_url=self.passport_base, timeout=30) as client:
+                response = await client.post(
+                    "/x/passport-login/web/login",
+                    data=payload,
+                    headers=self._browser_headers(
+                        {
+                            "Origin": "https://passport.bilibili.com",
+                            "Referer": "https://passport.bilibili.com/login",
+                        }
+                    ),
+                )
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站密码登录接口", exc) from exc
+        data = self._ensure_ok(response)
+        result = data.get("data") or {}
+        status = result.get("status")
+        if status in (2, "2"):
+            raise PlatformClientError(
+                "B站登录触发了风控或短信验证。",
+                platform_code="RISK_CONTROL",
+                platform_message=result.get("message") or "Risk control verification required.",
+                retryable=False,
+                next_action="请先在浏览器中登录 B站完成短信验证或风控校验，然后回到本工具重试。",
+                details=self._redact_sensitive(data),
+            )
+        if status not in (None, 0, "0"):
+            raise PlatformClientError(
+                result.get("message") or "B站登录失败。",
+                platform_code=str(status),
+                platform_message=result.get("message"),
+                retryable=False,
+                next_action="请确认账号密码、极验验证码和账号状态后重试。",
+                details=self._redact_sensitive(data),
             )
 
-        query = urlencode(
+        cookies = self._extract_login_cookies(response, result)
+        if not cookies.get("SESSDATA"):
+            raise PlatformClientError(
+                "B站登录成功响应中没有返回 SESSDATA。",
+                platform_code="LOGIN_COOKIE_MISSING",
+                retryable=False,
+                next_action="请确认账号没有触发额外验证；必要时先在浏览器完成一次登录。",
+                details=self._redact_sensitive(data),
+            )
+        return {
+            "cookies": cookies,
+            "raw_response": self._redact_sensitive(data),
+        }
+
+    async def nav_info(self, cookies: dict[str, str]) -> dict[str, Any]:
+        self._ensure_cookie_credentials(cookies, require_csrf=False)
+        try:
+            async with httpx.AsyncClient(base_url=self.api_base, timeout=30) as client:
+                response = await client.get(
+                    "/x/web-interface/nav",
+                    headers=self._cookie_headers(cookies),
+                )
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站账号状态接口", exc) from exc
+        data = self._ensure_ok(response)
+        nav_data = data.get("data") or {}
+        if nav_data.get("isLogin") is False:
+            raise PlatformClientError(
+                "B站 Cookie 已失效或未登录。",
+                platform_code="COOKIE_INVALID",
+                retryable=False,
+                next_action="请重新完成 B站登录。",
+                details=self._redact_sensitive(data),
+            )
+        return data
+
+    async def upload_video(self, cookies: dict[str, str], asset: LocalAsset) -> dict[str, Any]:
+        self._ensure_cookie_credentials(cookies)
+        preupload = await self._post_json(
+            cookies,
+            self.settings.bilibili_preupload_path,
             {
-                "client_id": self.settings.bilibili_client_id,
-                "redirect_uri": self.settings.bilibili_redirect_uri,
-                "response_type": "code",
-                "state": state,
-            }
+                "name": asset.original_filename,
+                "size": asset.file_size,
+                "r": "upos",
+                "profile": "ugcupos/bup",
+                "ssl": 0,
+                "version": "2.14.0.0",
+                "build": 0,
+            },
         )
-        return f"{self.settings.bilibili_authorize_url}?{query}"
+        data = preupload.get("data") or preupload
+        endpoint = data.get("endpoint")
+        upos_uri = data.get("upos_uri")
+        auth = data.get("auth")
 
-    async def exchange_code(self, code: str) -> dict[str, Any]:
-        payload = {
-            "client_id": self.settings.bilibili_client_id,
-            "client_secret": self.settings.bilibili_client_secret,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": self.settings.bilibili_redirect_uri,
-        }
-        return await self._post_form(self.settings.bilibili_token_url, payload)
+        if endpoint and upos_uri and auth:
+            upload_result = await self._upload_upos(endpoint, upos_uri, auth, asset, data)
+            return {
+                "video_id": data.get("biz_id") or data.get("video_id") or data.get("upos_uri"),
+                "data": data,
+                "preupload_response": preupload,
+                "upload_response": upload_result,
+            }
 
-    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
-        payload = {
-            "client_id": self.settings.bilibili_client_id,
-            "client_secret": self.settings.bilibili_client_secret,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        }
-        return await self._post_form(self.settings.bilibili_refresh_token_url, payload)
+        video_id = data.get("biz_id") or data.get("video_id") or data.get("upos_uri")
+        if video_id:
+            return {
+                "video_id": video_id,
+                "data": data,
+                "preupload_response": preupload,
+                "upload_response": None,
+            }
 
-    async def upload_video(self, access_token: str, asset: LocalAsset) -> dict[str, Any]:
-        return await self._upload(access_token, self.settings.bilibili_video_upload_path, asset)
+        raise PlatformClientError(
+            "B站预上传接口没有返回可用的视频上传地址。",
+            platform_code="PREUPLOAD_PAYLOAD_INVALID",
+            retryable=True,
+            next_action="请检查 B站上传接口返回，或稍后重试。",
+            details=preupload,
+        )
 
-    async def upload_cover(self, access_token: str, asset: LocalAsset) -> dict[str, Any]:
-        return await self._upload(access_token, self.settings.bilibili_cover_upload_path, asset)
+    async def upload_cover(self, cookies: dict[str, str], asset: LocalAsset) -> dict[str, Any]:
+        return await self._upload(cookies, self.settings.bilibili_cover_upload_path, asset)
 
     async def submit_video(
         self,
-        access_token: str,
+        cookies: dict[str, str],
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        return await self._post_json(access_token, self.settings.bilibili_video_submit_path, payload)
+        return await self._post_json(cookies, self.settings.bilibili_video_submit_path, payload)
 
-    async def get_video_status(self, access_token: str, external_id: str) -> dict[str, Any]:
+    async def get_video_status(self, cookies: dict[str, str], external_id: str) -> dict[str, Any]:
         return await self._post_json(
-            access_token,
+            cookies,
             self.settings.bilibili_video_status_path,
             {"external_id": external_id},
         )
 
-    async def delete_video(self, access_token: str, external_id: str) -> dict[str, Any]:
+    async def delete_video(self, cookies: dict[str, str], external_id: str) -> dict[str, Any]:
         return await self._post_json(
-            access_token,
+            cookies,
             self.settings.bilibili_video_delete_path,
             {"external_id": external_id},
         )
 
-    async def _post_form(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_client_configured()
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, data=payload)
-        return self._ensure_ok(response)
-
     async def _post_json(
         self,
-        access_token: str,
+        cookies: dict[str, str],
         path: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        self._ensure_client_configured()
-        async with httpx.AsyncClient(base_url=self.settings.bilibili_api_base_url.rstrip("/"), timeout=60) as client:
-            response = await client.post(
-                path,
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=payload,
-            )
+        self._ensure_cookie_credentials(cookies)
+        request_payload = {
+            **payload,
+            "csrf": cookies["bili_jct"],
+        }
+        try:
+            async with httpx.AsyncClient(base_url=self.member_base, timeout=60) as client:
+                response = await client.post(
+                    path,
+                    headers=self._cookie_headers(cookies),
+                    json=request_payload,
+                )
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站会员中心接口", exc) from exc
         return self._ensure_ok(response)
 
-    async def _upload(self, access_token: str, path: str, asset: LocalAsset) -> dict[str, Any]:
-        self._ensure_client_configured()
+    async def _upload(self, cookies: dict[str, str], path: str, asset: LocalAsset) -> dict[str, Any]:
+        self._ensure_cookie_credentials(cookies)
         with asset.path.open("rb") as asset_file:
             files = {
                 "file": (
@@ -254,48 +430,255 @@ class BilibiliOpenPlatformClient:
                     asset.content_type or "application/octet-stream",
                 )
             }
-            async with httpx.AsyncClient(base_url=self.settings.bilibili_api_base_url.rstrip("/"), timeout=300) as client:
-                response = await client.post(
-                    path,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    files=files,
-                )
+            try:
+                async with httpx.AsyncClient(base_url=self.member_base, timeout=300) as client:
+                    response = await client.post(
+                        path,
+                        headers=self._cookie_headers(cookies),
+                        data={"csrf": cookies["bili_jct"]},
+                        files=files,
+                    )
+            except httpx.HTTPError as exc:
+                raise self._network_error("B站文件上传接口", exc) from exc
         return self._ensure_ok(response)
 
-    def _ensure_client_configured(self) -> None:
-        missing = [
-            name
-            for name, value in (
-                ("BILIBILI_CLIENT_ID", self.settings.bilibili_client_id),
-                ("BILIBILI_CLIENT_SECRET", self.settings.bilibili_client_secret),
-            )
-            if not value
-        ]
-        if missing:
-            raise PlatformClientError(
-                f"Missing Bilibili Open Platform config: {', '.join(missing)}.",
-                platform_code="CONFIG_MISSING",
-                next_action="请先在 .env 中配置 B站开放平台应用信息。",
-            )
+    async def _upload_upos(
+        self,
+        endpoint: str,
+        upos_uri: str,
+        auth: str,
+        asset: LocalAsset,
+        preupload_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        endpoint_url = endpoint if endpoint.startswith(("http://", "https://")) else f"https://{endpoint}"
+        upload_path = "/" + upos_uri.replace("upos://", "").lstrip("/")
+        headers = {
+            **self._browser_headers(),
+            "X-Upos-Auth": auth,
+        }
+        try:
+            async with httpx.AsyncClient(base_url=endpoint_url.rstrip("/"), timeout=600) as client:
+                init_response = await client.post(
+                    upload_path,
+                    params={"uploads": "", "output": "json"},
+                    headers=headers,
+                )
+                init_data = self._json_response(init_response)
+                upload_id = init_data.get("upload_id") or init_data.get("uploadId")
+                if not upload_id:
+                    raise PlatformClientError(
+                        "B站上传初始化没有返回 upload_id。",
+                        platform_code="UPLOAD_INIT_INVALID",
+                        retryable=True,
+                        next_action="请检查 B站上传接口返回，或稍后重试。",
+                        details=init_data,
+                    )
+
+                with asset.path.open("rb") as asset_file:
+                    content = asset_file.read()
+                upload_response = await client.put(
+                    upload_path,
+                    params={
+                        "partNumber": 1,
+                        "uploadId": upload_id,
+                        "chunk": 0,
+                        "chunks": 1,
+                        "size": asset.file_size,
+                        "start": 0,
+                        "end": asset.file_size,
+                        "total": asset.file_size,
+                    },
+                    headers={
+                        **headers,
+                        "Content-Type": "application/octet-stream",
+                    },
+                    content=content,
+                )
+                if upload_response.is_error:
+                    raise PlatformClientError(
+                        "B站视频分片上传失败。",
+                        platform_code=str(upload_response.status_code),
+                        retryable=upload_response.status_code >= 500,
+                        next_action="请稍后重试上传，或检查素材文件大小和网络连接。",
+                        details={"response_text": upload_response.text[:500]},
+                    )
+
+                complete_response = await client.post(
+                    upload_path,
+                    params={
+                        "output": "json",
+                        "name": asset.original_filename,
+                        "profile": "ugcupos/bup",
+                        "uploadId": upload_id,
+                        "biz_id": preupload_data.get("biz_id"),
+                    },
+                    headers=headers,
+                    json={"parts": [{"partNumber": 1, "eTag": "etag"}]},
+                )
+                complete_data = self._json_response(complete_response)
+        except httpx.HTTPError as exc:
+            raise self._network_error("B站视频上传接口", exc) from exc
+        return {
+            "init": init_data,
+            "complete": complete_data,
+            "upload_id": upload_id,
+        }
 
     @staticmethod
-    def _ensure_ok(response: httpx.Response) -> dict[str, Any]:
+    def _extract_login_cookies(response: httpx.Response, result: dict[str, Any]) -> dict[str, str]:
+        cookie_names = ("SESSDATA", "bili_jct", "DedeUserID")
+        cookies = {
+            name: value
+            for name in cookie_names
+            if (value := response.cookies.get(name))
+        }
+        cookie_info = result.get("cookie_info") or {}
+        for item in cookie_info.get("cookies", []):
+            name = item.get("name")
+            value = item.get("value")
+            if name in cookie_names and value:
+                cookies[name] = value
+        return cookies
+
+    @staticmethod
+    def _cookie_header(cookies: dict[str, str]) -> str:
+        return "; ".join(
+            f"{key}={value}"
+            for key, value in cookies.items()
+            if key in {"SESSDATA", "bili_jct", "DedeUserID"} and value
+        )
+
+    def _cookie_headers(self, cookies: dict[str, str]) -> dict[str, str]:
+        return {
+            **self._browser_headers(),
+            "Cookie": self._cookie_header(cookies),
+        }
+
+    @staticmethod
+    def _browser_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    @staticmethod
+    def _ensure_cookie_credentials(cookies: dict[str, str], *, require_csrf: bool = True) -> None:
+        if not cookies.get("SESSDATA"):
+            raise PlatformClientError(
+                "缺少 B站 SESSDATA Cookie。",
+                platform_code="COOKIE_MISSING",
+                retryable=False,
+                next_action="请重新完成 B站登录。",
+            )
+        if require_csrf and not cookies.get("bili_jct"):
+            raise PlatformClientError(
+                "缺少 B站 bili_jct Cookie，无法执行需要 CSRF 的接口。",
+                platform_code="CSRF_COOKIE_MISSING",
+                retryable=False,
+                next_action="请重新完成 B站登录。",
+            )
+
+    def _ensure_ok(self, response: httpx.Response) -> dict[str, Any]:
+        data = self._json_response(response)
+        code = data.get("code", data.get("errcode", 0))
+        if code not in (0, "0", None):
+            raise self._to_platform_error(response, data)
+        return data
+
+    @staticmethod
+    def _json_response(response: httpx.Response) -> dict[str, Any]:
         try:
-            data = response.json()
+            parsed = response.json()
         except ValueError as exc:
             raise PlatformClientError(
-                "Bilibili returned a non-JSON response.",
+                "B站接口返回了非 JSON 响应。",
                 platform_code=str(response.status_code),
                 retryable=response.status_code >= 500,
             ) from exc
-
-        code = data.get("code", data.get("errcode", 0))
-        if response.is_error or code not in (0, "0", None):
+        if response.is_error:
             raise PlatformClientError(
-                data.get("message") or data.get("errmsg") or "Bilibili API request failed.",
-                platform_code=str(code or response.status_code),
-                platform_message=data.get("message") or data.get("errmsg"),
+                parsed.get("message") or parsed.get("msg") or "B站接口请求失败。",
+                platform_code=str(response.status_code),
+                platform_message=parsed.get("message") or parsed.get("msg"),
                 retryable=response.status_code >= 500,
-                details=data,
+                details=parsed,
             )
-        return data
+        return parsed
+
+    def _to_platform_error(self, response: httpx.Response, data: dict[str, Any]) -> PlatformClientError:
+        code = data.get("code", data.get("errcode", response.status_code))
+        message = data.get("message") or data.get("msg") or data.get("errmsg") or "B站接口请求失败。"
+        code_text = str(code)
+        lower_message = str(message).lower()
+
+        if code_text in {"86090"} or "risk" in lower_message or "风控" in str(message):
+            return PlatformClientError(
+                "B站登录触发了风控或短信验证。",
+                platform_code="RISK_CONTROL",
+                platform_message=message,
+                retryable=False,
+                next_action="请先在浏览器中登录 B站完成短信验证或风控校验，然后回到本工具重试。",
+                details=self._redact_sensitive(data),
+            )
+        if code_text in {"-105"} or "captcha" in lower_message or "验证码" in str(message) or "极验" in str(message):
+            return PlatformClientError(
+                "B站验证码已失效或校验失败。",
+                platform_code="CAPTCHA_EXPIRED",
+                platform_message=message,
+                retryable=True,
+                next_action="请重新获取验证码并完成极验验证。",
+                details=self._redact_sensitive(data),
+            )
+        if code_text in {"-629"} or "密码" in str(message) or "password" in lower_message:
+            return PlatformClientError(
+                "B站账号或密码错误。",
+                platform_code="WRONG_PASSWORD",
+                platform_message=message,
+                retryable=False,
+                next_action="请确认 B站账号和密码后重新登录。",
+                details=self._redact_sensitive(data),
+            )
+
+        return PlatformClientError(
+            message,
+            platform_code=code_text,
+            platform_message=message,
+            retryable=response.status_code >= 500,
+            details=self._redact_sensitive(data),
+        )
+
+    @staticmethod
+    def _network_error(api_name: str, exc: httpx.HTTPError) -> PlatformClientError:
+        return PlatformClientError(
+            f"{api_name}无法连接。",
+            platform_code="NETWORK_ERROR",
+            platform_message=str(exc),
+            retryable=True,
+            next_action="请确认当前网络或代理可以访问 passport.bilibili.com、api.bilibili.com 和 member.bilibili.com，然后重试。",
+            details={"error": str(exc)},
+        )
+
+    @classmethod
+    def _redact_sensitive(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            sensitive = {
+                "SESSDATA",
+                "bili_jct",
+                "DedeUserID",
+                "password",
+                "access_token",
+                "refresh_token",
+            }
+            return {
+                key: ("***" if key in sensitive and item else cls._redact_sensitive(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._redact_sensitive(item) for item in value]
+        return value

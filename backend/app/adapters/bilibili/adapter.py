@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.adapters.base import PlatformAdapter, load_profile
-from backend.app.adapters.clients import BilibiliOpenPlatformClient, LocalAsset, PlatformClientError
+from backend.app.adapters.clients import BilibiliWebClient, LocalAsset, PlatformClientError
 from backend.app.adapters.bilibili.renderer import render_draft
 
 
@@ -26,14 +26,18 @@ class BilibiliAdapter(PlatformAdapter):
             raise PlatformClientError(
                 "Bilibili account credentials are required for real publish.",
                 platform_code="ACCOUNT_REQUIRED",
-                next_action="请先完成 B站 OAuth 授权，并在发布请求中传入 account_ids.bilibili。",
+                next_action="请先完成 B站登录，并在发布请求中传入 account_ids.bilibili。",
             )
 
         credentials = account.get("credentials", {})
         options = account.get("options", {})
         assets = account.get("assets", [])
-        access_token = credentials.get("access_token", "")
-        client = BilibiliOpenPlatformClient()
+        cookies = {
+            key: value
+            for key in ("SESSDATA", "bili_jct", "DedeUserID")
+            if (value := credentials.get(key))
+        }
+        client = BilibiliWebClient()
 
         video_asset = self._find_asset(assets, options.get("video_asset_id"), "video")
         if video_asset is None:
@@ -43,13 +47,13 @@ class BilibiliAdapter(PlatformAdapter):
                 next_action="请先上传视频素材，并在 platform_options.bilibili.video_asset_id 或 asset_ids.bilibili 中传入。",
             )
 
-        upload_result = await client.upload_video(access_token, video_asset)
+        upload_result = await client.upload_video(cookies, video_asset)
         uploaded_video_id = upload_result.get("video_id") or upload_result.get("data", {}).get("video_id")
 
         cover_result: dict[str, Any] | None = None
         cover_asset = self._find_asset(assets, options.get("cover_asset_id"), "image")
         if cover_asset is not None:
-            cover_result = await client.upload_cover(access_token, cover_asset)
+            cover_result = await client.upload_cover(cookies, cover_asset)
 
         payload = {
             "title": draft.get("title", ""),
@@ -64,7 +68,7 @@ class BilibiliAdapter(PlatformAdapter):
             "dynamic": options.get("dynamic", ""),
             "mode": mode,
         }
-        submit_result = await client.submit_video(access_token, payload)
+        submit_result = await client.submit_video(cookies, payload)
         data = submit_result.get("data", submit_result)
         external_id = (
             data.get("aid")

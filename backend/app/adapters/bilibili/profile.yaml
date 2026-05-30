@@ -9,7 +9,7 @@ publish_modes:
   - draft
   - publish
 auth:
-  type: cookie_or_biliup
+  type: cookie
   required_for_real_publish: true
 limits:
   title_max_length: 80
