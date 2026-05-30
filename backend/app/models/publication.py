@@ -22,7 +22,6 @@ class PublicationRecord(Base):
     )
     preview_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("previews.id", ondelete="CASCADE"),
         index=True,
     )
     account_id: Mapped[str | None] = mapped_column(

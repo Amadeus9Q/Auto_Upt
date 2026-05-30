@@ -38,7 +38,6 @@ class PublishTaskRecord(Base):
     )
     preview_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("previews.id", ondelete="CASCADE"),
         index=True,
     )
     mode: Mapped[str] = mapped_column(String(32), default=PublishMode.SIMULATE)
@@ -50,6 +49,8 @@ class PublishTaskRecord(Base):
     account_ids: Mapped[dict] = mapped_column(JSON, default=dict)
     asset_ids: Mapped[dict] = mapped_column(JSON, default=dict)
     platform_options: Mapped[dict] = mapped_column(JSON, default=dict)
+    drafts: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
+    content_ir: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
     results: Mapped[dict] = mapped_column(JSON, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
