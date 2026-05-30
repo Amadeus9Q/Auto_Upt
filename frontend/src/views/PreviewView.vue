@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Collection, WarningFilled } from "@element-plus/icons-vue";
+import { Collection, Right, WarningFilled } from "@element-plus/icons-vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
 
@@ -24,6 +24,10 @@ defineProps<{
   errorMessage: string;
   previewId: string;
   createdAt: string;
+}>();
+
+defineEmits<{
+  confirmPublish: [];
 }>();
 
 const statusMap = {
@@ -56,9 +60,7 @@ const statusMap = {
         <h3>{{ draft.title }}</h3>
         <p>{{ draft.summary }}</p>
         <div class="metric-row">
-          <span v-for="metric in draft.metrics" :key="metric.label">
-            {{ metric.label }}：{{ metric.value }}
-          </span>
+          <span v-for="metric in draft.metrics" :key="metric.label"> {{ metric.label }}：{{ metric.value }} </span>
         </div>
         <el-collapse v-if="draft.body || draft.issues.length" class="draft-detail">
           <el-collapse-item title="草稿详情" name="body">
@@ -81,6 +83,10 @@ const statusMap = {
     <div v-if="previewId" class="notice">
       <el-icon><WarningFilled /></el-icon>
       <span>Preview ID：{{ previewId }}<template v-if="createdAt">，创建时间：{{ createdAt }}</template></span>
+    </div>
+
+    <div v-if="previewId" class="confirm-entry">
+      <el-button type="primary" :icon="Right" @click="$emit('confirmPublish')">进入发布确认</el-button>
     </div>
   </section>
 </template>
@@ -127,9 +133,15 @@ const statusMap = {
 }
 
 .draft-card header,
-.metric-row {
+.metric-row,
+.notice,
+.confirm-entry {
   display: flex;
   align-items: center;
+}
+
+.draft-card header,
+.metric-row {
   justify-content: space-between;
   gap: 10px;
 }
@@ -176,8 +188,6 @@ pre {
 }
 
 .notice {
-  display: flex;
-  align-items: center;
   gap: 8px;
   margin-top: 18px;
   padding: 12px 14px;
@@ -186,6 +196,11 @@ pre {
   border-radius: 8px;
   font-size: 14px;
   word-break: break-all;
+}
+
+.confirm-entry {
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 @media (max-width: 680px) {

@@ -63,7 +63,7 @@ export interface PublishTaskResponse {
 export interface PublishResult {
   platform: PlatformKey;
   display_name?: string;
-  mode?: "simulate";
+  mode?: PublishMode;
   status: "succeeded" | "failed";
   preview?: DraftPayload;
   preview_url?: string;
@@ -123,12 +123,12 @@ export function createPreview(payload: ContentPayload): Promise<PreviewResponse>
   });
 }
 
-export function createPublishTask(previewId: string, platforms?: PlatformKey[]): Promise<PublishTaskResponse> {
+export function createPublishTask(previewId: string, platforms?: PlatformKey[], mode: PublishMode = "simulate"): Promise<PublishTaskResponse> {
   return request<PublishTaskResponse>("/api/v1/publish-tasks", {
     method: "POST",
     body: JSON.stringify({
       preview_id: previewId,
-      mode: "simulate",
+      mode,
       platforms
     })
   });
