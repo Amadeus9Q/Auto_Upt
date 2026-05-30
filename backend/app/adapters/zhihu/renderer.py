@@ -29,6 +29,8 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         "summary": clip_text(content_ir.get("summary", ""), 140),
         "tags": content_ir.get("tags", [])[: limits.get("tags_max_count", 5)],
         "assets": content_ir.get("assets", []),
+        "body_blocks": content_ir.get("body_blocks", []),
+        "media_slots": content_ir.get("media_slots", {}),
         "style_notes": [
             "Lead with a conclusion.",
             "Use explanation and examples instead of direct marketing copy.",

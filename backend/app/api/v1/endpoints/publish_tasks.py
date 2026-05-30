@@ -3,7 +3,6 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.adapters.base import UnsupportedPublishModeError
 from backend.app.db.session import get_session
 from backend.app.schemas.content import PublishTaskCreateRequest, PublishTaskResponse
 from backend.app.services.publish_service import PublishService
@@ -39,8 +38,6 @@ async def create_publish_task(
     service = PublishService(session)
     try:
         record = await service.create_task(request)
-    except UnsupportedPublishModeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
