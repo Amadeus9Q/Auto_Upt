@@ -12,12 +12,10 @@ auth:
   type: cookie
   required_for_real_publish: true
 limits:
-  title_max_length: 80
-  body_max_length: 2000
   tags_max_count: 10
   assets_min_count: 0
 style:
-  tone: video description
-  title_hint: direct and searchable
+  tone: 轻松年轻化，视频描述
+  title_hint: 直接、可搜索
 assets:
   cover_required: false

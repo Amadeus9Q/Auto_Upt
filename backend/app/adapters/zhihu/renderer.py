@@ -1,15 +1,11 @@
 from typing import Any
 
-from backend.app.adapters.base import clip_text, first_non_empty, split_paragraphs
+from backend.app.adapters.base import clip_tags, first_non_empty, split_paragraphs
 
 
 def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    limits = profile.get("limits", {})
     paragraphs = split_paragraphs(content_ir["body"])
     title = first_non_empty(content_ir.get("title"), content_ir.get("summary"))
-    if not title.endswith(("?", "？")):
-        title = f"如何看待：{title}"
-    title = clip_text(title, limits.get("title_max_length", 100))
 
     body_parts = [
         "先说结论：",
@@ -26,8 +22,8 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         "display_name": profile.get("display_name", profile["platform"]),
         "title": title,
         "body": "\n".join(body_parts),
-        "summary": clip_text(content_ir.get("summary", ""), 140),
-        "tags": content_ir.get("tags", [])[: limits.get("tags_max_count", 5)],
+        "summary": content_ir.get("summary", ""),
+        "tags": clip_tags(content_ir.get("tags", []), max_count=4),
         "assets": content_ir.get("assets", []),
         "body_blocks": content_ir.get("body_blocks", []),
         "media_slots": content_ir.get("media_slots", {}),

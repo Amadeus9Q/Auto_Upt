@@ -9,12 +9,10 @@ auth:
   type: browser_or_cookie
   required_for_real_publish: true
 limits:
-  title_max_length: 100
-  body_max_length: 50000
   tags_max_count: 5
   assets_min_count: 0
 style:
-  tone: reasoned answer
-  title_hint: prefer question-oriented framing
+  tone: 专业严谨，深度知识分享
+  title_hint: 建议用提问式标题
 assets:
   cover_required: false
