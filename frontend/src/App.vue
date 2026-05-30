@@ -301,14 +301,21 @@ function selectTab(key: string) {
           <el-icon><Operation /></el-icon>
           <span>任务看板</span>
         </el-menu-item>
-        <el-menu-item index="account">
-          <el-icon><User /></el-icon>
-          <span>账号管理</span>
-        </el-menu-item>
       </el-menu>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="sidebar-bottom">
+        <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
+          <el-menu-item index="account">
+            <el-icon><User /></el-icon>
+            <span>账号管理</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
     </el-aside>
 
-    <el-container>
+    <el-container class="main-area">
       <el-header class="topbar">
         <div>
           <p>第二阶段工作台</p>
@@ -388,10 +395,14 @@ function selectTab(key: string) {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   background: #172033;
   color: #f7fafc;
   padding: 24px 14px;
@@ -402,6 +413,7 @@ function selectTab(key: string) {
   align-items: center;
   gap: 12px;
   padding: 4px 8px 26px;
+  flex-shrink: 0;
 }
 
 .brand strong,
@@ -422,6 +434,7 @@ function selectTab(key: string) {
 .nav-menu {
   border-right: 0;
   background: transparent;
+  flex-shrink: 0;
 }
 
 .nav-menu :deep(.el-menu-item) {
@@ -433,6 +446,21 @@ function selectTab(key: string) {
 .nav-menu :deep(.el-menu-item:hover) {
   background: #263347;
   color: #ffffff;
+}
+
+.sidebar-spacer {
+  flex: 1;
+}
+
+.sidebar-bottom {
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.main-area {
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .topbar {
@@ -482,15 +510,32 @@ function selectTab(key: string) {
 @media (max-width: 960px) {
   .app-shell {
     display: block;
+    height: auto;
+    overflow: visible;
   }
 
   .sidebar {
     width: auto !important;
+    height: auto;
     padding: 16px;
   }
 
   .brand {
     padding-bottom: 14px;
+  }
+
+  .sidebar-spacer {
+    display: none;
+  }
+
+  .sidebar-bottom {
+    border-top: none;
+    padding-top: 0;
+  }
+
+  .main-area {
+    height: auto;
+    overflow-y: visible;
   }
 
   .topbar {
