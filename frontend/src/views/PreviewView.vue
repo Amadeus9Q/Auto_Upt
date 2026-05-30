@@ -3,7 +3,6 @@ import { computed, ref, watch } from "vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
 import WechatPreview from "@/views/WechatPreview.vue";
-import type { RichBlock } from "@/views/WechatPreview.vue";
 
 interface DraftAsset {
   id?: string;
@@ -14,11 +13,11 @@ interface DraftAsset {
   mime_type?: string;
 }
 
-interface DraftBodyBlock {
-  type: "text" | "asset";
+export interface BodySegment {
+  type: "text" | "image" | "video" | "audio";
   text?: string;
-  asset_kind?: "image" | "video" | "audio";
-  asset?: DraftAsset;
+  src?: string;
+  name?: string;
 }
 
 export interface PlatformDraft {
@@ -31,9 +30,9 @@ export interface PlatformDraft {
   status: "ready" | "warning" | "pending";
   issues: ValidationIssue[];
   metrics: Array<{ label: string; value: string }>;
-  rich_body?: RichBlock[];
+  rich_body?: unknown[];
   cover_image?: { url?: string; preview_url?: string; name?: string } | null;
-  body_blocks?: DraftBodyBlock[];
+  body_blocks?: unknown[];
   media_slots?: Record<string, unknown>;
   author?: string;
   metadata?: { estimated_read_time_minutes?: number; source_word_count?: number };
@@ -45,22 +44,32 @@ const props = defineProps<{
   errorMessage: string;
   previewId: string;
   createdAt: string;
+  initialPlatform?: PlatformKey;
 }>();
-
 defineEmits<{
   confirmPublish: [];
 }>();
 
-const currentPlatform = ref<PlatformKey>("wechat");
+const currentPlatform = ref<PlatformKey>(props.initialPlatform ?? "wechat");
 
 const activeDraft = computed(() => props.drafts.find((draft) => draft.key === currentPlatform.value) ?? null);
 
+// ---- body 解析：统一从 body 文本提取段落和媒体 ----
+
+const activeBodySegments = computed(() => parseBodySegments(activeDraft.value));
+
 const bilibiliMainVideo = computed(() => (activeDraft.value?.key === "bilibili" ? slotAsset(activeDraft.value, "main_video") : null));
 const bilibiliCover = computed(() => (activeDraft.value?.key === "bilibili" ? activeDraft.value.cover_image ?? slotAsset(activeDraft.value, "cover") : null));
-const bilibiliHighlights = computed(() => draftHighlights(activeDraft.value, 3));
+const bilibiliHighlights = computed(() => bodyHighlights(activeDraft.value, 3));
 
-const zhihuParagraphs = computed(() => textParagraphs(activeDraft.value?.body ?? "").filter((paragraph) => !isAssetMarkerText(paragraph)).slice(0, 8));
-const zhihuImages = computed(() => (activeDraft.value?.key === "zhihu" ? slotAssetList(activeDraft.value, "body_images").slice(0, 3) : []));
+const zhihuTextSegments = computed(() => {
+  if (activeDraft.value?.key !== "zhihu") return [];
+  return activeBodySegments.value.filter((s) => s.type === "text").slice(0, 8);
+});
+const zhihuImageSegments = computed(() => {
+  if (activeDraft.value?.key !== "zhihu") return [];
+  return activeBodySegments.value.filter((s) => s.type === "image");
+});
 const zhihuUnsupportedMedia = computed(() =>
   activeDraft.value?.key === "zhihu" ? [...slotAssetList(activeDraft.value, "body_videos"), ...slotAssetList(activeDraft.value, "body_audios")] : []
 );
@@ -71,7 +80,7 @@ const xiaohongshuCover = computed(() => {
   }
   return activeDraft.value.cover_image ?? slotAsset(activeDraft.value, "cover") ?? slotAssetList(activeDraft.value, "body_images")[0] ?? null;
 });
-const xiaohongshuHighlights = computed(() => draftHighlights(activeDraft.value, 4));
+const xiaohongshuHighlights = computed(() => bodyHighlights(activeDraft.value, 4));
 const xiaohongshuImages = computed(() => {
   if (activeDraft.value?.key !== "xiaohongshu") {
     return [];
@@ -100,6 +109,15 @@ watch(
     }
   },
   { immediate: true }
+);
+
+watch(
+  () => props.initialPlatform,
+  (platform) => {
+    if (platform) {
+      currentPlatform.value = platform;
+    }
+  }
 );
 
 function selectPlatform(key: string) {
@@ -132,31 +150,65 @@ function slotAssetList(draft: PlatformDraft, slot: string): DraftAsset[] {
   return value.filter((item): item is DraftAsset => Boolean(item) && typeof item === "object");
 }
 
-function textParagraphs(text: string) {
-  return text
-    .split(/\n{1,}/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
+// ---- body 解析工具 ----
 
-function isAssetMarkerText(text: string) {
-  return /^\{\{asset:(image|video|audio):[^}]+}}$/.test(text) || /^【(图片|视频|音频)[:：].+】$/.test(text);
-}
+const ASSET_MARKER_RE = /^【(图片|视频|音频)[：:]\s*([^】]+)】$/;
 
-function draftHighlights(draft: PlatformDraft | null, limit: number) {
-  if (!draft) {
-    return [];
+function parseBodySegments(draft: PlatformDraft | null): BodySegment[] {
+  if (!draft) return [];
+
+  const allAssets = collectDraftAssets(draft);
+  const lines = draft.body.split("\n");
+  const segments: BodySegment[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const match = trimmed.match(ASSET_MARKER_RE);
+    if (match) {
+      const kind = match[1] === "图片" ? "image" : match[1] === "视频" ? "video" : "audio";
+      const name = match[2].trim();
+      const found = findAssetByName(allAssets, name, kind);
+      segments.push({ type: kind, src: found?.url || found?.preview_url || "", name });
+    } else {
+      segments.push({ type: "text", text: trimmed });
+    }
   }
 
-  const blocks = draft.body_blocks
-    ?.filter((block) => block.type === "text" && block.text?.trim())
-    .map((block) => block.text?.trim() ?? "");
-  if (blocks?.length) {
-    return blocks.slice(0, limit);
-  }
+  return segments;
+}
 
-  const paragraphs = textParagraphs(draft.body).filter((item) => !item.startsWith("#"));
-  return (paragraphs.length ? paragraphs : [draft.summary]).filter(Boolean).slice(0, limit);
+function collectDraftAssets(draft: PlatformDraft): DraftAsset[] {
+  const fromSlots: DraftAsset[] = Object.values(draft.media_slots ?? {})
+    .flat()
+    .filter((item): item is DraftAsset => Boolean(item) && typeof item === "object");
+  const fromAssets = (draft as unknown as Record<string, unknown>).assets as DraftAsset[] | undefined;
+  return [...fromSlots, ...(fromAssets ?? [])];
+}
+
+function findAssetByName(assets: DraftAsset[], name: string, kind: string): DraftAsset | undefined {
+  const typeMap: Record<string, string[]> = {
+    image: ["image", "cover"],
+    video: ["video"],
+    audio: ["audio"]
+  };
+  const allowedTypes = typeMap[kind] ?? [];
+  return assets.find(
+    (a) =>
+      (a.name && a.name === name) ||
+      (allowedTypes.includes(a.type ?? "") && name.includes(a.name ?? ""))
+  );
+}
+
+/** 从 body 中提取纯文本亮点（非媒体标记、非标题行） */
+function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
+  if (!draft) return [];
+  const segments = parseBodySegments(draft);
+  const texts = segments
+    .filter((s) => s.type === "text" && s.text && !s.text.startsWith("#"))
+    .map((s) => s.text!);
+  return (texts.length ? texts : [draft.summary]).filter(Boolean).slice(0, limit);
 }
 </script>
 
@@ -200,7 +252,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 
     <el-empty
       v-if="!loading && drafts.length === 0 && !errorMessage"
-      description="还没有生成预览"
+      description="暂未生成预览"
     />
 
     <template v-if="activeDraft">
@@ -210,7 +262,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
         :summary="activeDraft.summary"
         :body="activeDraft.body"
         :tags="activeDraft.tags"
-        :rich-body="activeDraft.rich_body"
+        :body-segments="activeBodySegments"
         :cover-image="activeDraft.cover_image"
         :author="activeDraft.author"
         :metadata="activeDraft.metadata"
@@ -225,14 +277,9 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
               :poster="assetSrc(bilibiliCover)"
               controls
             />
-            <img
-              v-else-if="assetSrc(bilibiliCover)"
-              :src="assetSrc(bilibiliCover)"
-              :alt="bilibiliCover?.name || 'B站封面'"
-            />
             <div v-else class="bilibili-player-empty">
               <strong>待选择主视频</strong>
-              <span>B站真实发布需要视频素材</span>
+              <span>{{ bilibiliCover ? "已选封面，B 站发布仍需上传视频" : "B 站发布需要视频素材" }}</span>
             </div>
           </section>
 
@@ -297,8 +344,8 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
             <div class="zhihu-author-row">
               <span class="zhihu-avatar">知</span>
               <div>
-                <strong>{{ activeDraft.author || "Auto_Upt 创作助手" }}</strong>
-                <span>内容创作、平台适配、发布流程</span>
+                <strong>{{ activeDraft.author || "Auto_Upt" }}</strong>
+                <span>内容创作 · 平台适配 · 发布流程</span>
               </div>
             </div>
           </header>
@@ -310,15 +357,15 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           </div>
 
           <section class="zhihu-answer">
-            <p v-for="paragraph in zhihuParagraphs" :key="paragraph">{{ paragraph }}</p>
-            <div v-if="zhihuImages.length" class="zhihu-inline-images">
-              <img
-                v-for="image in zhihuImages"
-                :key="image.id || image.name || assetSrc(image)"
-                :src="assetSrc(image)"
-                alt="知乎正文图片"
-              />
-            </div>
+            <template v-for="(segment, idx) in zhihuTextSegments" :key="'t-' + idx">
+              <p>{{ segment.text }}</p>
+            </template>
+            <template v-for="(segment, idx) in zhihuImageSegments" :key="'i-' + idx">
+              <figure class="zhihu-inline-figure">
+                <img v-if="segment.src" :src="segment.src" :alt="segment.name || '知乎图片'" />
+                <figcaption v-if="segment.name">{{ segment.name }}</figcaption>
+              </figure>
+            </template>
           </section>
 
           <footer class="zhihu-action-row">
@@ -344,7 +391,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           </section>
           <section v-if="zhihuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅提示，不参与发布适配</strong>
+            <strong>当前阶段仅供展示，暂不参与发布</strong>
           </section>
         </aside>
 
@@ -380,8 +427,8 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
               </el-carousel-item>
             </el-carousel>
             <div v-else class="xhs-cover-empty">
-              <strong>封面占位</strong>
-              <span>建议上传一张竖版或 3:4 图片</span>
+              <strong>封面预览</strong>
+              <span>建议使用竖版或 3:4 尺寸图片</span>
             </div>
           </div>
 
@@ -418,7 +465,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           </section>
           <section v-if="xiaohongshuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅提示，不参与发布适配</strong>
+            <strong>当前阶段仅供展示，暂不参与发布</strong>
           </section>
           <section class="xhs-body-preview">
             <span>笔记正文</span>
@@ -464,24 +511,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
         </el-form-item>
 
         <el-form-item label="正文">
-          <div v-if="activeDraft.body_blocks?.length" class="block-preview">
-            <template v-for="(block, index) in activeDraft.body_blocks" :key="index">
-              <pre v-if="block.type === 'text'" class="text-block">{{ block.text }}</pre>
-              <figure v-else-if="block.asset_kind === 'image'" class="asset-block">
-                <img v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" :alt="block.asset?.name || '图片素材'" />
-                <figcaption>{{ block.asset?.name || "图片素材" }}</figcaption>
-              </figure>
-              <figure v-else-if="block.asset_kind === 'video'" class="asset-block">
-                <video v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
-                <figcaption>{{ block.asset?.name || "视频素材" }}</figcaption>
-              </figure>
-              <div v-else-if="block.asset_kind === 'audio'" class="audio-block">
-                <span>{{ block.asset?.name || "音频素材" }}</span>
-                <audio v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
-              </div>
-            </template>
-          </div>
-          <div v-else class="body-preview">
+          <div class="body-preview">
             <pre>{{ activeDraft.body }}</pre>
           </div>
         </el-form-item>
@@ -782,13 +812,11 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   word-break: break-word;
 }
 
-.zhihu-inline-images {
-  display: grid;
-  gap: 12px;
+.zhihu-inline-figure {
   margin: 16px 0 4px;
 }
 
-.zhihu-inline-images img {
+.zhihu-inline-figure img {
   display: block;
   width: min(100%, 520px);
   max-height: 260px;
@@ -796,6 +824,12 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   background: #f7f9fb;
   border: 1px solid #e2eaf3;
   border-radius: 8px;
+}
+
+.zhihu-inline-figure figcaption {
+  margin-top: 6px;
+  color: #607086;
+  font-size: 12px;
 }
 
 .zhihu-action-row,
@@ -860,7 +894,8 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 .xhs-cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #f2f6fa;
 }
 
 .xhs-cover-empty {
@@ -944,75 +979,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   line-height: 1.65;
 }
 
-.block-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: 360px;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid #dfe5ee;
-  border-radius: 6px;
-  background: #f7f9fb;
-}
-
-.text-block {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #253247;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.asset-block {
-  margin: 0;
-  padding: 10px;
-  background: #ffffff;
-  border: 1px solid #e2eaf3;
-  border-radius: 8px;
-}
-
-.asset-block img,
-.asset-block video {
-  display: block;
-  width: 100%;
-  max-height: 260px;
-  object-fit: contain;
-  background: #eef3f8;
-  border-radius: 6px;
-}
-
-.asset-block figcaption {
-  margin-top: 8px;
-  color: #607086;
-  font-size: 12px;
-}
-
-.audio-block {
-  display: grid;
-  grid-template-columns: minmax(120px, 220px) minmax(240px, 1fr);
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  background: #ffffff;
-  border: 1px solid #e2eaf3;
-  border-radius: 8px;
-}
-
-.audio-block span {
-  overflow: hidden;
-  color: #253247;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.audio-block audio {
-  width: 100%;
-}
-
 .tag-row {
   display: flex;
   flex-wrap: wrap;
@@ -1077,10 +1043,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 @media (max-width: 680px) {
   .preview-header {
     justify-content: flex-start;
-  }
-
-  .audio-block {
-    grid-template-columns: 1fr;
   }
 }
 </style>
