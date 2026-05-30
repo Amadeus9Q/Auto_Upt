@@ -2,7 +2,7 @@ param(
     [string[]]$Services = @("postgres", "redis"),
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8000,
-    [string]$PythonPath = "C:\Users\17325\.conda\envs\auto_upt\python.exe",
+    [string]$PythonPath = "C:\Users\19129\Desktop\Auto_UpT\Auto_Upt\.venv\Scripts\python.exe",
     [switch]$Reload,
     [switch]$Foreground,
     [switch]$Worker
