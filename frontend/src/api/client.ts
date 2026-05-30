@@ -198,13 +198,21 @@ export function createPreview(payload: ContentPayload): Promise<PreviewResponse>
   });
 }
 
-export function createPublishTask(previewId: string, platforms?: PlatformKey[], mode: PublishMode = "simulate"): Promise<PublishTaskResponse> {
+export function createPublishTask(
+  previewId: string,
+  platforms?: PlatformKey[],
+  mode: PublishMode = "simulate",
+  accountIds?: Partial<Record<PlatformKey, string>>,
+  platformOptions?: Partial<Record<PlatformKey, Record<string, unknown>>>
+): Promise<PublishTaskResponse> {
   return request<PublishTaskResponse>("/api/v1/publish-tasks", {
     method: "POST",
     body: JSON.stringify({
       preview_id: previewId,
       mode,
-      platforms
+      platforms,
+      account_ids: accountIds ?? {},
+      platform_options: platformOptions ?? {}
     })
   });
 }

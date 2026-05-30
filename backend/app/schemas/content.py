@@ -82,11 +82,23 @@ class PublishTaskCreateRequest(BaseModel):
     preview_id: str = Field(description="预览记录 ID。必须来自 POST /api/v1/previews 的返回值。")
     mode: PublishModeLiteral = Field(
         default="simulate",
-        description="发布模式。当前支持 simulate；draft 和 publish 用于第二阶段前端联调，后端返回模拟结果。",
+        description="发布模式。simulate=模拟；draft=创建草稿；publish=真实发布。",
     )
     platforms: list[PlatformLiteral] | None = Field(
         default=None,
         description="需要发布的平台列表。为空时使用该预览记录中已有的全部平台草稿。",
+    )
+    account_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description="按平台指定的已连接账号 ID。如 {\"wechat\": \"acc-xxx\"}。留空时自动查找该平台第一个已连接账号。",
+    )
+    asset_ids: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="按平台指定的素材 ID 列表。如 {\"wechat\": [\"ast-1\", \"ast-2\"]}。",
+    )
+    platform_options: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="按平台指定的额外发布选项。如 {\"wechat\": {\"author\": \"作者名\", \"direct_publish\": true}}。",
     )
 
 

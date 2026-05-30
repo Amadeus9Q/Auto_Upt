@@ -6,6 +6,7 @@ import { ArrowDown, ArrowRight, Check, Monitor, Operation, Right, User, VideoPla
 import {
   createPreview,
   createPublishTask,
+  getAccounts,
   type AssetPayload,
   type ContentBlockPayload,
   type PlatformKey,
@@ -310,8 +311,42 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
   errorMessage.value = "";
   activeTab.value = "task";
 
+  // ---- 真实发布时，自动获取已连接的账号 ----
+  let accountIds: Partial<Record<PlatformKey, string>> = {};
+  let platformOptions: Partial<Record<PlatformKey, Record<string, unknown>>> = {};
+
+  if (payload.mode === "draft" || payload.mode === "publish") {
+    try {
+      const accounts = await getAccounts();
+      for (const acc of accounts) {
+        if (acc.account_id && payload.platforms.includes(acc.platform)) {
+          accountIds[acc.platform] = acc.account_id;
+        }
+      }
+      // 传递发布表单中的 wechat 选项
+      if (payload.platforms.includes("wechat")) {
+        platformOptions.wechat = {
+          author: publishForms.value.wechat.author,
+          title: publishForms.value.wechat.title,
+          summary: publishForms.value.wechat.summary,
+          direct_publish: publishForms.value.wechat.directPublish
+        };
+      }
+      if (payload.platforms.includes("bilibili")) {
+        platformOptions.bilibili = {
+          title: publishForms.value.bilibili.title,
+          description: publishForms.value.bilibili.description,
+          tags: publishForms.value.bilibili.tags,
+          category: publishForms.value.bilibili.category
+        };
+      }
+    } catch {
+      // 获取账号失败不阻塞流程，后端会自动查找
+    }
+  }
+
   try {
-    task.value = await createPublishTask(preview.value.preview_id, payload.platforms, payload.mode);
+    task.value = await createPublishTask(preview.value.preview_id, payload.platforms, payload.mode, accountIds, platformOptions);
     ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "创建发布任务失败。";

@@ -341,11 +341,6 @@ class PublishService:
                 "Real publish is only supported for wechat and bilibili in phase two. "
                 f"Unsupported: {', '.join(unsupported)}."
             )
-        for platform in platforms:
-            if platform not in request.account_ids:
-                raise UnsupportedPublishModeError(
-                    f"account_ids.{platform} is required for real publish."
-                )
 
     @staticmethod
     def _enqueue_real_publish(task_id: str) -> bool:
@@ -365,29 +360,41 @@ class PublishService:
         task: PublishTaskRecord,
         platform: str,
     ) -> dict[str, Any]:
-        account_id = task.account_ids.get(platform)
-        if not account_id:
-            raise PlatformClientError(
-                f"Missing account_id for {platform}.",
-                platform_code="ACCOUNT_REQUIRED",
-            )
+        account_id = task.account_ids.get(platform) if task.account_ids else None
 
-        account = await self.session.get(ConnectedAccountRecord, account_id)
-        if account is None:
-            raise PlatformClientError(
-                f"Account {account_id} not found.",
-                platform_code="ACCOUNT_NOT_FOUND",
-                next_action="请重新连接账号并选择正确的 account_id。",
+        # ---- 自动查找该平台第一个已连接账号 ----
+        if not account_id:
+            result = await self.session.execute(
+                select(ConnectedAccountRecord)
+                .where(ConnectedAccountRecord.platform == platform)
+                .order_by(ConnectedAccountRecord.created_at.desc())
+                .limit(1)
             )
+            account = result.scalars().first()
+            if account is None:
+                raise PlatformClientError(
+                    f"No connected account found for {platform}. Please connect an account first.",
+                    platform_code="ACCOUNT_REQUIRED",
+                    next_action=f"请先在「账号管理」中连接 {platform} 账号。",
+                )
+            account_id = account.id
+        else:
+            account = await self.session.get(ConnectedAccountRecord, account_id)
+            if account is None:
+                raise PlatformClientError(
+                    f"Account {account_id} not found.",
+                    platform_code="ACCOUNT_NOT_FOUND",
+                    next_action="请重新连接账号并选择正确的 account_id。",
+                )
 
         account_service = AccountService(self.session)
         credentials = await self._resolve_credentials(account, account_service)
-        assets = await self._load_assets(task.asset_ids.get(platform, []))
+        assets = await self._load_assets(task.asset_ids.get(platform, []) if task.asset_ids else [])
         return {
             "account_id": account.id,
             "credentials": credentials,
             "assets": assets,
-            "options": task.platform_options.get(platform, {}),
+            "options": task.platform_options.get(platform, {}) if task.platform_options else {},
         }
 
     async def _load_assets(self, asset_ids: list[str]) -> list[LocalAsset]:

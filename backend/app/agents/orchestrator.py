@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from backend.app.adapters.base import PlatformAdapter
 from backend.app.adapters.registry import select_adapters
+from backend.app.agents.content_analyst import ContentAnalystAgent
+from backend.app.agents.platform_stylist import PlatformStylistAgent
 from backend.app.schemas.agent import (
     AgentRunRequest,
     AgentRunResponse,
@@ -16,65 +18,137 @@ from backend.app.services.preview_service import PreviewService
 
 
 class SimulatedAgentOrchestrator:
+    """模拟 Agent 编排器。
+
+    第一阶段的规则引擎编排，整合内容分析（章节划分、媒体识别）
+    和平台文案生成智能体。后续可替换为 LLM 驱动的 Agent。
+    """
+
     def __init__(self) -> None:
         self.preview_service = PreviewService()
+        self.content_analyst = ContentAnalystAgent()
+        self.platform_stylist = PlatformStylistAgent()
 
     def run_preview_workflow(self, request: AgentRunRequest) -> AgentRunResponse:
         created_at = datetime.now(UTC)
         run_id = str(uuid4())
         steps: list[AgentStep] = []
 
+        # ---- Step 1: 内容标准化 (PreviewService) ----
         content_ir = self.preview_service.normalize_content(request)
+
+        # ---- Step 2: 深度内容分析 (ContentAnalystAgent) ----
+        # 章节划分、子标题提取、媒体识别
+        analysis = self.content_analyst.analyze(
+            body=request.body,
+            title=request.title,
+            tags=content_ir.get("tags", []),
+            content_blocks=[b.model_dump() for b in request.content_blocks] if request.content_blocks else None,
+            assets=content_ir.get("assets", []),
+            content_type=request.content_type,
+        )
+        # 将分析结果注入 content_ir 以供后续步骤使用
+        content_ir["chapters"] = [ch.model_dump() for ch in analysis.chapters]
+        content_ir["flat_chapters"] = [ch.model_dump() for ch in analysis.flat_chapters]
+        content_ir["media_by_kind"] = {
+            k: [m.model_dump() for m in v]
+            for k, v in analysis.media_by_kind.items()
+        }
+        content_ir["subtitle"] = analysis.subtitle
+
         steps.append(
             self._step(
                 name="内容分析",
                 role="Content Analyst",
                 input_summary="原始标题、正文、标签和素材。",
                 output={
-                    "title": content_ir["title"],
-                    "summary": content_ir["summary"],
-                    "content_type": content_ir["content_type"],
-                    "word_count": content_ir["word_count"],
-                    "tags": content_ir["tags"],
-                    "asset_count": len(content_ir["assets"]),
+                    "title": analysis.title,
+                    "subtitle": analysis.subtitle,
+                    "summary": analysis.summary,
+                    "content_type": analysis.content_type,
+                    "word_count": analysis.total_word_count,
+                    "chapter_count": len(analysis.chapters),
+                    "chapters": [
+                        {
+                            "title": ch.title,
+                            "level": ch.level,
+                            "word_count": ch.word_count,
+                            "media_count": len(ch.media_items),
+                            "sub_count": len(ch.sub_chapters),
+                        }
+                        for ch in analysis.chapters
+                    ],
+                    "media_summary": {
+                        "total": len(analysis.all_media),
+                        "images": len(analysis.media_by_kind.get("image", [])),
+                        "videos": len(analysis.media_by_kind.get("video", [])),
+                        "audios": len(analysis.media_by_kind.get("audio", [])),
+                    },
+                    "tags": analysis.tags,
                 },
             )
         )
 
+        # ---- Step 3: 平台适配器选择 ----
         adapters = select_adapters(request.platforms)
         platforms = list(adapters.keys())
+
+        # ---- Step 4: 平台风格规划 (PlatformStylistAgent) ----
+        # 生成结构化的平台文案
+        platform_copies = self.platform_stylist.generate(
+            analysis=analysis,
+            platforms=platforms,
+        )
+
         steps.append(
             self._step(
                 name="平台风格规划",
                 role="Platform Stylist",
-                input_summary="统一内容 IR 和目标平台列表。",
+                input_summary="内容分析结果（章节树、媒体列表）和目标平台列表。",
                 output={
-                    platform: self._platform_style(adapter)
-                    for platform, adapter in adapters.items()
+                    platform: {
+                        "display_name": copy.display_name,
+                        "title": copy.title,
+                        "section_count": len(copy.sections),
+                        "tag_count": len(copy.tags),
+                        "media_recommendations": len(copy.media_recommendations),
+                    }
+                    for platform, copy in platform_copies.items()
                 },
             )
         )
 
-        drafts = {
-            platform: adapter.render(content_ir)
-            for platform, adapter in adapters.items()
-        }
+        # ---- Step 5: Adapter 渲染 (保持兼容) ----
+        drafts: dict[str, dict[str, Any]] = {}
+        for platform, adapter in adapters.items():
+            draft = adapter.render(content_ir)
+            # 注入 PlatformStylist 生成的平台文案到 draft 中
+            if platform in platform_copies:
+                pc = platform_copies[platform]
+                draft["structured_sections"] = pc.sections
+                draft["platform_copy"] = pc.plain_body
+                draft["media_recommendations"] = pc.media_recommendations
+                draft["style_notes"] = pc.style_notes
+            drafts[platform] = draft
+
         steps.append(
             self._step(
                 name="平台草稿渲染",
                 role="Platform Stylist",
-                input_summary="统一内容 IR、平台 profile 和平台风格规划。",
+                input_summary="统一内容 IR、平台 profile、平台风格规划和结构化文案。",
                 output={
                     platform: {
                         "title": draft.get("title"),
                         "body_length": len(draft.get("body", "")),
                         "tag_count": len(draft.get("tags", [])),
+                        "has_structured_sections": "structured_sections" in draft,
                     }
                     for platform, draft in drafts.items()
                 },
             )
         )
 
+        # ---- Step 6: 格式校验 ----
         validation_report = {
             platform: adapters[platform].validate(draft)
             for platform, draft in drafts.items()
@@ -91,6 +165,7 @@ class SimulatedAgentOrchestrator:
             )
         )
 
+        # ---- Step 7: 合规检查 ----
         compliance_report = self._review_compliance(content_ir, validation_report)
         steps.append(
             self._step(
@@ -101,6 +176,7 @@ class SimulatedAgentOrchestrator:
             )
         )
 
+        # ---- Step 8: 模拟发布 ----
         simulation_results: dict[str, dict[str, Any]] = {}
         if request.include_simulation:
             simulation_results = {
@@ -133,6 +209,7 @@ class SimulatedAgentOrchestrator:
                 )
             )
 
+        # ---- Step 9: 恢复建议 ----
         recommendations = self._build_recommendations(
             validation_report=validation_report,
             compliance_report=compliance_report,

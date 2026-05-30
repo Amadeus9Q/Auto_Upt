@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.v1.endpoints import (
     accounts,
     agent_runs,
+    analysis,
     assets,
     content,
     previews,
@@ -69,6 +70,10 @@ app = FastAPI(
             "name": "账号管理",
             "description": "连接和管理公众号、B站真实发布账号。",
         },
+        {
+            "name": "内容分析",
+            "description": "深度内容分析：章节划分、媒体识别、多平台文案生成。",
+        },
     ],
 )
 
@@ -88,6 +93,7 @@ app.include_router(assets.router, prefix=settings.api_v1_prefix)
 app.include_router(publish_tasks.router, prefix=settings.api_v1_prefix)
 app.include_router(publications.router, prefix=settings.api_v1_prefix)
 app.include_router(accounts.router, prefix=settings.api_v1_prefix)
+app.include_router(analysis.router, prefix=settings.api_v1_prefix)
 
 
 @app.get(
