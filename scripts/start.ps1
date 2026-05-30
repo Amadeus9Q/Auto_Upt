@@ -5,7 +5,7 @@ param(
     [string]$PythonPath = "C:\Users\17325\.conda\envs\auto_upt\python.exe",
     [switch]$Reload,
     [switch]$Foreground,
-    [switch]$Worker
+    [switch]$NoWorker
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +32,6 @@ if ($Foreground) {
 
 & $StartBackend @BackendParams
 
-if ($Worker -and -not $Foreground) {
+if (-not $NoWorker -and -not $Foreground) {
     & $StartWorker -PythonPath $PythonPath
 }

@@ -54,7 +54,7 @@ class WechatAdapter(PlatformAdapter):
         )
 
         article = {
-            "title": draft.get("title", ""),
+            "title": options.get("title") or draft.get("title", ""),
             "author": options.get("author", ""),
             "digest": options.get("digest") or draft.get("summary", ""),
             "content": draft.get("body", ""),

@@ -56,9 +56,9 @@ class BilibiliAdapter(PlatformAdapter):
             cover_result = await client.upload_cover(cookies, cover_asset)
 
         payload = {
-            "title": draft.get("title", ""),
-            "description": draft.get("body", ""),
-            "tags": draft.get("tags", []),
+            "title": options.get("title") or draft.get("title", ""),
+            "description": options.get("description") or draft.get("body", ""),
+            "tags": options.get("tags") or draft.get("tags", []),
             "video_id": uploaded_video_id,
             "cover": cover_result,
             "tid": options.get("tid"),

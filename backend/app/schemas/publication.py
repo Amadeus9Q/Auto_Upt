@@ -27,3 +27,9 @@ class PublicationDeleteResponse(BaseModel):
     status: str = Field(description="删除后的内部状态。")
     message: str = Field(description="删除结果说明。")
     details: dict[str, Any] = Field(default_factory=dict, description="平台响应详情。")
+
+
+class PublicationPublishResponse(BaseModel):
+    publication: PublicationResponse = Field(description="已从草稿提交发布后的发布记录。")
+    message: str = Field(description="提交发布结果说明。")
+    details: dict[str, Any] = Field(default_factory=dict, description="平台响应详情。")
