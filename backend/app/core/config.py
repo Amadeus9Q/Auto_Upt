@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     openai_api_key: str = ""
-    openai_model: str = "gpt-5"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "deepseek-chat"
 
     browser_headless: bool = False
     screenshot_dir: str = "storage/screenshots"
