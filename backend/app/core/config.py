@@ -22,6 +22,28 @@ class Settings(BaseSettings):
 
     browser_headless: bool = False
     screenshot_dir: str = "storage/screenshots"
+    asset_storage_dir: str = "storage/assets"
+    public_base_url: str = "http://127.0.0.1:8000"
+
+    credential_encryption_key: str = ""
+
+    frontend_account_success_url: str = "http://127.0.0.1:5173/accounts?status=success"
+    frontend_account_error_url: str = "http://127.0.0.1:5173/accounts?status=error"
+
+    wechat_api_base_url: str = "https://api.weixin.qq.com"
+
+    bilibili_client_id: str = ""
+    bilibili_client_secret: str = ""
+    bilibili_redirect_uri: str = "http://127.0.0.1:8000/api/v1/accounts/bilibili/oauth/callback"
+    bilibili_authorize_url: str = "https://open.bilibili.com/oauth2/authorize"
+    bilibili_token_url: str = "https://open.bilibili.com/oauth2/access_token"
+    bilibili_refresh_token_url: str = "https://open.bilibili.com/oauth2/refresh_token"
+    bilibili_api_base_url: str = "https://open.bilibili.com/api"
+    bilibili_video_upload_path: str = "/video/upload"
+    bilibili_cover_upload_path: str = "/video/cover"
+    bilibili_video_submit_path: str = "/video/submit"
+    bilibili_video_status_path: str = "/video/status"
+    bilibili_video_delete_path: str = "/video/delete"
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [

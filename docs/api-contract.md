@@ -1,6 +1,6 @@
 # API 契约
 
-当前后端已实现第一阶段最小闭环：内容标准化、多平台草稿适配、预览落库和模拟发布任务。
+当前后端已实现第一阶段最小闭环，并在第二阶段新增公众号和 B站真实发布接口。
 
 ## 内容
 
@@ -42,6 +42,7 @@
 
 - `POST /api/v1/publish-tasks`：基于预览创建发布任务，支持 `simulate`、`draft`、`publish` 三种模式。
 - `GET /api/v1/publish-tasks/{task_id}`：查询任务状态。
+- `POST /api/v1/publish-tasks/{task_id}/refresh`：刷新真实平台发布状态。
 
 当前第二阶段前端联调中，`mode=draft` 和 `mode=publish` 仅允许 `wechat`、`bilibili`，后端返回模拟任务结果，不调用真实平台接口。`zhihu` 和 `xiaohongshu` 在真实发布模式下返回不支持状态，后续浏览器辅助发布阶段再接入。
 

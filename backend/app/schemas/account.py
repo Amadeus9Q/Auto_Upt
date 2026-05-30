@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -9,6 +10,7 @@ AccountStatusLiteral = Literal["connected", "disconnected", "expired", "error"]
 
 
 class AccountPlatformResponse(BaseModel):
+    account_id: str | None = Field(default=None, description="已连接账号 ID。未连接时为空。")
     platform: PlatformLiteral = Field(description="平台标识。")
     display_name: str = Field(description="账号或平台展示名称。")
     status: AccountStatusLiteral = Field(description="账号连接状态。")

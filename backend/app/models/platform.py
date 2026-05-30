@@ -47,6 +47,9 @@ class PublishTaskRecord(Base):
         default=PublishTaskStatus.PENDING,
     )
     platforms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    account_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    asset_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    platform_options: Mapped[dict] = mapped_column(JSON, default=dict)
     results: Mapped[dict] = mapped_column(JSON, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
