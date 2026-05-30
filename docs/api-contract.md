@@ -37,6 +37,40 @@
 
 当前 MVP 只支持 `mode=simulate`。`draft` 和 `publish` 会返回 400，真实发布在后续阶段接入。
 
+## Agent 编排
+
+- `POST /api/v1/agent-runs/preview`：执行第一阶段模拟 Agent 编排，不落库。
+
+请求字段：
+
+- `title?`
+- `body`
+- `content_type`：`article`、`video` 或 `mixed`，默认 `article`
+- `tags[]`
+- `assets[]`
+- `platforms[]?`：为空时覆盖全部已支持平台
+- `include_simulation`：是否执行模拟发布步骤，默认 `true`
+
+响应包含：
+
+- `run_id`
+- `status`
+- `mode`
+- `platforms`
+- `steps`
+- `content_ir`
+- `drafts`
+- `validation_report`
+- `compliance_report`
+- `simulation_results`
+- `recommendations`
+- `created_at`
+
+当前 Agent 编排是规则模拟流程，不调用真实大模型、不调用真实平台、不写入数据库。
+
 ## 账号
 
-账号接口暂未实现。真实账号授权、校验和发布确认在后续阶段接入。
+- `GET /api/v1/accounts`：查询全部平台账号占位状态。
+- `GET /api/v1/accounts/{platform}`：查询单个平台账号占位状态。
+
+账号接口当前只为前端账号页面提供占位数据，统一返回 `not_configured` 状态。真实账号授权、校验和发布确认在后续阶段接入。

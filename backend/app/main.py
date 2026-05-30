@@ -4,7 +4,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.v1.endpoints import content, previews, publish_tasks
+from backend.app.api.v1.endpoints import accounts, agent_runs, content, previews, publish_tasks
 from backend.app.core.config import get_settings
 from backend.app.db.session import close_db, init_db
 from backend.app.schemas.system import HealthResponse
@@ -42,8 +42,16 @@ app = FastAPI(
             "description": "生成并查询多平台预览记录，数据会写入 PostgreSQL。",
         },
         {
+            "name": "Agent 编排",
+            "description": "第一阶段模拟多 Agent 内容分析、平台适配、校验和模拟发布流程。",
+        },
+        {
             "name": "发布任务",
             "description": "基于预览记录创建和查询模拟发布任务。",
+        },
+        {
+            "name": "账号管理",
+            "description": "第一阶段账号页面使用的后端占位接口，不接入真实授权。",
         },
     ],
 )
@@ -58,7 +66,9 @@ app.add_middleware(
 
 app.include_router(content.router, prefix=settings.api_v1_prefix)
 app.include_router(previews.router, prefix=settings.api_v1_prefix)
+app.include_router(agent_runs.router, prefix=settings.api_v1_prefix)
 app.include_router(publish_tasks.router, prefix=settings.api_v1_prefix)
+app.include_router(accounts.router, prefix=settings.api_v1_prefix)
 
 
 @app.get(
