@@ -610,7 +610,7 @@ function dropClass(tab: MediaTab, index: number) {
 
 .media-card-audio {
   display: grid;
-  grid-template-columns: minmax(130px, 0.7fr) minmax(300px, 2fr) auto;
+  grid-template-columns: minmax(220px, 2fr) minmax(160px, 1fr) auto;
   align-items: center;
   gap: 12px;
   width: auto;
@@ -681,6 +681,10 @@ function dropClass(tab: MediaTab, index: number) {
 
 .media-card-audio .media-info {
   padding: 0;
+}
+
+.media-card-audio .media-info strong {
+  font-size: 12px;
 }
 
 .media-card-audio .media-actions {
