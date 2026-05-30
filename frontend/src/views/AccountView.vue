@@ -8,7 +8,6 @@ import {
   Connection,
   Document,
   Key,
-  Link,
   Notebook,
   Refresh,
   VideoCamera
@@ -18,15 +17,38 @@ import {
   connectWechatAccount,
   deleteAccount,
   getAccounts,
-  startBilibiliOAuth,
+  getBilibiliCaptcha,
+  loginBilibili,
   testAccountConnection,
   type AccountConnection,
+  type BilibiliLoginPayload,
   type PlatformKey,
   type WechatConnectPayload
 } from "@/api/client";
 
 type AccountStatus = "connected" | "disconnected" | "placeholder" | "error";
 type SupportedPlatform = PlatformKey;
+
+interface GeetestValidation {
+  geetest_challenge: string;
+  geetest_validate: string;
+  geetest_seccode: string;
+}
+
+interface GeetestInstance {
+  appendTo: (element: HTMLElement | string) => void;
+  getValidate: () => GeetestValidation | false;
+  onReady: (callback: () => void) => void;
+  onSuccess: (callback: () => void) => void;
+  onError: (callback: () => void) => void;
+  reset: () => void;
+}
+
+declare global {
+  interface Window {
+    initGeetest?: (config: Record<string, unknown>, callback: (captcha: GeetestInstance) => void) => void;
+  }
+}
 
 interface PlatformConfig {
   key: SupportedPlatform;
@@ -37,13 +59,18 @@ interface PlatformConfig {
   note: string;
   username: string;
   disabled?: boolean;
-  callbackResult?: string;
+  loginResult?: string;
   account?: AccountConnection;
 }
 
 const wechatFormRef = ref<FormInstance>();
+const bilibiliFormRef = ref<FormInstance>();
+const bilibiliCaptchaRef = ref<HTMLElement>();
+const bilibiliCaptchaInstance = ref<GeetestInstance | null>(null);
 const loadingAction = ref<string>("");
 const loadError = ref("");
+
+let geetestScriptPromise: Promise<void> | null = null;
 
 const wechatForm = reactive<WechatConnectPayload>({
   app_id: "",
@@ -51,9 +78,35 @@ const wechatForm = reactive<WechatConnectPayload>({
   display_name: "公众号"
 });
 
+const bilibiliForm = reactive<BilibiliLoginPayload>({
+  username: "",
+  password: "",
+  token: "",
+  challenge: "",
+  validate: "",
+  seccode: "",
+  display_name: "B站账号"
+});
+
+const bilibiliCaptchaState = reactive({
+  ready: false,
+  verified: false,
+  message: "尚未获取验证码"
+});
+
+const bilibiliLoginState = reactive({
+  message: "",
+  type: "info" as "info" | "success" | "warning" | "danger"
+});
+
 const wechatRules: FormRules<WechatConnectPayload> = {
   app_id: [{ required: true, message: "请输入 AppID", trigger: "blur" }],
   app_secret: [{ required: true, message: "请输入 AppSecret", trigger: "blur" }]
+};
+
+const bilibiliRules: FormRules<BilibiliLoginPayload> = {
+  username: [{ required: true, message: "请输入 B站账号", trigger: "blur" }],
+  password: [{ required: true, message: "请输入 B站密码", trigger: "blur" }]
 };
 
 const platforms = reactive<PlatformConfig[]>([
@@ -69,11 +122,11 @@ const platforms = reactive<PlatformConfig[]>([
   {
     key: "bilibili",
     label: "B站",
-    authType: "OAuth",
+    authType: "用户名密码",
     icon: VideoCamera,
     status: "disconnected",
-    note: "等待授权",
-    username: "未授权"
+    note: "等待登录",
+    username: "未登录"
   },
   {
     key: "zhihu",
@@ -103,6 +156,18 @@ function platformByKey(platform: SupportedPlatform) {
   return platforms.find((item) => item.key === platform);
 }
 
+function setWechatFormRef(instance: unknown) {
+  if (instance) {
+    wechatFormRef.value = instance as FormInstance;
+  }
+}
+
+function setBilibiliFormRef(instance: unknown) {
+  if (instance) {
+    bilibiliFormRef.value = instance as FormInstance;
+  }
+}
+
 function statusMeta(status: AccountStatus) {
   const meta = {
     connected: { label: "已连接", type: "success" as const, icon: CircleCheck },
@@ -123,17 +188,125 @@ function formatExpireTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
 }
 
+function toLocalStatus(account: AccountConnection): AccountStatus {
+  if (account.status === "connected") {
+    return "connected";
+  }
+  if (account.status === "error" || account.status === "expired") {
+    return "error";
+  }
+  return "disconnected";
+}
+
 function applyAccounts(accounts: AccountConnection[]) {
   for (const account of accounts) {
     const platform = platformByKey(account.platform);
-    if (!platform) {
+    if (!platform || platform.disabled) {
       continue;
     }
 
     platform.account = account;
-    platform.status = account.status === "connected" ? "connected" : "disconnected";
-    platform.note = account.display_name || (account.status === "connected" ? "已完成配置" : "尚未连接");
-    platform.username = account.display_name || platform.username;
+    platform.status = toLocalStatus(account);
+    platform.note = account.message || (account.status === "connected" ? "已完成配置" : "尚未连接");
+    platform.username = account.status === "connected" ? account.display_name : platform.key === "bilibili" ? "未登录" : "未配置";
+  }
+}
+
+function resetBilibiliCaptcha() {
+  bilibiliCaptchaInstance.value = null;
+  bilibiliCaptchaState.ready = false;
+  bilibiliCaptchaState.verified = false;
+  bilibiliCaptchaState.message = "尚未获取验证码";
+  bilibiliForm.token = "";
+  bilibiliForm.challenge = "";
+  bilibiliForm.validate = "";
+  bilibiliForm.seccode = "";
+  if (bilibiliCaptchaRef.value) {
+    bilibiliCaptchaRef.value.innerHTML = "";
+  }
+}
+
+function loadGeetestSdk(): Promise<void> {
+  if (window.initGeetest) {
+    return Promise.resolve();
+  }
+
+  if (geetestScriptPromise) {
+    return geetestScriptPromise;
+  }
+
+  geetestScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://static.geetest.com/static/tools/gt.js";
+    script.async = true;
+    script.onload = () => {
+      if (window.initGeetest) {
+        resolve();
+      } else {
+        reject(new Error("极验组件加载失败"));
+      }
+    };
+    script.onerror = () => reject(new Error("极验组件加载失败"));
+    document.head.appendChild(script);
+  });
+
+  return geetestScriptPromise;
+}
+
+async function initializeBilibiliCaptcha() {
+  loadingAction.value = "bilibili-captcha";
+  resetBilibiliCaptcha();
+
+  try {
+    const captcha = await getBilibiliCaptcha();
+    bilibiliForm.token = captcha.token;
+    bilibiliForm.challenge = captcha.challenge;
+    await loadGeetestSdk();
+
+    if (!window.initGeetest || !bilibiliCaptchaRef.value) {
+      throw new Error("极验组件暂不可用");
+    }
+
+    window.initGeetest(
+      {
+        gt: captcha.gt,
+        challenge: captcha.challenge,
+        offline: false,
+        new_captcha: true,
+        product: "float",
+        width: "100%"
+      },
+      (captchaInstance) => {
+        bilibiliCaptchaInstance.value = captchaInstance;
+        captchaInstance.appendTo(bilibiliCaptchaRef.value as HTMLElement);
+        captchaInstance.onReady(() => {
+          bilibiliCaptchaState.ready = true;
+          bilibiliCaptchaState.message = "请完成验证码";
+        });
+        captchaInstance.onSuccess(() => {
+          const result = captchaInstance.getValidate();
+          if (!result) {
+            bilibiliCaptchaState.verified = false;
+            bilibiliCaptchaState.message = "验证码结果为空";
+            return;
+          }
+          bilibiliForm.challenge = result.geetest_challenge;
+          bilibiliForm.validate = result.geetest_validate;
+          bilibiliForm.seccode = result.geetest_seccode;
+          bilibiliCaptchaState.verified = true;
+          bilibiliCaptchaState.message = "验证码已通过";
+        });
+        captchaInstance.onError(() => {
+          bilibiliCaptchaState.verified = false;
+          bilibiliCaptchaState.message = "验证码加载异常";
+        });
+      }
+    );
+  } catch (error) {
+    bilibiliCaptchaState.message = error instanceof Error ? error.message : "验证码获取失败";
+    ElMessage.error(bilibiliCaptchaState.message);
+  } finally {
+    loadingAction.value = "";
   }
 }
 
@@ -158,7 +331,12 @@ async function refreshAccounts(showToast = false) {
 }
 
 async function connectWechat() {
-  const valid = await wechatFormRef.value?.validate().catch(() => false);
+  if (!wechatFormRef.value) {
+    ElMessage.error("公众号表单尚未初始化，请重新打开配置面板");
+    return;
+  }
+
+  const valid = await wechatFormRef.value.validate().catch(() => false);
   if (!valid) {
     return;
   }
@@ -181,31 +359,64 @@ async function connectWechat() {
   }
 }
 
-async function authorizeBilibili() {
-  loadingAction.value = "bilibili-oauth";
+async function connectBilibili() {
+  bilibiliLoginState.message = "正在校验登录表单...";
+  bilibiliLoginState.type = "info";
+
+  if (!bilibiliFormRef.value) {
+    bilibiliLoginState.message = "B站登录表单尚未初始化，请重新打开登录面板";
+    bilibiliLoginState.type = "danger";
+    ElMessage.error(bilibiliLoginState.message);
+    return;
+  }
+
+  const valid = await bilibiliFormRef.value.validate().catch(() => false);
+  if (!valid) {
+    bilibiliLoginState.message = "请先填写 B站账号和密码";
+    bilibiliLoginState.type = "warning";
+    return;
+  }
+
+  if (!bilibiliCaptchaState.verified) {
+    bilibiliLoginState.message = "请先获取并完成 B站验证码";
+    bilibiliLoginState.type = "warning";
+    ElMessage.warning(bilibiliLoginState.message);
+    return;
+  }
+
+  loadingAction.value = "bilibili-login";
+  bilibiliLoginState.message = "正在提交 B站登录...";
+  bilibiliLoginState.type = "info";
 
   try {
-    const result = await startBilibiliOAuth();
+    const result = await loginBilibili({
+      ...bilibiliForm,
+      display_name: bilibiliForm.display_name?.trim() || undefined
+    });
     const platform = platformByKey("bilibili");
+    applyAccounts([result.account]);
     if (platform) {
-      platform.callbackResult = result.callback_message ?? "已获取授权地址，等待回调结果";
-      platform.note = "授权流程已启动";
+      platform.loginResult = result.message;
+      platform.note = result.message;
     }
-
-    if (result.authorization_url) {
-      window.location.assign(result.authorization_url);
-      return;
-    }
-
-    ElMessage.success("B站授权流程已启动");
+    bilibiliLoginState.message = result.message;
+    bilibiliLoginState.type = "success";
+    bilibiliForm.password = "";
+    resetBilibiliCaptcha();
+    ElMessage.success(result.message);
   } catch (error) {
+    const message = error instanceof Error ? error.message : "B站登录失败";
     const platform = platformByKey("bilibili");
     if (platform) {
       platform.status = "error";
-      platform.callbackResult = error instanceof Error ? error.message : "授权启动失败";
-      platform.note = "授权接口暂不可用";
+      platform.loginResult = message;
+      platform.note = "B站登录失败";
     }
-    ElMessage.error("B站授权启动失败");
+    bilibiliLoginState.message = message;
+    bilibiliLoginState.type = "danger";
+    resetBilibiliCaptcha();
+    bilibiliCaptchaState.message = "登录失败，请重新获取验证码";
+    ElMessage.error(message);
   } finally {
     loadingAction.value = "";
   }
@@ -216,6 +427,7 @@ async function testConnection(platformKey: SupportedPlatform) {
 
   try {
     const result = await testAccountConnection(platformKey);
+    applyAccounts([result.account]);
     const platform = platformByKey(platformKey);
     if (platform) {
       platform.status = result.ok ? "connected" : "error";
@@ -235,18 +447,22 @@ async function testConnection(platformKey: SupportedPlatform) {
 }
 
 async function disconnect(platformKey: SupportedPlatform) {
+  const platform = platformByKey(platformKey);
+  const accountId = platform?.account?.account_id;
+  if (!accountId) {
+    ElMessage.warning("当前平台尚未连接账号");
+    return;
+  }
+
   loadingAction.value = `${platformKey}-disconnect`;
 
   try {
-    await deleteAccount(platformKey);
-    const platform = platformByKey(platformKey);
-    if (platform) {
-      platform.account = undefined;
-      platform.status = "disconnected";
-      platform.note = platformKey === "bilibili" ? "等待授权" : "尚未连接";
-      platform.username = platformKey === "bilibili" ? "未授权" : "未配置";
-      platform.callbackResult = "";
-    }
+    await deleteAccount(accountId);
+    platform.account = undefined;
+    platform.status = "disconnected";
+    platform.note = platformKey === "bilibili" ? "等待登录" : "尚未连接";
+    platform.username = platformKey === "bilibili" ? "未登录" : "未配置";
+    platform.loginResult = "";
     ElMessage.success("已断开连接");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "断开连接失败");
@@ -319,7 +535,7 @@ void refreshAccounts();
               <el-button :icon="Connection" type="primary">配置</el-button>
             </template>
 
-            <el-form ref="wechatFormRef" class="account-form" :model="wechatForm" :rules="wechatRules" label-position="top">
+            <el-form :ref="setWechatFormRef" class="account-form" :model="wechatForm" :rules="wechatRules" label-position="top">
               <el-form-item label="账号显示名" prop="display_name">
                 <el-input v-model="wechatForm.display_name" placeholder="例如：品牌服务号" />
               </el-form-item>
@@ -348,26 +564,67 @@ void refreshAccounts();
             </el-form>
           </el-popover>
 
-          <template v-if="platform.key === 'bilibili'">
-            <el-button
-              type="primary"
-              :icon="Link"
-              :loading="loadingAction === 'bilibili-oauth'"
-              :disabled="isBusy && loadingAction !== 'bilibili-oauth'"
-              @click="authorizeBilibili"
-            >
-              开始授权
-            </el-button>
-            <el-popover placement="bottom-end" :width="320" trigger="click">
-              <template #reference>
-                <el-button>回调结果</el-button>
-              </template>
-              <div class="callback-result">
-                <span>授权回调结果</span>
-                <p>{{ platform.callbackResult || platform.account?.display_name || "尚未收到回调结果" }}</p>
+          <el-popover v-if="platform.key === 'bilibili'" placement="bottom-end" :width="420" trigger="click">
+            <template #reference>
+              <el-button
+                type="primary"
+                :icon="Key"
+                :loading="loadingAction === 'bilibili-login'"
+                :disabled="isBusy && loadingAction !== 'bilibili-login'"
+              >
+                登录
+              </el-button>
+            </template>
+
+            <el-form :ref="setBilibiliFormRef" class="account-form" :model="bilibiliForm" :rules="bilibiliRules" label-position="top">
+              <el-form-item label="账号显示名" prop="display_name">
+                <el-input v-model="bilibiliForm.display_name" placeholder="例如：运营号" />
+              </el-form-item>
+              <el-form-item label="B站账号" prop="username">
+                <el-input v-model="bilibiliForm.username" autocomplete="username" placeholder="手机号或邮箱">
+                  <template #prefix>
+                    <el-icon><Key /></el-icon>
+                  </template>
+                </el-input>
+              </el-form-item>
+              <el-form-item label="B站密码" prop="password">
+                <el-input v-model="bilibiliForm.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码">
+                  <template #prefix>
+                    <el-icon><Key /></el-icon>
+                  </template>
+                </el-input>
+              </el-form-item>
+              <el-form-item label="极验验证码">
+                <div class="captcha-panel">
+                  <div ref="bilibiliCaptchaRef" class="captcha-box"></div>
+                  <div class="captcha-actions">
+                    <el-button
+                      size="small"
+                      :loading="loadingAction === 'bilibili-captcha'"
+                      :disabled="isBusy && loadingAction !== 'bilibili-captcha'"
+                      @click="initializeBilibiliCaptcha"
+                    >
+                      {{ bilibiliCaptchaState.ready ? "刷新验证码" : "获取验证码" }}
+                    </el-button>
+                    <span :class="['captcha-status', { verified: bilibiliCaptchaState.verified }]">
+                      {{ bilibiliCaptchaState.message }}
+                    </span>
+                  </div>
+                </div>
+              </el-form-item>
+              <div v-if="bilibiliLoginState.message || platform.loginResult" :class="['login-result', bilibiliLoginState.type]">
+                {{ bilibiliLoginState.message || platform.loginResult }}
               </div>
-            </el-popover>
-          </template>
+              <el-button
+                type="primary"
+                :loading="loadingAction === 'bilibili-login'"
+                :disabled="isBusy && loadingAction !== 'bilibili-login'"
+                @click="connectBilibili"
+              >
+                保存登录
+              </el-button>
+            </el-form>
+          </el-popover>
 
           <el-tag v-if="platform.disabled" type="info">第三阶段浏览器辅助发布接入</el-tag>
 
@@ -507,21 +764,49 @@ void refreshAccounts();
   border-radius: 8px;
 }
 
-.callback-result {
+.captcha-panel,
+.captcha-box {
+  width: 100%;
   min-width: 0;
 }
 
-.callback-result span {
-  color: #718096;
-  font-size: 12px;
+.captcha-box {
+  min-height: 42px;
 }
 
-.callback-result p {
-  margin: 5px 0 0;
-  color: #172033;
-  font-size: 13px;
+.captcha-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.captcha-status,
+.login-result {
+  color: #607086;
+  font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
+}
+
+.captcha-status.verified {
+  color: #2f8f4e;
+}
+
+.login-result {
+  margin-bottom: 10px;
+}
+
+.login-result.success {
+  color: #2f8f4e;
+}
+
+.login-result.warning {
+  color: #b7791f;
+}
+
+.login-result.danger {
+  color: #c2413a;
 }
 
 .actions-cell {

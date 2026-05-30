@@ -2,7 +2,7 @@ export type PlatformKey = "wechat" | "zhihu" | "xiaohongshu" | "bilibili";
 export type ContentType = "article" | "video" | "mixed";
 export type PublishMode = "simulate" | "draft" | "publish";
 export type PublishStatus = "pending" | "running" | "succeeded" | "failed";
-export type AccountStatus = "connected" | "disconnected" | "expired" | "error";
+export type AccountStatus = "not_configured" | "connected" | "expired" | "error";
 
 export interface ContentPayload {
   title?: string;
@@ -110,12 +110,21 @@ export interface PublishResult {
 }
 
 export interface AccountConnection {
+  account_id: string | null;
   platform: PlatformKey;
   display_name: string;
   status: AccountStatus;
   auth_type: string;
+  real_publish_supported: boolean;
+  required_for_real_publish: boolean;
+  capabilities: Record<string, unknown>;
+  external_user_id?: string | null;
   token_expires_at?: string | null;
-  updated_at?: string | null;
+  message: string;
+}
+
+export interface AccountListResponse {
+  accounts: AccountConnection[];
 }
 
 export interface WechatConnectPayload {
@@ -124,15 +133,32 @@ export interface WechatConnectPayload {
   display_name?: string;
 }
 
-export interface OAuthStartResponse {
-  authorization_url?: string;
-  callback_message?: string;
+export interface BilibiliCaptchaResponse {
+  gt: string;
+  challenge: string;
+  token: string;
+}
+
+export interface BilibiliLoginPayload {
+  username: string;
+  password: string;
+  token: string;
+  challenge: string;
+  validate: string;
+  seccode: string;
+  display_name?: string;
+}
+
+export interface BilibiliLoginResponse {
+  account: AccountConnection;
+  message: string;
 }
 
 export interface AccountTestResponse {
-  platform: PlatformKey;
+  account: AccountConnection;
   ok: boolean;
   message: string;
+  details: Record<string, unknown>;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -148,7 +174,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Request failed with ${response.status}`);
+    let message = detail || `Request failed with ${response.status}`;
+    try {
+      const payload = JSON.parse(detail) as { detail?: string | { msg?: string }[] };
+      if (typeof payload.detail === "string") {
+        message = payload.detail;
+      } else if (Array.isArray(payload.detail) && payload.detail[0]?.msg) {
+        message = payload.detail[0].msg;
+      }
+    } catch {
+      // Keep the raw response body when it is not JSON.
+    }
+    throw new Error(message);
   }
 
   return response.json() as Promise<T>;
@@ -173,7 +210,7 @@ export function createPublishTask(previewId: string, platforms?: PlatformKey[], 
 }
 
 export function getAccounts(): Promise<AccountConnection[]> {
-  return request<AccountConnection[]>("/api/v1/accounts");
+  return request<AccountListResponse>("/api/v1/accounts").then((response) => response.accounts);
 }
 
 export function connectWechatAccount(payload: WechatConnectPayload): Promise<AccountConnection> {
@@ -183,8 +220,15 @@ export function connectWechatAccount(payload: WechatConnectPayload): Promise<Acc
   });
 }
 
-export function startBilibiliOAuth(): Promise<OAuthStartResponse> {
-  return request<OAuthStartResponse>("/api/v1/accounts/bilibili/oauth/start");
+export function getBilibiliCaptcha(): Promise<BilibiliCaptchaResponse> {
+  return request<BilibiliCaptchaResponse>("/api/v1/accounts/bilibili/login/captcha");
+}
+
+export function loginBilibili(payload: BilibiliLoginPayload): Promise<BilibiliLoginResponse> {
+  return request<BilibiliLoginResponse>("/api/v1/accounts/bilibili/login/password", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function testAccountConnection(platform: PlatformKey): Promise<AccountTestResponse> {
@@ -193,8 +237,8 @@ export function testAccountConnection(platform: PlatformKey): Promise<AccountTes
   });
 }
 
-export async function deleteAccount(platform: PlatformKey): Promise<void> {
-  await request<Record<string, never>>(`/api/v1/accounts/${platform}`, {
+export async function deleteAccount(accountId: string): Promise<AccountConnection> {
+  return request<AccountConnection>(`/api/v1/accounts/connections/${accountId}`, {
     method: "DELETE"
   });
 }
