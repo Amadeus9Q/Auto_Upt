@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
-import { Monitor, Operation, User, VideoPlay } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { Check, Monitor, Operation, User, VideoPlay } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -9,15 +9,21 @@ import {
   type AssetPayload,
   type PlatformKey,
   type PreviewResponse,
+  type PublishMode,
   type PublishTaskResponse
 } from "@/api/client";
 import AccountView from "@/views/AccountView.vue";
 import EditorView, { type EditorAssets, type LocalAsset } from "@/views/EditorView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
+import PublishConfirmView from "@/views/PublishConfirmView.vue";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
-import TaskView, { type TaskStep } from "@/views/TaskView.vue";
+import TaskView from "@/views/TaskView.vue";
 
-type WorkspaceTab = "preview" | "task" | "account";
+type WorkspaceTab = "preview" | "confirm" | "task" | "account";
+type TaskStep = {
+  name: string;
+  state: "wait" | "process" | "finish" | "error" | "success";
+};
 
 const platformLabels: Record<PlatformKey, string> = {
   wechat: "公众号",
@@ -28,13 +34,7 @@ const platformLabels: Record<PlatformKey, string> = {
 
 const activeTab = ref<WorkspaceTab>("preview");
 const title = ref("AI Agent 发布助手第二阶段说明");
-const content = ref(
-  [
-    "输入一篇内容后，系统会生成公众号、B站、知乎和小红书的模拟草稿。",
-    "",
-    "第二阶段前端开始准备素材与真实发布参数，真实发布提交仍会在后续确认流程中二次确认。"
-  ].join("\n")
-);
+const content = ref(["输入一篇内容后，系统会生成多平台草稿。", "", "从预览结果进入发布确认页后，可以选择平台和发布模式。"].join("\n"));
 const tags = ref("AI Agent, 内容运营, 自动化");
 const selectedPlatforms = ref<PlatformKey[]>(["wechat", "bilibili", "zhihu", "xiaohongshu"]);
 const editorAssets = ref<EditorAssets>({
@@ -103,23 +103,41 @@ const drafts = computed<PlatformDraft[]>(() => {
   });
 });
 
-const taskSteps = computed<TaskStep[]>(() => [
-  { name: "内容标准化", state: preview.value ? "finish" : "process" },
-  { name: "平台渲染", state: preview.value ? "finish" : "wait" },
-  { name: "格式校验", state: preview.value ? "finish" : "wait" },
-  {
-    name: "模拟发布",
-    state: taskLoading.value ? "process" : task.value?.status === "succeeded" ? "finish" : task.value?.status === "failed" ? "error" : "wait"
+const taskSteps = computed<TaskStep[]>(() => {
+  if (!task.value && taskLoading.value) {
+    return [
+      { name: "上传中", state: "process" },
+      { name: "审核中", state: "wait" },
+      { name: "已发布", state: "wait" }
+    ];
   }
-]);
+
+  if (!task.value) {
+    return [
+      { name: "上传中", state: "wait" },
+      { name: "审核中", state: "wait" },
+      { name: "已发布", state: "wait" }
+    ];
+  }
+
+  if (task.value.status === "failed") {
+    return [
+      { name: "上传中", state: "finish" },
+      { name: "审核中", state: "error" },
+      { name: "失败", state: "error" }
+    ];
+  }
+
+  return [
+    { name: "上传中", state: "finish" },
+    { name: task.value.mode === "simulate" ? "模拟审核" : "审核中", state: "finish" },
+    { name: task.value.mode === "draft" ? "草稿已创建" : task.value.mode === "publish" ? "已发布" : "模拟完成", state: "finish" }
+  ];
+});
 
 watch(title, (nextTitle) => {
-  if (!publishForms.value.bilibili.title || publishForms.value.bilibili.title === "AI Agent 发布助手第二阶段说明") {
-    publishForms.value.bilibili.title = nextTitle;
-  }
-  if (!publishForms.value.wechat.title || publishForms.value.wechat.title === "AI Agent 发布助手第二阶段说明") {
-    publishForms.value.wechat.title = nextTitle;
-  }
+  publishForms.value.bilibili.title = nextTitle;
+  publishForms.value.wechat.title = nextTitle;
 });
 
 watch(tags, (nextTags) => {
@@ -145,6 +163,31 @@ function collectAssetPayloads(): AssetPayload[] {
     ...editorAssets.value.videos.map((asset, index) => assetToPayload(asset, "video", index === 0 ? "bilibili_video" : "reference_video")),
     ...editorAssets.value.audios.map((asset) => assetToPayload(asset, "audio", "reference_audio"))
   ];
+}
+
+function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode: PublishMode, message: string): PublishTaskResponse {
+  return {
+    task_id: `local-failed-${Date.now()}`,
+    preview_id: previewId,
+    mode,
+    status: "failed",
+    platforms,
+    results: Object.fromEntries(
+      platforms.map((platform) => [
+        platform,
+        {
+          platform,
+          display_name: platformLabels[platform],
+          mode,
+          status: "failed",
+          message
+        }
+      ])
+    ),
+    error_message: message,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
 }
 
 async function generatePreview() {
@@ -176,25 +219,57 @@ async function generatePreview() {
   }
 }
 
-async function simulatePublish() {
+function enterPublishConfirm() {
+  if (!preview.value) {
+    ElMessage.warning("请先生成预览。");
+    return;
+  }
+  activeTab.value = "confirm";
+}
+
+async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode }) {
   if (!preview.value) {
     ElMessage.warning("请先生成预览。");
     return;
   }
 
+  if (payload.mode === "draft" || payload.mode === "publish") {
+    try {
+      await ElMessageBox.confirm(
+        payload.mode === "publish"
+          ? "确认后会调用真实平台接口提交发布。请确认账号、素材和平台规则已经检查无误。"
+          : "确认后会调用真实平台接口创建草稿。请确认账号和素材已经检查无误。",
+        "真实平台操作确认",
+        {
+          confirmButtonText: "确认调用",
+          cancelButtonText: "取消",
+          type: "warning"
+        }
+      );
+    } catch {
+      return;
+    }
+  }
+
   taskLoading.value = true;
   errorMessage.value = "";
+  activeTab.value = "task";
 
   try {
-    task.value = await createPublishTask(preview.value.preview_id, selectedPlatforms.value);
-    activeTab.value = "task";
-    ElMessage.success("模拟发布任务已创建。");
+    task.value = await createPublishTask(preview.value.preview_id, payload.platforms, payload.mode);
+    ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "创建模拟任务失败。";
-    ElMessage.error("创建模拟任务失败。");
+    const message = error instanceof Error ? error.message : "创建发布任务失败。";
+    task.value = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
+    errorMessage.value = message;
+    ElMessage.error("发布任务提交失败，已在任务看板展示原因。");
   } finally {
     taskLoading.value = false;
   }
+}
+
+async function simulatePublish() {
+  await submitPublish({ platforms: selectedPlatforms.value, mode: "simulate" });
 }
 
 function selectTab(key: string) {
@@ -218,9 +293,13 @@ function selectTab(key: string) {
           <el-icon><Monitor /></el-icon>
           <span>平台预览</span>
         </el-menu-item>
+        <el-menu-item index="confirm" :disabled="!preview">
+          <el-icon><Check /></el-icon>
+          <span>发布确认</span>
+        </el-menu-item>
         <el-menu-item index="task">
           <el-icon><Operation /></el-icon>
-          <span>模拟任务</span>
+          <span>任务看板</span>
         </el-menu-item>
         <el-menu-item index="account">
           <el-icon><User /></el-icon>
@@ -233,13 +312,27 @@ function selectTab(key: string) {
       <el-header class="topbar">
         <div>
           <p>第二阶段工作台</p>
-          <h1>准备素材、平台草稿和真实发布参数</h1>
+          <h1>预览、确认并提交发布任务</h1>
         </div>
         <el-tag effect="dark" type="success">Backend Connected</el-tag>
       </el-header>
 
       <el-main v-if="activeTab === 'account'" class="account-workspace">
         <AccountView />
+      </el-main>
+
+      <el-main v-else-if="activeTab === 'confirm'" class="confirm-workspace">
+        <PublishConfirmView
+          :selected-platforms="selectedPlatforms"
+          :loading="taskLoading"
+          :validation-report="validationReport"
+          @back="activeTab = 'preview'"
+          @submit="submitPublish"
+        />
+      </el-main>
+
+      <el-main v-else-if="activeTab === 'task'" class="task-workspace">
+        <TaskView :task="task" :loading="taskLoading" :error-message="errorMessage" />
       </el-main>
 
       <el-main v-else class="workspace">
@@ -265,6 +358,7 @@ function selectTab(key: string) {
               :error-message="errorMessage"
               :preview-id="preview?.preview_id ?? ''"
               :created-at="preview?.created_at ?? ''"
+              @confirm-publish="enterPublishConfirm"
             />
             <PublishFormView
               v-model:forms="publishForms"
@@ -273,7 +367,6 @@ function selectTab(key: string) {
               :assets="editorAssets"
             />
           </template>
-          <TaskView v-else :steps="taskSteps" :task="task" :loading="taskLoading" :error-message="errorMessage" />
         </section>
       </el-main>
     </el-container>
@@ -376,7 +469,9 @@ function selectTab(key: string) {
   padding: 24px 32px 32px;
 }
 
-.account-workspace {
+.account-workspace,
+.confirm-workspace,
+.task-workspace {
   padding: 24px 32px 32px;
 }
 
@@ -405,7 +500,9 @@ function selectTab(key: string) {
   }
 
   .workspace,
-  .account-workspace {
+  .account-workspace,
+  .confirm-workspace,
+  .task-workspace {
     grid-template-columns: 1fr;
     padding: 20px;
   }
