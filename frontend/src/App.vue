@@ -1,5 +1,5 @@
-<script setup lang="ts">
-import { computed, ref, watch } from "vue";
+﻿<script setup lang="ts">
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowDown, ArrowRight, Check, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
@@ -7,11 +7,16 @@ import {
   createPreview,
   createPublishTask,
   getAccounts,
+  listPublishTasks,
+  publishDraftPublication,
+  refreshPublishTask,
+  uploadAsset,
   type AssetPayload,
   type ContentBlockPayload,
   type PlatformKey,
   type PreviewResponse,
   type PublishMode,
+  type PublishTaskCreatePayload,
   type PublishTaskResponse
 } from "@/api/client";
 import AccountView from "@/views/AccountView.vue";
@@ -32,6 +37,13 @@ const platformLabels: Record<PlatformKey, string> = {
   bilibili: "B站",
   zhihu: "知乎",
   xiaohongshu: "小红书"
+};
+
+const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili"];
+const bilibiliTidByCategory: Record<string, number> = {
+  tech: 201,
+  knowledge: 124,
+  life: 21
 };
 
 const activeTab = ref<WorkspaceTab>("preview");
@@ -62,8 +74,11 @@ const publishForms = ref<PublishForms>({
 });
 const preview = ref<PreviewResponse | null>(null);
 const task = ref<PublishTaskResponse | null>(null);
+const tasks = ref<PublishTaskResponse[]>([]);
 const previewLoading = ref(false);
 const taskLoading = ref(false);
+const taskHistoryLoading = ref(false);
+const taskActionLoading = ref<string | null>(null);
 const errorMessage = ref("");
 const previewDialogVisible = ref(false);
 const publishFormExpanded = ref<string[]>([]);
@@ -114,34 +129,37 @@ const drafts = computed<PlatformDraft[]>(() => {
 });
 
 const taskSteps = computed<TaskStep[]>(() => {
+  const middleStep = task.value?.mode === "draft" ? "创建草稿" : task.value?.mode === "simulate" ? "模拟校验" : "平台处理";
+  const finalStep = task.value?.mode === "draft" ? "草稿已创建" : task.value?.mode === "simulate" ? "模拟完成" : "已发布";
+
   if (!task.value && taskLoading.value) {
     return [
-      { name: "上传中", state: "process" },
-      { name: "审核中", state: "wait" },
-      { name: "已发布", state: "wait" }
+      { name: "提交中", state: "process" },
+      { name: middleStep, state: "wait" },
+      { name: finalStep, state: "wait" }
     ];
   }
 
   if (!task.value) {
     return [
-      { name: "上传中", state: "wait" },
-      { name: "审核中", state: "wait" },
-      { name: "已发布", state: "wait" }
+      { name: "提交中", state: "wait" },
+      { name: middleStep, state: "wait" },
+      { name: finalStep, state: "wait" }
     ];
   }
 
   if (task.value.status === "failed") {
     return [
-      { name: "上传中", state: "finish" },
-      { name: "审核中", state: "error" },
+      { name: "提交中", state: "finish" },
+      { name: middleStep, state: "error" },
       { name: "失败", state: "error" }
     ];
   }
 
   return [
-    { name: "上传中", state: "finish" },
-    { name: task.value.mode === "simulate" ? "模拟审核" : "审核中", state: "finish" },
-    { name: task.value.mode === "draft" ? "草稿已创建" : task.value.mode === "publish" ? "已发布" : "模拟完成", state: "finish" }
+    { name: "提交中", state: "finish" },
+    { name: middleStep, state: "finish" },
+    { name: finalStep, state: "finish" }
   ];
 });
 
@@ -243,6 +261,200 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
   };
 }
 
+function getCoverImage(): LocalAsset | null {
+  return editorAssets.value.coverImage ?? editorAssets.value.images.find((image) => image.id === editorAssets.value.coverImageId) ?? editorAssets.value.images[0] ?? null;
+}
+
+function getUploadAssetType(asset: LocalAsset): "image" | "video" | "file" {
+  if (asset.kind === "image" || asset.kind === "video") {
+    return asset.kind;
+  }
+  return "file";
+}
+
+async function ensureBackendAsset(asset: LocalAsset, purpose: string): Promise<string> {
+  if (asset.backendAssetId) {
+    return asset.backendAssetId;
+  }
+
+  const uploaded = await uploadAsset(asset.file, getUploadAssetType(asset), purpose);
+  asset.backendAssetId = uploaded.asset_id;
+  asset.backendUrl = uploaded.url;
+  asset.uploadPurpose = purpose;
+  return uploaded.asset_id;
+}
+
+function parseTagText(value: string): string[] {
+  return value
+    .split(/[,，\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Partial<Record<PlatformKey, string>>> {
+  const accounts = await getAccounts();
+  const accountIds: Partial<Record<PlatformKey, string>> = {};
+
+  for (const platform of platforms) {
+    const account = accounts.find((item) => item.platform === platform && item.status === "connected" && item.account_id);
+    if (!account?.account_id) {
+      throw new Error(`请先在账号管理中连接${platformLabels[platform]}账号，再执行草稿或真实发布。`);
+    }
+    accountIds[platform] = account.account_id;
+  }
+
+  return accountIds;
+}
+
+async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
+  if (!preview.value) {
+    throw new Error("请先生成预览。");
+  }
+
+  if (payload.mode === "simulate") {
+    return {
+      preview_id: preview.value.preview_id,
+      mode: payload.mode,
+      platforms: payload.platforms
+    };
+  }
+
+  const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
+  if (!platforms.length) {
+    throw new Error("本阶段草稿和真实发布仅支持公众号与 B站。");
+  }
+  if (platforms.length !== payload.platforms.length) {
+    throw new Error("知乎和小红书本阶段不支持草稿或真实发布，请改用模拟发布。");
+  }
+
+  const accountIds = await resolveConnectedAccountIds(platforms);
+  const assetIds: NonNullable<PublishTaskCreatePayload["asset_ids"]> = {};
+  const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
+
+  if (platforms.includes("wechat")) {
+    const cover = getCoverImage();
+    if (!cover) {
+      throw new Error("公众号草稿或真实发布需要先上传封面图。");
+    }
+
+    const coverAssetId = await ensureBackendAsset(cover, "wechat_cover");
+    const wechatAssetIds = new Set<string>([coverAssetId]);
+    for (const image of editorAssets.value.images) {
+      wechatAssetIds.add(await ensureBackendAsset(image, image.id === cover.id ? "wechat_cover" : "wechat_body_image"));
+    }
+
+    assetIds.wechat = [...wechatAssetIds];
+    platformOptions.wechat = {
+      title: publishForms.value.wechat.title.trim() || title.value.trim(),
+      author: publishForms.value.wechat.author.trim(),
+      digest: publishForms.value.wechat.summary.trim(),
+      cover_asset_id: coverAssetId,
+      need_open_comment: false,
+      only_fans_can_comment: false,
+      direct_publish: publishForms.value.wechat.directPublish
+    };
+  }
+
+  if (platforms.includes("bilibili")) {
+    const video = editorAssets.value.videos[0] ?? null;
+    if (!video) {
+      throw new Error("B站草稿或真实发布需要先上传视频文件。");
+    }
+
+    const cover = getCoverImage();
+    const videoAssetId = await ensureBackendAsset(video, "bilibili_video");
+    const coverAssetId = cover ? await ensureBackendAsset(cover, "bilibili_cover") : undefined;
+    assetIds.bilibili = coverAssetId ? [videoAssetId, coverAssetId] : [videoAssetId];
+
+    const category = publishForms.value.bilibili.category;
+    platformOptions.bilibili = {
+      title: publishForms.value.bilibili.title.trim() || title.value.trim(),
+      description: publishForms.value.bilibili.description.trim() || content.value,
+      tags: parseTagText(publishForms.value.bilibili.tags),
+      video_asset_id: videoAssetId,
+      cover_asset_id: coverAssetId,
+      tid: bilibiliTidByCategory[category] ?? 201,
+      copyright: 1,
+      source: "",
+      no_reprint: true,
+      dynamic: ""
+    };
+  }
+
+  return {
+    preview_id: preview.value.preview_id,
+    mode: payload.mode,
+    platforms,
+    account_ids: accountIds,
+    asset_ids: assetIds,
+    platform_options: platformOptions
+  };
+}
+
+function upsertTask(nextTask: PublishTaskResponse) {
+  task.value = nextTask;
+  tasks.value = [nextTask, ...tasks.value.filter((item) => item.task_id !== nextTask.task_id)];
+}
+
+async function loadPublishTasks(showToast = false) {
+  taskHistoryLoading.value = true;
+  try {
+    tasks.value = await listPublishTasks({ limit: 20 });
+    task.value = tasks.value[0] ?? null;
+    if (showToast) {
+      ElMessage.success("发布任务列表已刷新。");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "加载发布任务失败。";
+    errorMessage.value = message;
+    if (showToast) {
+      ElMessage.error(message);
+    }
+  } finally {
+    taskHistoryLoading.value = false;
+  }
+}
+
+async function refreshTaskStatus(taskId: string) {
+  taskActionLoading.value = `refresh:${taskId}`;
+  try {
+    const nextTask = await refreshPublishTask(taskId);
+    upsertTask(nextTask);
+    ElMessage.success("任务状态已刷新。");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "刷新任务状态失败。";
+    errorMessage.value = message;
+    ElMessage.error(message);
+  } finally {
+    taskActionLoading.value = null;
+  }
+}
+
+async function publishDraftFromTask(publicationId: string) {
+  try {
+    await ElMessageBox.confirm("确认将该平台草稿提交发布？提交后会调用真实平台发布接口。", "发布草稿确认", {
+      confirmButtonText: "确认发布",
+      cancelButtonText: "取消",
+      type: "warning"
+    });
+  } catch {
+    return;
+  }
+
+  taskActionLoading.value = `publish:${publicationId}`;
+  try {
+    await publishDraftPublication(publicationId);
+    await loadPublishTasks(false);
+    ElMessage.success("草稿已提交发布。");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "草稿提交发布失败。";
+    errorMessage.value = message;
+    ElMessage.error(message);
+  } finally {
+    taskActionLoading.value = null;
+  }
+}
+
 async function generatePreview() {
   if (!content.value.trim()) {
     ElMessage.warning("请先输入正文内容。");
@@ -311,46 +523,14 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
   errorMessage.value = "";
   activeTab.value = "task";
 
-  // ---- 真实发布时，自动获取已连接的账号 ----
-  let accountIds: Partial<Record<PlatformKey, string>> = {};
-  let platformOptions: Partial<Record<PlatformKey, Record<string, unknown>>> = {};
-
-  if (payload.mode === "draft" || payload.mode === "publish") {
-    try {
-      const accounts = await getAccounts();
-      for (const acc of accounts) {
-        if (acc.account_id && payload.platforms.includes(acc.platform)) {
-          accountIds[acc.platform] = acc.account_id;
-        }
-      }
-      // 传递发布表单中的 wechat 选项
-      if (payload.platforms.includes("wechat")) {
-        platformOptions.wechat = {
-          author: publishForms.value.wechat.author,
-          title: publishForms.value.wechat.title,
-          summary: publishForms.value.wechat.summary,
-          direct_publish: publishForms.value.wechat.directPublish
-        };
-      }
-      if (payload.platforms.includes("bilibili")) {
-        platformOptions.bilibili = {
-          title: publishForms.value.bilibili.title,
-          description: publishForms.value.bilibili.description,
-          tags: publishForms.value.bilibili.tags,
-          category: publishForms.value.bilibili.category
-        };
-      }
-    } catch {
-      // 获取账号失败不阻塞流程，后端会自动查找
-    }
-  }
-
   try {
-    task.value = await createPublishTask(preview.value.preview_id, payload.platforms, payload.mode, accountIds, platformOptions);
+    upsertTask(await createPublishTask(await buildPublishTaskPayload(payload)));
     ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "创建发布任务失败。";
-    task.value = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
+    const failedTask = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
+    task.value = failedTask;
+    tasks.value = [failedTask, ...tasks.value];
     errorMessage.value = message;
     ElMessage.error("发布任务提交失败，已在任务看板展示原因。");
   } finally {
@@ -365,6 +545,10 @@ async function simulatePublish() {
 function selectTab(key: string) {
   activeTab.value = key as WorkspaceTab;
 }
+
+onMounted(() => {
+  void loadPublishTasks(false);
+});
 </script>
 
 <template>
@@ -429,7 +613,15 @@ function selectTab(key: string) {
       </el-main>
 
       <el-main v-else-if="activeTab === 'task'" class="task-workspace">
-        <TaskView :task="task" :loading="taskLoading" :error-message="errorMessage" />
+        <TaskView
+          :tasks="tasks"
+          :loading="taskLoading || taskHistoryLoading"
+          :error-message="errorMessage"
+          :action-loading="taskActionLoading"
+          @refresh-tasks="loadPublishTasks(true)"
+          @refresh-task="refreshTaskStatus"
+          @publish-draft="publishDraftFromTask"
+        />
       </el-main>
 
       <el-main v-else class="workspace">

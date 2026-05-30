@@ -11,9 +11,13 @@
 from __future__ import annotations
 
 import html
+import re
 from typing import Any
 
 from backend.app.adapters.base import clip_text, first_non_empty, split_paragraphs
+
+# 匹配正文中的中文媒体标记：【图片：xxx.jpg】【视频：xxx.mp4】【音频：xxx.mp3】
+CN_MEDIA_MARKER_RE = re.compile(r"【(?:图片|视频|音频)[：:]\s*[^】]+】")
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +130,8 @@ def _render_content_with_media(
     - 视频/音频：生成占位提示（公众号不支持直接嵌入）。
     """
     lines: list[str] = []
-    paragraphs = [p.strip() for p in content.split("\n") if p.strip()]
+    paragraphs = [_strip_cn_media_markers(p.strip()) for p in content.split("\n")]
+    paragraphs = [p for p in paragraphs if p.strip()]
 
     # 按 kind 分拣媒体
     images = [m for m in media_items if m.get("kind") == "image"]
@@ -168,9 +173,12 @@ def _render_image_html(img: dict[str, Any]) -> str:
     """渲染单张图片的 HTML（公众号兼容格式）。
 
     使用 data-src 属性 + max-width:100% 实现响应式。
+    即使 src 为空，也生成 <img> 标签，将文件名写入 data-src，
+    以便发布时 adapter 能按文件名匹配本地素材并上传到微信。
     """
     src = img.get("src") or img.get("url") or ""
-    alt = html.escape(img.get("name") or img.get("alt") or "图片")
+    name = img.get("name") or img.get("alt") or ""
+    alt = html.escape(name or "图片")
     sizing = img.get("sizing") or {}
     width = sizing.get("width") or WECHAT_BODY_IMAGE_WIDTH
 
@@ -178,6 +186,11 @@ def _render_image_html(img: dict[str, Any]) -> str:
         f"display:block;max-width:100%;width:{width}px;"
         f"margin:16px auto;border-radius:4px;"
     )
+
+    # 当 src 为空但有文件名时，用文件名做 data-src，方便发布时匹配上传
+    if not src:
+        if name and ("." in name or name.strip()):
+            src = name.strip()
 
     if not src:
         return (
@@ -208,11 +221,23 @@ def _render_media_placeholder(kind_cn: str, media: dict[str, Any]) -> str:
     )
 
 
+def _strip_cn_media_markers(text: str) -> str:
+    """移除正文中的中文媒体标记（【图片/视频/音频：xxx】），保留周围文本。"""
+    if not text:
+        return text
+    # 先替换换行前的标记（标记单独成行），再替换行内标记
+    cleaned = CN_MEDIA_MARKER_RE.sub("", text)
+    # 清理可能留下的多余连续空行
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _render_paragraphs_html(content: str) -> list[str]:
     """将纯文本内容渲染为 HTML 段落。"""
     lines: list[str] = []
     for para in split_paragraphs(content):
-        para = para.strip()
+        # 剥离中文媒体标记
+        para = _strip_cn_media_markers(para).strip()
         if not para:
             continue
         # Markdown 标题 → HTML 标题
@@ -286,6 +311,19 @@ def _heading_size(level: int) -> int:
 
 def _asset_src(asset: dict[str, Any]) -> str:
     return asset.get("url") or asset.get("preview_url") or ""
+
+
+def _external_media_block(kind: str, asset: dict[str, Any]) -> dict[str, Any]:
+    label = "视频" if kind == "video" else "音频"
+    return {
+        "type": "unsupported_media",
+        "media_type": kind,
+        "text": f"公众号正文不支持直接嵌入{label}，请替换为外链或视频号卡片。",
+        "src": _asset_src(asset),
+        "alt": asset.get("name", f"{label}素材"),
+        "asset_id": asset.get("id"),
+        "mime_type": asset.get("mime_type"),
+    }
 
 
 def _pick_cover(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -389,6 +427,9 @@ def _build_rich_body(
                 continue
             asset = block.get("asset") or {}
             kind = block.get("asset_kind") or asset.get("type")
+            if kind in {"video", "audio"}:
+                rich.append(_external_media_block(kind, asset))
+                continue
             rich.append(
                 {
                     "type": kind,
@@ -407,4 +448,6 @@ def _build_rich_body(
     for asset in assets:
         if asset.get("type") == "image" and asset.get("usage") not in ("default_cover", "cover"):
             rich.append({"type": "image", "src": _asset_src(asset), "alt": asset.get("name", "")})
+        elif asset.get("type") in {"video", "audio"}:
+            rich.append(_external_media_block(asset.get("type", "video"), asset))
     return rich

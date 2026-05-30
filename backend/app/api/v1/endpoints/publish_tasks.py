@@ -1,14 +1,39 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.adapters.base import UnsupportedPublishModeError
+from backend.app.adapters.clients import PlatformClientError
 from backend.app.db.session import get_session
-from backend.app.schemas.content import PublishTaskCreateRequest, PublishTaskResponse
+from backend.app.schemas.content import PublishTaskCreateRequest, PublishTaskListResponse, PublishTaskResponse
 from backend.app.services.publish_service import PublishService
 
 
 router = APIRouter(prefix="/publish-tasks", tags=["发布任务"])
+
+
+@router.get(
+    "",
+    response_model=PublishTaskListResponse,
+    summary="查询发布任务列表",
+    description=(
+        "功能：从数据库查询已经创建的发布任务，用于前端刷新页面后恢复任务看板。\n\n"
+        "参数：可选 `mode`、`status`、`platform` 和 `limit` 过滤任务；默认按创建时间倒序返回最近任务。\n\n"
+        "返回值：返回 `tasks` 数组，每项结构与单个发布任务详情一致。"
+    ),
+    response_description="发布任务列表。",
+)
+async def list_publish_tasks(
+    mode: Annotated[str | None, Query(description="按发布模式过滤：simulate、draft 或 publish。")] = None,
+    status: Annotated[str | None, Query(description="按任务状态过滤：pending、running、succeeded 或 failed。")] = None,
+    platform: Annotated[str | None, Query(description="按平台过滤：wechat、bilibili、zhihu 或 xiaohongshu。")] = None,
+    limit: Annotated[int, Query(ge=1, le=100, description="返回任务数量上限。")] = 20,
+    session: AsyncSession = Depends(get_session),
+) -> PublishTaskListResponse:
+    service = PublishService(session)
+    records = await service.list_tasks(mode=mode, status=status, platform=platform, limit=limit)
+    return PublishTaskListResponse(tasks=[service.to_response(record) for record in records])
 
 
 @router.post(
@@ -38,7 +63,7 @@ async def create_publish_task(
     service = PublishService(session)
     try:
         record = await service.create_task(request)
-    except KeyError as exc:
+    except (KeyError, UnsupportedPublishModeError, PlatformClientError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if record is None:

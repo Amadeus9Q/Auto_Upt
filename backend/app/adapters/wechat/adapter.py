@@ -67,8 +67,8 @@ class WechatAdapter(PlatformAdapter):
         # ---- 构建文章 ----
         article = {
             "title": options.get("title") or draft.get("title", ""),
-            "author": options.get("author", draft.get("author", "")),
-            "digest": options.get("digest") or draft.get("summary", "")[:120],
+            "author": options.get("author", ""),
+            "digest": options.get("digest") or draft.get("summary", ""),
             "content": content_html,
             "content_source_url": options.get("content_source_url", ""),
             "thumb_media_id": cover_upload["media_id"],
@@ -126,10 +126,19 @@ class WechatAdapter(PlatformAdapter):
 
     @staticmethod
     def _build_fallback_html(draft: dict[str, Any]) -> str:
-        """兜底：当 draft 中没有 wechat_html 时，从 text body 构建简单 HTML。"""
+        """兜底：当 draft 中没有 wechat_html 时，从 text body 构建简单 HTML。
+
+        会自动剥离正文中的 【图片/视频/音频：xxx】 中文媒体标记。
+        """
+        import re
         body = draft.get("body", "")
         if not body:
             return "<section><p>暂无正文。</p></section>"
+
+        # 移除中文媒体标记
+        cn_marker = re.compile(r"【(?:图片|视频|音频)[：:]\s*[^】]+】")
+        body = cn_marker.sub("", body)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
 
         paragraphs = body.split("\n")
         html_parts = ["<section>"]

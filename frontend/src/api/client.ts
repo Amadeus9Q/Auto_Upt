@@ -98,15 +98,35 @@ export interface PublishTaskResponse {
   updated_at: string | null;
 }
 
+export interface PublishTaskListResponse {
+  tasks: PublishTaskResponse[];
+}
+
 export interface PublishResult {
   platform: PlatformKey;
   display_name?: string;
   mode?: PublishMode;
-  status: "succeeded" | "failed";
+  status: PublishStatus;
   preview?: DraftPayload;
   preview_url?: string;
   screenshot_path?: string;
+  publication_id?: string;
+  external_id?: string;
+  external_url?: string;
+  external_status?: string;
+  platform_code?: string;
+  retryable?: boolean;
+  next_action?: string;
   message: string;
+}
+
+export interface PublishTaskCreatePayload {
+  preview_id: string;
+  mode?: PublishMode;
+  platforms?: PlatformKey[];
+  account_ids?: Partial<Record<PlatformKey, string>>;
+  asset_ids?: Partial<Record<PlatformKey, string[]>>;
+  platform_options?: Partial<Record<PlatformKey, Record<string, unknown>>>;
 }
 
 export interface AccountConnection {
@@ -161,15 +181,54 @@ export interface AccountTestResponse {
   details: Record<string, unknown>;
 }
 
+export interface UploadedAssetResponse {
+  asset_id: string;
+  asset_type: string;
+  purpose: string;
+  original_filename: string;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  sha256: string;
+  url: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface PublicationResponse {
+  publication_id: string;
+  task_id: string;
+  preview_id: string;
+  account_id: string | null;
+  platform: PlatformKey;
+  mode: PublishMode;
+  status: string;
+  external_id: string | null;
+  external_url: string | null;
+  external_status: string | null;
+  response_payload: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PublicationPublishResponse {
+  publication: PublicationResponse;
+  message: string;
+  details: Record<string, unknown>;
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers
-    }
+    headers
   });
 
   if (!response.ok) {
@@ -198,22 +257,55 @@ export function createPreview(payload: ContentPayload): Promise<PreviewResponse>
   });
 }
 
-export function createPublishTask(
-  previewId: string,
-  platforms?: PlatformKey[],
-  mode: PublishMode = "simulate",
-  accountIds?: Partial<Record<PlatformKey, string>>,
-  platformOptions?: Partial<Record<PlatformKey, Record<string, unknown>>>
-): Promise<PublishTaskResponse> {
+export function createPublishTask(payload: PublishTaskCreatePayload): Promise<PublishTaskResponse> {
   return request<PublishTaskResponse>("/api/v1/publish-tasks", {
     method: "POST",
-    body: JSON.stringify({
-      preview_id: previewId,
-      mode,
-      platforms,
-      account_ids: accountIds ?? {},
-      platform_options: platformOptions ?? {}
-    })
+    body: JSON.stringify(payload)
+  });
+}
+
+export interface ListPublishTasksParams {
+  mode?: PublishMode;
+  status?: PublishStatus;
+  platform?: PlatformKey;
+  limit?: number;
+}
+
+export function listPublishTasks(params: ListPublishTasksParams = {}): Promise<PublishTaskResponse[]> {
+  const searchParams = new URLSearchParams();
+  if (params.mode) searchParams.set("mode", params.mode);
+  if (params.status) searchParams.set("status", params.status);
+  if (params.platform) searchParams.set("platform", params.platform);
+  if (params.limit) searchParams.set("limit", String(params.limit));
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : "";
+  return request<PublishTaskListResponse>(`/api/v1/publish-tasks${suffix}`).then((response) => response.tasks);
+}
+
+export function getPublishTask(taskId: string): Promise<PublishTaskResponse> {
+  return request<PublishTaskResponse>(`/api/v1/publish-tasks/${taskId}`);
+}
+
+export function refreshPublishTask(taskId: string): Promise<PublishTaskResponse> {
+  return request<PublishTaskResponse>(`/api/v1/publish-tasks/${taskId}/refresh`, {
+    method: "POST"
+  });
+}
+
+export function publishDraftPublication(publicationId: string): Promise<PublicationPublishResponse> {
+  return request<PublicationPublishResponse>(`/api/v1/publications/${publicationId}/publish`, {
+    method: "POST"
+  });
+}
+
+export function uploadAsset(file: File, assetType: "image" | "video" | "file", purpose: string): Promise<UploadedAssetResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("asset_type", assetType);
+  formData.append("purpose", purpose);
+
+  return request<UploadedAssetResponse>("/api/v1/assets", {
+    method: "POST",
+    body: formData
   });
 }
 

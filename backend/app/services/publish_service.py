@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.adapters.base import UnsupportedPublishModeError
@@ -19,7 +19,7 @@ from backend.app.models.content import PreviewRecord
 from backend.app.models.platform import PublishMode, PublishTaskRecord, PublishTaskStatus
 from backend.app.models.publication import PublicationRecord
 from backend.app.schemas.content import PublishTaskCreateRequest, PublishTaskResponse
-from backend.app.schemas.publication import PublicationDeleteResponse, PublicationResponse
+from backend.app.schemas.publication import PublicationDeleteResponse, PublicationPublishResponse, PublicationResponse
 from backend.app.services.account_service import AccountService
 
 
@@ -127,7 +127,7 @@ class PublishService:
             await self.session.refresh(publication)
 
             try:
-                context = await self._build_account_context(task, platform)
+                context = await self._build_account_context(task, platform, draft)
                 adapter = get_adapter(platform)
                 publish_result = await adapter.publish(draft, account=context, mode=task.mode)
                 publication.status = publish_result.get("status", "succeeded")
@@ -205,8 +205,94 @@ class PublishService:
     async def get_task(self, task_id: str) -> PublishTaskRecord | None:
         return await self.session.get(PublishTaskRecord, task_id)
 
+    async def list_tasks(
+        self,
+        mode: str | None = None,
+        status: str | None = None,
+        platform: str | None = None,
+        limit: int = 20,
+    ) -> list[PublishTaskRecord]:
+        bounded_limit = max(1, min(limit, 100))
+        fetch_limit = min(bounded_limit * 5, 500) if platform else bounded_limit
+        statement = select(PublishTaskRecord).order_by(desc(PublishTaskRecord.created_at)).limit(fetch_limit)
+        if mode:
+            statement = statement.where(PublishTaskRecord.mode == mode)
+        if status:
+            statement = statement.where(PublishTaskRecord.status == status)
+
+        result = await self.session.execute(statement)
+        records = list(result.scalars().all())
+        if platform:
+            records = [record for record in records if platform in (record.platforms or [])]
+        return records[:bounded_limit]
+
     async def get_publication(self, publication_id: str) -> PublicationRecord | None:
         return await self.session.get(PublicationRecord, publication_id)
+
+    async def publish_draft_publication(self, publication_id: str) -> PublicationPublishResponse | None:
+        publication = await self.get_publication(publication_id)
+        if publication is None:
+            return None
+
+        if publication.mode != PublishMode.DRAFT:
+            raise UnsupportedPublishModeError("Only draft publications can be submitted for publishing.")
+        if publication.platform != "wechat":
+            raise UnsupportedPublishModeError("当前仅公众号草稿支持通过发布记录直接提交发布。")
+        if not publication.external_id:
+            raise PlatformClientError(
+                "WeChat draft media_id is missing.",
+                platform_code="DRAFT_MEDIA_ID_MISSING",
+                next_action="请重新创建公众号草稿后再提交发布。",
+            )
+
+        draft_media_id = publication.external_id
+        credentials = await self._credentials_for_publication(publication)
+        client = WechatOfficialAccountClient()
+        token = await client.get_access_token(
+            credentials.get("app_id", ""),
+            credentials.get("app_secret", ""),
+        )
+        details = await client.submit_publish(token["access_token"], draft_media_id)
+        publish_id = str(details.get("publish_id") or "")
+
+        publication.mode = PublishMode.PUBLISH
+        publication.status = "succeeded"
+        publication.external_id = publish_id or draft_media_id
+        publication.external_status = "submitted"
+        publication.error_message = None
+        publication.response_payload = {
+            **(publication.response_payload or {}),
+            "draft_media_id": draft_media_id,
+            "draft_publish_response": details,
+        }
+
+        task = await self.get_task(publication.task_id)
+        if task is not None:
+            results = dict(task.results or {})
+            previous = dict(results.get(publication.platform, {}))
+            results[publication.platform] = {
+                **previous,
+                "platform": publication.platform,
+                "display_name": previous.get("display_name", "公众号"),
+                "mode": PublishMode.PUBLISH,
+                "status": "succeeded",
+                "external_id": publication.external_id,
+                "external_status": publication.external_status,
+                "publication_id": publication.id,
+                "message": "公众号草稿已提交发布。",
+                "raw_response": details,
+                "draft_media_id": draft_media_id,
+            }
+            task.results = results
+            task.error_message = None
+
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return PublicationPublishResponse(
+            publication=self.publication_to_response(publication),
+            message="公众号草稿已提交发布。",
+            details=details,
+        )
 
     async def delete_publication(self, publication_id: str) -> PublicationDeleteResponse | None:
         publication = await self.get_publication(publication_id)
@@ -359,6 +445,7 @@ class PublishService:
         self,
         task: PublishTaskRecord,
         platform: str,
+        draft: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         account_id = task.account_ids.get(platform) if task.account_ids else None
 
@@ -389,7 +476,19 @@ class PublishService:
 
         account_service = AccountService(self.session)
         credentials = await self._resolve_credentials(account, account_service)
-        assets = await self._load_assets(task.asset_ids.get(platform, []) if task.asset_ids else [])
+
+        # ---- 合并显式 asset_ids + 从 content_ir 自动发现的正文图片 ----
+        explicit_ids = list(task.asset_ids.get(platform, []) if task.asset_ids else [])
+        discovered_ids: list[str] = []
+        if draft:
+            all_media = draft.get("all_media") or []
+            for m in all_media:
+                aid = m.get("asset_id") if isinstance(m, dict) else getattr(m, "asset_id", None)
+                if aid and aid not in explicit_ids and aid not in discovered_ids:
+                    discovered_ids.append(aid)
+        asset_ids_to_load = explicit_ids + discovered_ids
+
+        assets = await self._load_assets(asset_ids_to_load)
         return {
             "account_id": account.id,
             "credentials": credentials,
