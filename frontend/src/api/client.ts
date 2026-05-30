@@ -2,6 +2,7 @@ export type PlatformKey = "wechat" | "zhihu" | "xiaohongshu" | "bilibili";
 export type ContentType = "article" | "video" | "mixed";
 export type PublishMode = "simulate" | "draft" | "publish";
 export type PublishStatus = "pending" | "running" | "succeeded" | "failed";
+export type AccountStatus = "connected" | "disconnected" | "expired" | "error";
 
 export interface ContentPayload {
   title?: string;
@@ -62,6 +63,32 @@ export interface PublishResult {
   message: string;
 }
 
+export interface AccountConnection {
+  platform: PlatformKey;
+  display_name: string;
+  status: AccountStatus;
+  auth_type: string;
+  token_expires_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface WechatConnectPayload {
+  app_id: string;
+  app_secret: string;
+  display_name?: string;
+}
+
+export interface OAuthStartResponse {
+  authorization_url?: string;
+  callback_message?: string;
+}
+
+export interface AccountTestResponse {
+  platform: PlatformKey;
+  ok: boolean;
+  message: string;
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -96,5 +123,32 @@ export function createPublishTask(previewId: string, platforms?: PlatformKey[]):
       mode: "simulate",
       platforms
     })
+  });
+}
+
+export function getAccounts(): Promise<AccountConnection[]> {
+  return request<AccountConnection[]>("/api/v1/accounts");
+}
+
+export function connectWechatAccount(payload: WechatConnectPayload): Promise<AccountConnection> {
+  return request<AccountConnection>("/api/v1/accounts/wechat/connect", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function startBilibiliOAuth(): Promise<OAuthStartResponse> {
+  return request<OAuthStartResponse>("/api/v1/accounts/bilibili/oauth/start");
+}
+
+export function testAccountConnection(platform: PlatformKey): Promise<AccountTestResponse> {
+  return request<AccountTestResponse>(`/api/v1/accounts/${platform}/test`, {
+    method: "POST"
+  });
+}
+
+export async function deleteAccount(platform: PlatformKey): Promise<void> {
+  await request<Record<string, never>>(`/api/v1/accounts/${platform}`, {
+    method: "DELETE"
   });
 }
