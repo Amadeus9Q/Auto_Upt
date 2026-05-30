@@ -8,6 +8,8 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.adapters.registry import select_adapters
+from backend.app.agents.content_analyst import ContentAnalystAgent
+from backend.app.agents.platform_stylist import PlatformStylistAgent
 from backend.app.models.content import PreviewRecord
 from backend.app.schemas.content import (
     AdaptContentRequest,
@@ -20,6 +22,8 @@ from backend.app.schemas.content import (
 class PreviewService:
     def __init__(self, session: AsyncSession | None = None) -> None:
         self.session = session
+        self.content_analyst = ContentAnalystAgent()
+        self.platform_stylist = PlatformStylistAgent()
 
     def normalize_content(self, request: ContentInput) -> dict[str, Any]:
         body = request.body.strip()
@@ -29,11 +33,22 @@ class PreviewService:
         assets = [asset.model_dump() for asset in request.assets]
         body_blocks = self._normalize_blocks(body, assets, [block.model_dump() for block in request.content_blocks])
 
+        # ---- 深度内容分析：章节划分 + 媒体识别 ----
+        analysis = self.content_analyst.analyze(
+            body=body,
+            title=title,
+            tags=tags,
+            content_blocks=body_blocks,
+            assets=assets,
+            content_type=request.content_type,
+        )
+
         return {
             "id": str(uuid4()),
             "title": title,
             "body": body,
             "summary": summary,
+            "subtitle": analysis.subtitle,
             "content_type": request.content_type,
             "tags": tags,
             "assets": assets,
@@ -41,6 +56,14 @@ class PreviewService:
             "media_slots": self._build_media_slots(assets, body_blocks, request.cover_asset_id),
             "cover_asset_id": request.cover_asset_id,
             "word_count": self._count_words(body),
+            # 新增：章节和媒体分析结果
+            "chapters": [ch.model_dump() for ch in analysis.chapters],
+            "flat_chapters": [ch.model_dump() for ch in analysis.flat_chapters],
+            "all_media": [m.model_dump() for m in analysis.all_media],
+            "media_by_kind": {
+                k: [m.model_dump() for m in v]
+                for k, v in analysis.media_by_kind.items()
+            },
             "created_at": datetime.now(UTC).isoformat(),
         }
 

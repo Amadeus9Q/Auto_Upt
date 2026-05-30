@@ -5,6 +5,7 @@ export interface RichBlock {
   level?: number;
   src?: string;
   alt?: string;
+  media_type?: "video" | "audio";
   mime_type?: string;
 }
 
@@ -65,17 +66,17 @@ defineProps<{
             </div>
             <p v-if="block.alt">{{ block.alt }}</p>
           </div>
-          <div v-else-if="block.type === 'video'" class="wx-image">
-            <video v-if="block.src" :src="block.src" controls class="wx-media-video" />
-            <div v-else class="wx-image-placeholder">
-              <span>视频占位 {{ block.alt }}</span>
-            </div>
-            <p>{{ block.alt || '视频素材' }}</p>
+          <div v-else-if="block.type === 'video' || (block.type === 'unsupported_media' && block.media_type === 'video')" class="wx-link-card">
+            <span class="wx-link-card-icon">视频号</span>
+            <strong>{{ block.alt || '视频素材' }}</strong>
+            <p>{{ block.text || '公众号正文不支持直接嵌入视频，请替换为外链或视频号卡片。' }}</p>
+            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
           </div>
-          <div v-else-if="block.type === 'audio'" class="wx-audio">
+          <div v-else-if="block.type === 'audio' || (block.type === 'unsupported_media' && block.media_type === 'audio')" class="wx-link-card">
+            <span class="wx-link-card-icon">外链</span>
             <strong>{{ block.alt || '音频素材' }}</strong>
-            <audio v-if="block.src" :src="block.src" controls />
-            <span v-else>音频占位</span>
+            <p>{{ block.text || '公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。' }}</p>
+            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
           </div>
           <p v-else class="wx-paragraph">{{ block.text }}</p>
         </template>
@@ -210,8 +211,7 @@ defineProps<{
   font-size: 14px;
   color: #999;
 }
-.wx-media-img,
-.wx-media-video {
+.wx-media-img {
   display: block;
   width: 100%;
   max-height: 220px;
@@ -224,21 +224,39 @@ defineProps<{
   font-size: 12px;
   color: #999;
 }
-.wx-audio {
+.wx-link-card {
   margin: 16px 0;
-  padding: 10px 12px;
+  padding: 12px;
   background: #f6f8fa;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
 }
-.wx-audio strong {
-  display: block;
+.wx-link-card-icon {
+  display: inline-flex;
   margin-bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #e8f3ff;
   color: #576b95;
+  font-size: 12px;
+}
+.wx-link-card strong {
+  display: block;
+  color: #1f2937;
   font-size: 13px;
 }
-.wx-audio audio {
-  width: 100%;
+.wx-link-card p {
+  margin: 6px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.wx-link-card a {
+  display: inline-block;
+  margin-top: 6px;
+  color: #576b95;
+  font-size: 12px;
+  text-decoration: none;
 }
 .wx-fallback {
   margin: 0;

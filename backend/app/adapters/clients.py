@@ -103,6 +103,36 @@ class WechatOfficialAccountClient:
                 )
         return self._ensure_ok(response)
 
+    async def upload_content_image(
+        self,
+        access_token: str,
+        image_path: str | Path,
+        filename: str = "image.png",
+        content_type: str = "image/png",
+    ) -> dict[str, Any]:
+        """上传正文内图片（图文内容插图）。
+
+        调用 POST /cgi-bin/media/uploadimg，返回 {"url": "..."} 可直接在 HTML
+        <img> 标签中使用。与 upload_permanent_asset 不同，此接口专用于图文正文插图，
+        不占用素材库配额，但图片仅能在图文消息中使用。
+        """
+        path = Path(image_path)
+        with path.open("rb") as img_file:
+            files = {
+                "media": (
+                    filename,
+                    img_file,
+                    content_type or "application/octet-stream",
+                )
+            }
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=60) as client:
+                response = await client.post(
+                    "/cgi-bin/media/uploadimg",
+                    params={"access_token": access_token},
+                    files=files,
+                )
+        return self._ensure_ok(response)
+
     async def add_draft(
         self,
         access_token: str,
