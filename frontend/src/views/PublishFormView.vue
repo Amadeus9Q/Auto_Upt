@@ -52,7 +52,6 @@ const bilibiliMissing = computed(() => [
 const wechatMissing = computed(() => [
   ...(!forms.value.wechat.title.trim() ? ["标题"] : []),
   ...(!forms.value.wechat.summary.trim() ? ["摘要"] : []),
-  ...(!forms.value.wechat.author.trim() ? ["作者"] : []),
   ...(!coverImage.value ? ["封面图片"] : []),
   ...(props.assets.images.length === 0 ? ["正文图片"] : [])
 ]);
@@ -67,21 +66,21 @@ function issueType(issue: ValidationIssue) {
     <div class="section-title">
       <div>
         <p>发布表单</p>
-        <h2>真实发布参数准备</h2>
+        <h2>发布参数配置</h2>
       </div>
       <el-icon :size="24"><DocumentChecked /></el-icon>
     </div>
 
     <el-empty
       v-if="!selectedPlatforms.includes('bilibili') && !selectedPlatforms.includes('wechat')"
-      description="选择公众号或 B站后填写发布参数"
+      description="请选择公众号或 B 站后填写发布参数"
     />
 
     <el-tabs v-else :model-value="defaultTab" class="publish-tabs">
       <el-tab-pane v-if="selectedPlatforms.includes('bilibili')" label="B站" name="bilibili">
         <div class="platform-heading">
           <el-icon><VideoCamera /></el-icon>
-          <strong>B站稿件信息</strong>
+          <strong>B 站稿件信息</strong>
         </div>
 
         <el-alert
@@ -107,7 +106,7 @@ function issueType(issue: ValidationIssue) {
             <el-input v-model="forms.bilibili.description" type="textarea" :rows="4" resize="none" />
           </el-form-item>
           <el-form-item label="标签">
-            <el-input v-model="forms.bilibili.tags" placeholder="用逗号分隔，例如 AI Agent, 内容运营" />
+            <el-input v-model="forms.bilibili.tags" placeholder="多个关键词，逗号分隔" />
           </el-form-item>
           <el-form-item label="分区">
             <el-select v-model="forms.bilibili.category" placeholder="请选择分区">
@@ -117,8 +116,8 @@ function issueType(issue: ValidationIssue) {
             </el-select>
           </el-form-item>
           <div class="asset-status">
-            <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
-            <span>视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
+            <span>封面：{{ coverImage?.name || "未选择，将默认使用首张图片" }}</span>
+            <span>视频：{{ bilibiliVideo?.name || "未选择，将默认使用首个视频" }}</span>
           </div>
         </el-form>
       </el-tab-pane>
@@ -152,13 +151,13 @@ function issueType(issue: ValidationIssue) {
             <el-input v-model="forms.wechat.summary" type="textarea" :rows="3" resize="none" maxlength="120" show-word-limit />
           </el-form-item>
           <el-form-item label="作者">
-            <el-input v-model="forms.wechat.author" />
+            <el-input v-model="forms.wechat.author" placeholder="留空将使用默认作者名称" />
           </el-form-item>
           <el-form-item label="发布方式">
             <el-switch v-model="forms.wechat.directPublish" active-text="直接提交发布" inactive-text="仅创建草稿" />
           </el-form-item>
           <div class="asset-status">
-            <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
+            <span>封面：{{ coverImage?.name || "未选择，将默认使用首张图片" }}</span>
             <span>正文图片：{{ assets.images.length }} 张</span>
           </div>
         </el-form>
@@ -167,7 +166,7 @@ function issueType(issue: ValidationIssue) {
 
     <div class="risk-note">
       <el-icon><WarningFilled /></el-icon>
-      <span>这里展示的是发布前参数与平台校验风险，真实发布提交会在后续确认流程中二次确认。</span>
+      <span>此处展示发布参数与平台校验结果，真实发布将在后续流程中二次确认。</span>
     </div>
   </section>
 </template>
