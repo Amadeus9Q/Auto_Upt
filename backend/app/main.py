@@ -4,7 +4,15 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.v1.endpoints import accounts, agent_runs, content, previews, publish_tasks
+from backend.app.api.v1.endpoints import (
+    accounts,
+    agent_runs,
+    assets,
+    content,
+    previews,
+    publications,
+    publish_tasks,
+)
 from backend.app.core.config import get_settings
 from backend.app.db.session import close_db, init_db
 from backend.app.schemas.system import HealthResponse
@@ -25,7 +33,7 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Auto_Upt 后端 MVP：提供内容标准化、多平台草稿适配、预览持久化、"
-        "模拟发布任务创建与查询能力。当前阶段只支持模拟发布，不接入真实账号授权和真实发布。"
+        "模拟发布任务、公众号和 B站真实发布任务创建与查询能力。"
     ),
     lifespan=lifespan,
     openapi_tags=[
@@ -47,11 +55,19 @@ app = FastAPI(
         },
         {
             "name": "发布任务",
-            "description": "基于预览记录创建和查询模拟发布任务。",
+            "description": "基于预览记录创建和查询模拟发布或真实发布任务。",
+        },
+        {
+            "name": "素材管理",
+            "description": "上传和管理公众号、B站真实发布所需的本地素材。",
+        },
+        {
+            "name": "发布记录",
+            "description": "查询、刷新或删除平台侧真实发布记录。",
         },
         {
             "name": "账号管理",
-            "description": "第一阶段账号页面使用的后端占位接口，不接入真实授权。",
+            "description": "连接和管理公众号、B站真实发布账号。",
         },
     ],
 )
@@ -67,7 +83,9 @@ app.add_middleware(
 app.include_router(content.router, prefix=settings.api_v1_prefix)
 app.include_router(previews.router, prefix=settings.api_v1_prefix)
 app.include_router(agent_runs.router, prefix=settings.api_v1_prefix)
+app.include_router(assets.router, prefix=settings.api_v1_prefix)
 app.include_router(publish_tasks.router, prefix=settings.api_v1_prefix)
+app.include_router(publications.router, prefix=settings.api_v1_prefix)
 app.include_router(accounts.router, prefix=settings.api_v1_prefix)
 
 
