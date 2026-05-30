@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { Monitor, Operation, VideoPlay } from "@element-plus/icons-vue";
+import { Monitor, Operation, User, VideoPlay } from "@element-plus/icons-vue";
 
-import { createPreview, createPublishTask, type PlatformKey, type PreviewResponse, type PublishTaskResponse } from "@/api/client";
+import {
+  createPreview,
+  createPublishTask,
+  type PlatformKey,
+  type PreviewResponse,
+  type PublishTaskResponse
+} from "@/api/client";
+import AccountView from "@/views/AccountView.vue";
 import EditorView from "@/views/EditorView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
 import TaskView, { type TaskStep } from "@/views/TaskView.vue";
 
-type WorkspaceTab = "preview" | "task";
+type WorkspaceTab = "preview" | "task" | "account";
 
 const platformLabels: Record<PlatformKey, string> = {
   wechat: "公众号",
@@ -156,6 +163,10 @@ function selectTab(key: string) {
           <el-icon><Operation /></el-icon>
           <span>模拟任务</span>
         </el-menu-item>
+        <el-menu-item index="account">
+          <el-icon><User /></el-icon>
+          <span>账号管理</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -168,7 +179,11 @@ function selectTab(key: string) {
         <el-tag effect="dark" type="success">Backend Connected</el-tag>
       </el-header>
 
-      <el-main class="workspace">
+      <el-main v-if="activeTab === 'account'" class="account-workspace">
+        <AccountView />
+      </el-main>
+
+      <el-main v-else class="workspace">
         <EditorView
           v-model:title="title"
           v-model:content="content"
@@ -294,6 +309,10 @@ function selectTab(key: string) {
   padding: 24px 32px 32px;
 }
 
+.account-workspace {
+  padding: 24px 32px 32px;
+}
+
 .result-panel {
   min-width: 0;
 }
@@ -318,7 +337,8 @@ function selectTab(key: string) {
     padding: 20px;
   }
 
-  .workspace {
+  .workspace,
+  .account-workspace {
     grid-template-columns: 1fr;
     padding: 20px;
   }
