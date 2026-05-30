@@ -59,8 +59,11 @@ const bilibiliMainVideo = computed(() => (activeDraft.value?.key === "bilibili" 
 const bilibiliCover = computed(() => (activeDraft.value?.key === "bilibili" ? activeDraft.value.cover_image ?? slotAsset(activeDraft.value, "cover") : null));
 const bilibiliHighlights = computed(() => draftHighlights(activeDraft.value, 3));
 
-const zhihuParagraphs = computed(() => textParagraphs(activeDraft.value?.body ?? "").slice(0, 8));
+const zhihuParagraphs = computed(() => textParagraphs(activeDraft.value?.body ?? "").filter((paragraph) => !isAssetMarkerText(paragraph)).slice(0, 8));
 const zhihuImages = computed(() => (activeDraft.value?.key === "zhihu" ? slotAssetList(activeDraft.value, "body_images").slice(0, 3) : []));
+const zhihuUnsupportedMedia = computed(() =>
+  activeDraft.value?.key === "zhihu" ? [...slotAssetList(activeDraft.value, "body_videos"), ...slotAssetList(activeDraft.value, "body_audios")] : []
+);
 
 const xiaohongshuCover = computed(() => {
   if (activeDraft.value?.key !== "xiaohongshu") {
@@ -69,6 +72,25 @@ const xiaohongshuCover = computed(() => {
   return activeDraft.value.cover_image ?? slotAsset(activeDraft.value, "cover") ?? slotAssetList(activeDraft.value, "body_images")[0] ?? null;
 });
 const xiaohongshuHighlights = computed(() => draftHighlights(activeDraft.value, 4));
+const xiaohongshuImages = computed(() => {
+  if (activeDraft.value?.key !== "xiaohongshu") {
+    return [];
+  }
+
+  const images = [xiaohongshuCover.value, ...slotAssetList(activeDraft.value, "body_images")].filter(Boolean) as DraftAsset[];
+  const seen = new Set<string>();
+  return images.filter((image) => {
+    const key = image.id || image.url || image.preview_url || image.name;
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+});
+const xiaohongshuUnsupportedMedia = computed(() =>
+  activeDraft.value?.key === "xiaohongshu" ? [...slotAssetList(activeDraft.value, "body_videos"), ...slotAssetList(activeDraft.value, "body_audios")] : []
+);
 
 watch(
   () => props.drafts,
@@ -115,6 +137,10 @@ function textParagraphs(text: string) {
     .split(/\n{1,}/)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function isAssetMarkerText(text: string) {
+  return /^\{\{asset:(image|video|audio):[^}]+}}$/.test(text) || /^【(图片|视频|音频)[:：].+】$/.test(text);
 }
 
 function draftHighlights(draft: PlatformDraft | null, limit: number) {
@@ -285,14 +311,15 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 
           <section class="zhihu-answer">
             <p v-for="paragraph in zhihuParagraphs" :key="paragraph">{{ paragraph }}</p>
+            <div v-if="zhihuImages.length" class="zhihu-inline-images">
+              <img
+                v-for="image in zhihuImages"
+                :key="image.id || image.name || assetSrc(image)"
+                :src="assetSrc(image)"
+                alt="知乎正文图片"
+              />
+            </div>
           </section>
-
-          <div v-if="zhihuImages.length" class="zhihu-image-grid">
-            <figure v-for="image in zhihuImages" :key="image.id || image.name">
-              <img :src="assetSrc(image)" :alt="image.name || '知乎正文图片'" />
-              <figcaption>{{ image.name || "正文图片" }}</figcaption>
-            </figure>
-          </div>
 
           <footer class="zhihu-action-row">
             <span>赞同 0</span>
@@ -314,6 +341,10 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           <section>
             <span>建议形态</span>
             <strong>回答 / 专栏草稿</strong>
+          </section>
+          <section v-if="zhihuUnsupportedMedia.length" class="media-pending-card">
+            <span>音视频素材</span>
+            <strong>当前阶段仅提示，不参与发布适配</strong>
           </section>
         </aside>
 
@@ -337,11 +368,17 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
       <div v-else-if="activeDraft.key === 'xiaohongshu'" class="xhs-preview">
         <section class="xhs-phone">
           <div class="xhs-cover">
-            <img
-              v-if="assetSrc(xiaohongshuCover)"
-              :src="assetSrc(xiaohongshuCover)"
-              :alt="xiaohongshuCover?.name || '小红书封面'"
-            />
+            <el-carousel
+              v-if="xiaohongshuImages.length"
+              height="100%"
+              arrow="always"
+              indicator-position="outside"
+              class="xhs-carousel"
+            >
+              <el-carousel-item v-for="image in xiaohongshuImages" :key="image.id || image.name || assetSrc(image)">
+                <img :src="assetSrc(image)" :alt="image.name || '小红书图片'" />
+              </el-carousel-item>
+            </el-carousel>
             <div v-else class="xhs-cover-empty">
               <strong>封面占位</strong>
               <span>建议上传一张竖版或 3:4 图片</span>
@@ -378,6 +415,10 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           <section>
             <span>话题</span>
             <strong>{{ activeDraft.tags.length }}/10 个</strong>
+          </section>
+          <section v-if="xiaohongshuUnsupportedMedia.length" class="media-pending-card">
+            <span>音视频素材</span>
+            <strong>当前阶段仅提示，不参与发布适配</strong>
           </section>
           <section class="xhs-body-preview">
             <span>笔记正文</span>
@@ -682,6 +723,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 }
 
 .zhihu-article {
+  max-width: 780px;
   padding: 24px;
 }
 
@@ -740,34 +782,20 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   word-break: break-word;
 }
 
-.zhihu-image-grid {
+.zhihu-inline-images {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 18px;
+  gap: 12px;
+  margin: 16px 0 4px;
 }
 
-.zhihu-image-grid figure {
-  overflow: hidden;
-  margin: 0;
+.zhihu-inline-images img {
+  display: block;
+  width: min(100%, 520px);
+  max-height: 260px;
+  object-fit: contain;
+  background: #f7f9fb;
   border: 1px solid #e2eaf3;
   border-radius: 8px;
-}
-
-.zhihu-image-grid img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
-}
-
-.zhihu-image-grid figcaption {
-  overflow: hidden;
-  padding: 6px 8px;
-  color: #607086;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .zhihu-action-row,
@@ -794,8 +822,19 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   padding: 12px 14px;
 }
 
+.platform-side-panel .media-pending-card,
+.xhs-detail-panel .media-pending-card {
+  background: #fff8ed;
+  border-color: #f3d19e;
+}
+
+.media-pending-card strong {
+  color: #9a5b13;
+  white-space: normal;
+}
+
 .xhs-phone {
-  width: min(100%, 430px);
+  width: min(100%, 320px);
   justify-self: center;
   overflow: hidden;
 }
@@ -803,9 +842,19 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 .xhs-cover {
   display: grid;
   place-items: center;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 4 / 5;
   overflow: hidden;
   background: #f2f6fa;
+}
+
+.xhs-carousel,
+.xhs-carousel :deep(.el-carousel__container) {
+  width: 100%;
+  height: 100%;
+}
+
+.xhs-carousel :deep(.el-carousel__indicators--outside) {
+  transform: translateY(-4px);
 }
 
 .xhs-cover img {
@@ -1030,8 +1079,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
     justify-content: flex-start;
   }
 
-  .audio-block,
-  .zhihu-image-grid {
+  .audio-block {
     grid-template-columns: 1fr;
   }
 }
