@@ -9,8 +9,16 @@ export interface ContentPayload {
   body: string;
   content_type: ContentType;
   tags: string[];
-  assets: [];
+  assets: AssetPayload[];
   platforms?: PlatformKey[];
+}
+
+export interface AssetPayload {
+  name: string;
+  type: "image" | "video" | "audio" | "cover" | "body_image";
+  size: number;
+  mime_type: string;
+  usage: string;
 }
 
 export interface DraftPayload {
