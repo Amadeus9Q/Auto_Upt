@@ -18,9 +18,11 @@ import {
   type AssetPayload,
   type ContentPayload,
   type ContentBlockPayload,
+  type DraftPayload,
   type PlatformKey,
   type PreviewDraftUpdatePayload,
   type PreviewResponse,
+  type ValidationIssue,
   type PublishMode,
   type PublishTaskCreatePayload,
   type PublishTaskResponse
@@ -866,13 +868,65 @@ async function generatePreview() {
     return;
   }
 
-  // 调用后端生成预览，填充平台预览文本框
+  // 记录调用前标题和关键词是否为空，用于回填判断
+  const titleWasEmpty = !title.value.trim();
+  const tagsWereEmpty = !tags.value.trim();
+
+  // 获取已有的平台草稿和校验报告
+  const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
+  const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
+
+  // 筛选需要生成新草稿的平台：已勾选 且 平台预览区无文本
+  const platformsNeedingDrafts = selectedPlatforms.value.filter(
+    p => !(previousDrafts[p]?.body?.trim())
+  );
+
+  // 如果所有已勾选平台都已有预览文本，无需调用后端
+  if (platformsNeedingDrafts.length === 0) {
+    if (preview.value) {
+      ElMessage.info("所有已勾选平台均已有预览内容，无需重新生成。");
+    }
+    return;
+  }
+
   previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
   try {
-    preview.value = await createPreview(buildContentPayload());
+    // 仅请求需要生成草稿的平台，避免覆盖已有内容
+    const payload = buildContentPayload();
+    payload.platforms = platformsNeedingDrafts;
+    const response = await createPreview(payload);
+
+    // 合并草稿：保留已有文本的平台草稿（含未勾选平台），叠加新生成的草稿
+    const mergedDrafts: Partial<Record<PlatformKey, DraftPayload>> = { ...previousDrafts, ...response.drafts };
+
+    // 合并校验报告：已有 + 新生成（新覆盖旧）
+    const mergedValidation: Partial<Record<PlatformKey, ValidationIssue[]>> = { ...previousValidation, ...response.validation_report };
+
+    preview.value = {
+      ...response,
+      drafts: mergedDrafts,
+      validation_report: mergedValidation,
+    };
+
+    // 回填：如果调用前标题为空且后端生成了标题，自动填入
+    const ir = response.content_ir as Record<string, unknown> | null;
+    if (titleWasEmpty && ir) {
+      const generatedTitle = ir["title"];
+      if (typeof generatedTitle === "string" && generatedTitle.trim() && generatedTitle !== "Untitled Content") {
+        title.value = generatedTitle;
+      }
+    }
+    // 回填：如果调用前关键词为空且后端生成了关键词，自动填入
+    if (tagsWereEmpty && ir) {
+      const generatedTags = ir["tags"];
+      if (Array.isArray(generatedTags) && generatedTags.length > 0 && generatedTags.every((t: unknown) => typeof t === "string")) {
+        tags.value = (generatedTags as string[]).join(", ");
+      }
+    }
+
     ElMessage.success("预览已生成。");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
@@ -880,6 +934,44 @@ async function generatePreview() {
   } finally {
     previewLoading.value = false;
   }
+}
+
+function clearPlatformDraft(platform: PlatformKey) {
+  if (!preview.value) return;
+  const currentDraft = preview.value.drafts[platform];
+  if (!currentDraft) return;
+  updatePlatformDraft(platform, { title: "", body: "", tags: [] });
+  // 如果清除后所有平台草稿都为空，重置预览状态
+  const allCleared = Object.values(preview.value.drafts).every(
+    d => !d?.body?.trim()
+  );
+  if (allCleared) {
+    preview.value = null;
+  }
+}
+
+function clearCheckedPlatformDrafts() {
+  if (!preview.value) return;
+  for (const platform of selectedPlatforms.value) {
+    clearPlatformDraft(platform);
+  }
+  // 如果清除后所有平台草稿都为空，重置预览状态
+  const allCleared = Object.values(preview.value.drafts).every(
+    d => !d?.body?.trim()
+  );
+  if (allCleared) {
+    preview.value = null;
+  }
+}
+
+function clearBasicInfo() {
+  title.value = "";
+  tags.value = "";
+}
+
+function clearContent() {
+  content.value = "";
+  preview.value = null;
 }
 
 async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
@@ -1172,6 +1264,10 @@ onMounted(async () => {
           @optimize-with-agent="optimizeWithAgent"
           @update-platform-draft="updatePlatformDraft"
           @open-preview="openPreviewDialog"
+          @clear-platform-draft="clearPlatformDraft"
+          @clear-checked-platform-drafts="clearCheckedPlatformDrafts"
+          @clear-basic-info="clearBasicInfo"
+          @clear-content="clearContent"
           @confirm-publish="enterPublishConfirm"
         />
       </el-main>
