@@ -191,9 +191,14 @@ class ImportedMedia(BaseModel):
 class ImportDocumentResponse(BaseModel):
     """文档导入 & LLM 提取结果。可直接用于填充编辑器。"""
     title: str = Field(default="", description="提取的标题。")
+    subtitle: str = Field(default="", description="副标题或导语。")
     body: str = Field(default="", description="提取的正文（Markdown 纯文本）。")
     tags: list[str] = Field(default_factory=list, description="自动生成的标签。")
     content_type: str = Field(default="article", description="推断的内容类型。")
     summary: str = Field(default="", description="内容摘要。")
     media: list[ImportedMedia] = Field(default_factory=list, description="从文档中提取的媒体资源列表。")
+    chapters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="章节划分结果：[{level, title, content, word_count, sub_chapters}]。",
+    )
     raw_text: str = Field(default="", description="文档原始纯文本，供前端兜底。")
