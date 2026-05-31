@@ -473,15 +473,14 @@ class PlatformStylistAgent:
         """构建社交媒体风格（小红书）的章节内容列表。"""
         sections: list[dict[str, Any]] = []
 
-        # 亮点提炼（小红书预览保持短句，不展开成长文）
-        highlights = []
-        for ch in analysis.flat_chapters[:2]:
-            # 取章节第一句
-            first_line = ch.content.split("\n")[0].strip() if ch.content else ch.title
+        # 亮点提炼保持短句，但正文部分不再硬截断原文信息。
+        highlights: list[str] = []
+        for ch in analysis.flat_chapters[:4]:
+            first_line = self._first_social_sentence(ch.content) or self._clean_social_line(ch.title)
             if first_line:
-                highlights.append(f"✨ {first_line[:36]}")
+                highlights.append(f"✨ {self._clip_social_highlight(first_line)}")
         if not highlights:
-            highlights.append(f"✨ {analysis.summary[:36]}")
+            highlights.append(f"✨ {self._clip_social_highlight(analysis.summary)}")
 
         sections.append(
             {
@@ -492,39 +491,37 @@ class PlatformStylistAgent:
             }
         )
 
-        # 详细内容（极简版）
-        for chapter in analysis.flat_chapters[:2]:
-            # 小红书每段要短
-            short_paragraphs = []
+        # 详细内容保留完整章节，只做适合小红书阅读的短段落拆分。
+        for chapter in analysis.flat_chapters:
+            social_paragraphs: list[str] = []
             for p in chapter.content.split("\n"):
-                p = p.strip()
-                if p:
-                    # 每段限制 32 字
-                    short_paragraphs.append(p[:32] + ("…" if len(p) > 32 else ""))
+                social_paragraphs.extend(self._split_social_paragraph(p))
 
             media_hints = []
             for m in chapter.media_items:
                 sizing = self._get_media_sizing(m.kind, m.role or "inline", style)
+                action = self._media_action_for_platform(m.kind, "xiaohongshu")
                 media_hints.append(
                     {
                         "asset_id": m.asset_id,
                         "kind": m.kind,
                         "name": m.name,
                         "src": m.src,
-                        "action": "keep" if m.kind == "image" else "skip",
-                        "reason": "小红书支持图片，视频和音频需转为图片或链接。" if m.kind != "image" else "图片可直接使用，推荐 3:4 竖版。",
+                        "action": action,
+                        "reason": self._media_reason(m.kind, "xiaohongshu"),
                         "sizing": sizing,
                     }
                 )
 
-            sections.append(
-                {
-                    "heading": chapter.title[:15],
-                    "paragraphs": short_paragraphs[:2],
-                    "media_hints": media_hints,
-                    "platform_hints": ["图片建议 3:4 竖版比例，可在正文中按段落穿插图片。"],
-                }
-            )
+            if social_paragraphs or media_hints:
+                sections.append(
+                    {
+                        "heading": self._clean_social_line(chapter.title),
+                        "paragraphs": social_paragraphs,
+                        "media_hints": media_hints,
+                        "platform_hints": ["图片建议 3:4 竖版比例，可在正文中按段落穿插图片。"],
+                    }
+                )
 
         # 互动引导
         sections.append(
@@ -540,6 +537,52 @@ class PlatformStylistAgent:
         )
 
         return sections
+
+    @staticmethod
+    def _clean_social_line(text: str) -> str:
+        line = text.strip()
+        line = re.sub(r"^\s*(?:[#>*\-+•]+\s*)+", "", line)
+        line = re.sub(r"\s+", " ", line)
+        return line.strip()
+
+    @classmethod
+    def _first_social_sentence(cls, text: str) -> str:
+        for raw_line in text.splitlines():
+            line = cls._clean_social_line(raw_line)
+            if not line:
+                continue
+            if re.match(r"^!\[.*\]\(.*\)$", line) or line.startswith("{{asset:"):
+                continue
+            return line
+        return ""
+
+    @classmethod
+    def _clip_social_highlight(cls, text: str, max_length: int = 56) -> str:
+        line = cls._clean_social_line(text)
+        if len(line) <= max_length:
+            return line
+        return line[: max_length - 1].rstrip() + "…"
+
+    @classmethod
+    def _split_social_paragraph(cls, text: str, max_length: int = 90) -> list[str]:
+        paragraph = cls._clean_social_line(text)
+        if not paragraph:
+            return []
+
+        parts: list[str] = []
+        while len(paragraph) > max_length:
+            candidates = [paragraph.rfind(mark, 0, max_length + 1) for mark in "。！？；;，,"]
+            cut = max(candidates)
+            if cut < max_length // 2:
+                cut = max_length
+            else:
+                cut += 1
+            parts.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
+
+        if paragraph:
+            parts.append(paragraph)
+        return parts
 
     def _sections_to_plain(
         self, sections: list[dict[str, Any]], style: dict[str, Any]
