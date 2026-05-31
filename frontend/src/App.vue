@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ArrowDown, ArrowRight, Check, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowRight, Check, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -25,13 +25,15 @@ import {
   type PublishTaskResponse
 } from "@/api/client";
 import AccountView from "@/views/AccountView.vue";
-import EditorView, { type EditorAssets, type LocalAsset } from "@/views/EditorView.vue";
+import EditorView from "@/views/EditorView.vue";
+import MediaLibraryView from "@/views/MediaLibraryView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
 import PublishConfirmView from "@/views/PublishConfirmView.vue";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView from "@/views/TaskView.vue";
+import type { EditorAssets, LocalAsset, MediaFolder, MediaTab } from "@/types/media";
 
-type WorkspaceTab = "preview" | "confirm" | "task" | "account";
+type WorkspaceTab = "preview" | "confirm" | "task" | "media" | "account";
 type TaskStep = {
   name: string;
   state: "wait" | "process" | "finish" | "error" | "success";
@@ -63,6 +65,7 @@ const editorAssets = ref<EditorAssets>({
   coverImage: null,
   coverImageId: null
 });
+const mediaFolders = ref<MediaFolder[]>([]);
 const publishForms = ref<PublishForms>({
   bilibili: {
     title: "",
@@ -108,6 +111,7 @@ const tabSubtitle = computed(() => {
     preview: "内容预览",
     confirm: "发布确认",
     task: "任务看板",
+    media: "多媒体库",
     account: "账号管理"
   };
   return subtitles[activeTab.value] ?? "内容预览";
@@ -192,6 +196,132 @@ watch(title, (nextTitle) => {
 watch(tags, (nextTags) => {
   publishForms.value.bilibili.tags = nextTags;
 });
+
+const MEDIA_LIBRARY_DB = "auto-upt-media-library";
+const MEDIA_LIBRARY_STORE = "assets";
+const MEDIA_FOLDERS_KEY = "auto-upt-media-folders";
+const MEDIA_COVER_KEY = "auto-upt-cover-image-id";
+let mediaPersistTimer: number | null = null;
+let mediaHydrated = false;
+
+type StoredAssetRecord = Omit<LocalAsset, "previewUrl" | "file"> & { file: File };
+
+function openMediaLibraryDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(MEDIA_LIBRARY_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(MEDIA_LIBRARY_STORE)) {
+        db.createObjectStore(MEDIA_LIBRARY_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readStoredAssets(): Promise<StoredAssetRecord[]> {
+  const db = await openMediaLibraryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readonly");
+    const request = tx.objectStore(MEDIA_LIBRARY_STORE).getAll();
+    request.onsuccess = () => resolve(request.result as StoredAssetRecord[]);
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+async function writeStoredAssets(records: StoredAssetRecord[]) {
+  const db = await openMediaLibraryDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readwrite");
+    const store = tx.objectStore(MEDIA_LIBRARY_STORE);
+    store.clear();
+    for (const record of records) {
+      store.put(record);
+    }
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+function assetsToStoredRecords(): StoredAssetRecord[] {
+  return (["images", "videos", "audios"] as MediaTab[]).flatMap((tab) =>
+    editorAssets.value[tab].map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      size: asset.size,
+      mimeType: asset.mimeType,
+      kind: asset.kind,
+      folderId: asset.folderId,
+      backendAssetId: asset.backendAssetId,
+      backendUrl: asset.backendUrl,
+      uploadPurpose: asset.uploadPurpose,
+      file: asset.file
+    }))
+  );
+}
+
+async function hydrateMediaLibrary() {
+  const storedFolders = localStorage.getItem(MEDIA_FOLDERS_KEY);
+  if (storedFolders) {
+    try {
+      mediaFolders.value = JSON.parse(storedFolders) as MediaFolder[];
+    } catch {
+      mediaFolders.value = [];
+    }
+  }
+
+  try {
+    const records = await readStoredAssets();
+    const storedCoverImageId = localStorage.getItem(MEDIA_COVER_KEY);
+    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
+    for (const record of records) {
+      const asset: LocalAsset = {
+        ...record,
+        previewUrl: URL.createObjectURL(record.file),
+        file: record.file
+      };
+      const tab: MediaTab = asset.kind === "image" ? "images" : asset.kind === "video" ? "videos" : "audios";
+      nextAssets[tab].push(asset);
+    }
+    nextAssets.coverImage = nextAssets.images.find((image) => image.id === storedCoverImageId) ?? null;
+    editorAssets.value = nextAssets;
+  } catch (error) {
+    console.warn("[MediaLibrary] 恢复本地素材失败", error);
+  } finally {
+    mediaHydrated = true;
+  }
+}
+
+function scheduleMediaLibraryPersist() {
+  if (!mediaHydrated) return;
+  if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
+  mediaPersistTimer = window.setTimeout(() => {
+    localStorage.setItem(MEDIA_FOLDERS_KEY, JSON.stringify(mediaFolders.value));
+    if (editorAssets.value.coverImageId) {
+      localStorage.setItem(MEDIA_COVER_KEY, editorAssets.value.coverImageId);
+    } else {
+      localStorage.removeItem(MEDIA_COVER_KEY);
+    }
+    void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
+      console.warn("[MediaLibrary] 保存本地素材失败", error);
+    });
+  }, 250);
+}
+
+watch(editorAssets, scheduleMediaLibraryPersist, { deep: true });
+watch(mediaFolders, scheduleMediaLibraryPersist, { deep: true });
 
 function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: string): AssetPayload {
   return {
@@ -780,7 +910,8 @@ function openPreviewDialog(platform?: PlatformKey) {
   previewDialogVisible.value = true;
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await hydrateMediaLibrary();
   void loadPublishTasks(false);
 });
 </script>
@@ -815,6 +946,10 @@ onMounted(() => {
 
       <div class="sidebar-bottom">
         <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
+          <el-menu-item index="media">
+            <el-icon><FolderOpened /></el-icon>
+            <span>多媒体库</span>
+          </el-menu-item>
           <el-menu-item index="account">
             <el-icon><User /></el-icon>
             <span>账号管理</span>
@@ -834,6 +969,13 @@ onMounted(() => {
 
       <el-main v-if="activeTab === 'account'" class="account-workspace">
         <AccountView />
+      </el-main>
+
+      <el-main v-else-if="activeTab === 'media'" class="media-workspace">
+        <MediaLibraryView
+          v-model:assets="editorAssets"
+          v-model:folders="mediaFolders"
+        />
       </el-main>
 
       <el-main v-else-if="activeTab === 'confirm'" class="confirm-workspace">
@@ -865,6 +1007,7 @@ onMounted(() => {
           v-model:tags="tags"
           v-model:platforms="selectedPlatforms"
           v-model:assets="editorAssets"
+          v-model:media-folders="mediaFolders"
           :word-count="wordCount"
           :preview-loading="previewLoading"
           :agent-loading="agentLoading"
@@ -1065,6 +1208,7 @@ onMounted(() => {
 
 .account-workspace,
 .confirm-workspace,
+.media-workspace,
 .task-workspace {
   padding: 24px 32px 32px;
 }
