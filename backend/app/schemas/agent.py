@@ -10,6 +10,7 @@ AgentStepStatusLiteral = Literal["succeeded", "skipped", "failed"]
 AgentStyleGoalLiteral = Literal["professional", "knowledge", "social", "video", "original"]
 AgentRewriteStrengthLiteral = Literal["light", "medium", "strong"]
 AgentLlmModeLiteral = Literal["auto", "enabled", "disabled"]
+AgentWritingStyleLiteral = Literal["default", "professional", "concise", "vivid", "custom"]
 
 
 class AgentRunRequest(ContentInput):
@@ -39,6 +40,15 @@ class AgentAdaptPreviewRequest(ContentInput):
     rewrite_strength: AgentRewriteStrengthLiteral = Field(
         default="medium",
         description="改写强度：light 保守润色，medium 调整结构和表达，strong 更明显重写。",
+    )
+    writing_style: AgentWritingStyleLiteral = Field(
+        default="default",
+        description="文字风格：default 使用对应平台默认风格，professional 专业，concise 简洁，vivid 生动，custom 自定义。",
+    )
+    custom_writing_style: str | None = Field(
+        default=None,
+        max_length=300,
+        description="自定义文字风格描述。仅 writing_style=custom 时使用，空白时回退为 default。",
     )
     overwrite_existing_metadata: bool = Field(
         default=False,

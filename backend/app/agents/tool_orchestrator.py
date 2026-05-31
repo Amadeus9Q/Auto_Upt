@@ -30,6 +30,48 @@ from backend.app.services.preview_service import PreviewService
 
 logger = logging.getLogger(__name__)
 
+PRESET_WRITING_STYLE_GUIDANCE: dict[str, str] = {
+    "professional": "专业可信，逻辑清晰，术语准确，表达克制，避免夸张和过度营销。",
+    "concise": "短句优先，删去冗余铺垫，直接表达核心信息，但必须保留关键事实、结论和专有名词。",
+    "vivid": "表达更有画面感和感染力，可以适度使用比喻、情绪化表达或 emoji，但不得夸大事实。",
+}
+
+PLATFORM_DEFAULT_WRITING_STYLE_GUIDANCE: dict[str, str] = {
+    "wechat": (
+        "微信公众号平台风格指导：\n"
+        "- 尽量保留原文的写作风格和整体结构，不要随意改变作者的表达方式。\n"
+        "- 适合长文深度阅读，正文结构清晰，层次分明。\n"
+        "- 导语简短有力，能吸引读者继续阅读。\n"
+        "- 结尾可适当加入引导关注或互动话术，但不要喧宾夺主。\n"
+        "- 语言正式但不死板，保持专业调性。"
+    ),
+    "zhihu": (
+        "知乎平台风格指导：\n"
+        "- 保持专业严谨的表达方式，逻辑严密，论证充分。\n"
+        "- 适合知识分享和深度讨论，内容要有实质性见解。\n"
+        "- 开头可抛出一个引人思考的问题或观点。\n"
+        "- 使用分点或列表增强可读性，引用数据增强说服力。\n"
+        "- 结尾给出明确结论或行动建议，体现思考深度。"
+    ),
+    "xiaohongshu": (
+        "小红书平台风格指导：\n"
+        "- 采用谈心式、亲切真诚的表达方式，像和好朋友分享经验。\n"
+        "- 用第一人称写作，拉近与读者的距离。\n"
+        "- 语言轻松自然，可以适当使用表情符号和网络用语。\n"
+        "- 突出内容的实用价值和亮点，让读者觉得「学到了」。\n"
+        "- 不要为了短标题或短笔记硬截断内容；不得用 ... 或 … 表示省略。\n"
+        "- 结尾可引导点赞、收藏、评论等互动。"
+    ),
+    "bilibili": (
+        "B站平台风格指导：\n"
+        "- 采用轻松活泼、年轻化的表达方式，有网感但不低俗。\n"
+        "- 适合视频简介，语言简洁有趣。\n"
+        "- 可使用年轻人常用的表达方式，适当玩梗。\n"
+        "- 内容要点用分点列出，清晰易懂。\n"
+        "- 结尾可引导一键三连、弹幕互动等。"
+    ),
+}
+
 
 class _LlmStatusTracker:
     """Track whether any LLM call was attempted and succeeded."""
@@ -262,7 +304,7 @@ class ToolDrivenAgentOrchestrator:
         llm_payload = self._try_llm_json(
             request,
             purpose="adapt_preview",
-            prompt=self._rewrite_prompt(metadata),
+            prompt=self._rewrite_prompt(metadata, request),
         )
         if llm_payload is not None:
             llm_title = self._clean_title(llm_payload.get("title"))
@@ -576,7 +618,33 @@ class ToolDrivenAgentOrchestrator:
         return text
 
     @staticmethod
-    def _rewrite_prompt(metadata: AgentGeneratedMetadata) -> str:
+    def _selected_writing_style_guidance(request: AgentAdaptPreviewRequest) -> str:
+        style = request.writing_style
+        if style == "custom":
+            return re.sub(r"\s+", " ", (request.custom_writing_style or "").strip())
+        return PRESET_WRITING_STYLE_GUIDANCE.get(style, "")
+
+    @staticmethod
+    def _platform_default_writing_style_guidance(platform: str, platform_style: dict[str, Any]) -> str:
+        if platform in PLATFORM_DEFAULT_WRITING_STYLE_GUIDANCE:
+            return PLATFORM_DEFAULT_WRITING_STYLE_GUIDANCE[platform]
+        tone = platform_style.get("tone", "通用")
+        structure_hint = platform_style.get("structure_hint", "")
+        return f"通用风格指导：{tone}\n推荐结构：{structure_hint}"
+
+    @staticmethod
+    def _rewrite_prompt(
+        metadata: AgentGeneratedMetadata,
+        request: AgentAdaptPreviewRequest,
+    ) -> str:
+        style_guidance = ToolDrivenAgentOrchestrator._selected_writing_style_guidance(request)
+        style_section = (
+            "用户选择的发布风格：\n"
+            f"{style_guidance}\n"
+            "请把该风格作为正文、标题和摘要的文字表达依据，但不得改变原文事实。\n"
+            if style_guidance
+            else ""
+        )
         return (
             "你是一个严谨的中文内容编辑。请把用户内容整理成可直接发布的中文正文，并补全标题、摘要和关键词。\n"
             "硬性要求：\n"
@@ -591,6 +659,7 @@ class ToolDrivenAgentOrchestrator:
             "9. summary 用一句话概括正文，不要复述标题字段。\n"
             "10. 绝对不能偏离原文的主题和核心内容，不要添加原文没有的事实或观点。\n"
             "11. 不得用 ... 或 … 表示硬截断，标题、关键词和正文必须保留完整可读内容。\n"
+            f"{style_section}"
             f"建议标题：{metadata.title}\n"
             f"建议关键词：{', '.join(metadata.tags)}"
         )
@@ -616,47 +685,22 @@ class ToolDrivenAgentOrchestrator:
         platform: str,
         platform_style: dict[str, Any],
         content_ir: dict[str, Any],
+        request: AgentAdaptPreviewRequest,
     ) -> str:
         display_name = platform_style.get("display_name", platform)
-        tone = platform_style.get("tone", "通用")
-        structure_hint = platform_style.get("structure_hint", "")
-
-        # 平台专属风格指导
-        platform_guidance = {
-            "wechat": (
-                "微信公众号平台风格指导：\n"
-                "- 尽量保留原文的写作风格和整体结构，不要随意改变作者的表达方式。\n"
-                "- 适合长文深度阅读，正文结构清晰，层次分明。\n"
-                "- 导语简短有力，能吸引读者继续阅读。\n"
-                "- 结尾可适当加入引导关注或互动话术，但不要喧宾夺主。\n"
-                "- 语言正式但不死板，保持专业调性。"
-            ),
-            "zhihu": (
-                "知乎平台风格指导：\n"
-                "- 保持专业严谨的表达方式，逻辑严密，论证充分。\n"
-                "- 适合知识分享和深度讨论，内容要有实质性见解。\n"
-                "- 开头可抛出一个引人思考的问题或观点。\n"
-                "- 使用分点或列表增强可读性，引用数据增强说服力。\n"
-                "- 结尾给出明确结论或行动建议，体现思考深度。"
-            ),
-            "xiaohongshu": (
-                "小红书平台风格指导：\n"
-                "- 采用谈心式、亲切真诚的表达方式，像和好朋友分享经验。\n"
-                "- 用第一人称写作，拉近与读者的距离。\n"
-                "- 语言轻松自然，可以适当使用表情符号和网络用语。\n"
-                "- 突出内容的实用价值和亮点，让读者觉得「学到了」。\n"
-                "- 不要为了短标题或短笔记硬截断内容；不得用 ... 或 … 表示省略。\n"
-                "- 结尾可引导点赞、收藏、评论等互动。"
-            ),
-            "bilibili": (
-                "B站平台风格指导：\n"
-                "- 采用轻松活泼、年轻化的表达方式，有网感但不低俗。\n"
-                "- 适合视频简介，语言简洁有趣。\n"
-                "- 可使用年轻人常用的表达方式，适当玩梗。\n"
-                "- 内容要点用分点列出，清晰易懂。\n"
-                "- 结尾可引导一键三连、弹幕互动等。"
-            ),
-        }.get(platform, f"通用风格指导：{tone}\n推荐结构：{structure_hint}")
+        platform_guidance = ToolDrivenAgentOrchestrator._platform_default_writing_style_guidance(
+            platform,
+            platform_style,
+        )
+        style_guidance = ToolDrivenAgentOrchestrator._selected_writing_style_guidance(request)
+        if style_guidance:
+            style_section = (
+                "用户选择的发布风格（优先级高于平台默认文字风格）：\n"
+                f"{style_guidance}\n"
+                "请在保留平台结构、事实准确和发布约束的前提下，以该风格作为文字表达依据。"
+            )
+        else:
+            style_section = "发布风格依据：使用上述对应平台默认风格。"
 
         return (
             f"你是{display_name}平台的专业内容创作者。请把以下内容改写为适合{display_name}发布的版本。\n\n"
@@ -665,6 +709,7 @@ class ToolDrivenAgentOrchestrator:
             f"2. 保留原文的所有关键事实、专有名词、数据和结论。\n"
             f"3. 只做表达方式的适配和优化，不做内容的曲解或篡改。\n\n"
             f"{platform_guidance}\n\n"
+            f"{style_section}\n\n"
             "硬性要求：\n"
             "1. 只返回 JSON：{\"title\": string, \"summary\": string, \"tags\": string[], \"body\": string}，不要返回 Markdown 代码块。\n"
             "2. title 必须符合该平台标题风格，不得包含\"题目：\"\"标题：\"等前缀。\n"
@@ -741,6 +786,8 @@ class ToolDrivenAgentOrchestrator:
                             "tags": request.tags,
                             "style_goal": request.style_goal,
                             "rewrite_strength": request.rewrite_strength,
+                            "writing_style": request.writing_style,
+                            "custom_writing_style": request.custom_writing_style,
                         },
                         ensure_ascii=False,
                     ),
@@ -815,7 +862,7 @@ class ToolDrivenAgentOrchestrator:
         return self._try_llm_json(
             request,
             purpose=f"platform_rewrite.{platform}",
-            prompt=self._platform_rewrite_prompt(platform, platform_style, content_ir),
+            prompt=self._platform_rewrite_prompt(platform, platform_style, content_ir, request),
         )
 
     @staticmethod

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import type { UploadFile, UploadProps } from "element-plus";
+import { ElMessage, type UploadFile, type UploadProps } from "element-plus";
 import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
 
-import { importDocument, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
+import { importDocument, type AgentWritingStyle, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
 import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
@@ -27,6 +27,8 @@ interface ContentAssetReference {
 interface AgentOptimizeOptions {
   updateTitle: boolean;
   updateTags: boolean;
+  writingStyle: AgentWritingStyle;
+  customWritingStyle?: string | null;
 }
 
 const props = defineProps<{
@@ -54,6 +56,14 @@ const platformOptions: Array<{ label: string; value: PlatformKey }> = [
   { label: "知乎", value: "zhihu" },
   { label: "小红书", value: "xiaohongshu" }
 ];
+const writingStyleOptions: Array<{ label: string; value: AgentWritingStyle }> = [
+  { label: "默认（对应平台风格）", value: "default" },
+  { label: "专业", value: "professional" },
+  { label: "简洁", value: "concise" },
+  { label: "生动", value: "vivid" }
+];
+const writingStylePresetValues = new Set<string>(writingStyleOptions.map((option) => option.value));
+const maxCustomWritingStyleLength = 300;
 
 const mediaTabs: Array<{ key: MediaTab; label: string; accept: string; addText: string }> = [
   { key: "images", label: "图片", accept: "image/*", addText: "添加图片" },
@@ -82,6 +92,8 @@ const mediaPanelWidth = ref(340);
 const isResizing = ref(false);
 const agentUpdateTitle = ref(false);
 const agentUpdateTags = ref(false);
+const platformWritingStyleValue = ref<AgentWritingStyle | string>("default");
+const batchWritingStyleValue = ref<AgentWritingStyle | string>("default");
 
 function onGutterMouseDown(event: MouseEvent) {
   event.preventDefault();
@@ -145,11 +157,6 @@ const activePreviewTags = computed({
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { tags: parseTagText(value) })
 });
 
-const agentOptimizeOptions = computed<AgentOptimizeOptions>(() => ({
-  updateTitle: agentUpdateTitle.value,
-  updateTags: agentUpdateTags.value
-}));
-
 async function handleImportClick() {
   importInputRef.value?.click();
 }
@@ -202,12 +209,46 @@ function parseTagText(value: string): string[] {
     .filter(Boolean);
 }
 
+function resolveWritingStyle(value: AgentWritingStyle | string): Pick<AgentOptimizeOptions, "writingStyle" | "customWritingStyle"> | null {
+  const normalized = value.trim();
+  if (writingStylePresetValues.has(normalized)) {
+    return { writingStyle: normalized as AgentWritingStyle, customWritingStyle: null };
+  }
+  if (!normalized) {
+    ElMessage.warning("请输入自定义发布风格。");
+    return null;
+  }
+  if (normalized.length > maxCustomWritingStyleLength) {
+    ElMessage.warning(`自定义发布风格不能超过 ${maxCustomWritingStyleLength} 字。`);
+    return null;
+  }
+  return { writingStyle: "custom", customWritingStyle: normalized };
+}
+
+function buildAgentOptimizeOptions(value: AgentWritingStyle | string): AgentOptimizeOptions | null {
+  const style = resolveWritingStyle(value);
+  if (!style) {
+    return null;
+  }
+  return {
+    updateTitle: agentUpdateTitle.value,
+    updateTags: agentUpdateTags.value,
+    ...style
+  };
+}
+
 function emitOptimizeAllWithAgent() {
-  emit("optimizeAllWithAgent", agentOptimizeOptions.value);
+  const options = buildAgentOptimizeOptions(batchWritingStyleValue.value);
+  if (options) {
+    emit("optimizeAllWithAgent", options);
+  }
 }
 
 function emitOptimizeWithAgent() {
-  emit("optimizeWithAgent", activePreviewPlatform.value, agentOptimizeOptions.value);
+  const options = buildAgentOptimizeOptions(platformWritingStyleValue.value);
+  if (options) {
+    emit("optimizeWithAgent", activePreviewPlatform.value, options);
+  }
 }
 
 function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
@@ -1052,6 +1093,25 @@ function dropClass(tab: MediaTab, index: number) {
             <el-checkbox v-model="agentUpdateTitle">修改标题</el-checkbox>
             <el-checkbox v-model="agentUpdateTags">修改关键词</el-checkbox>
           </div>
+          <div class="agent-style-row">
+            <span>当前平台风格</span>
+            <el-select
+              v-model="platformWritingStyleValue"
+              class="agent-style-select"
+              filterable
+              allow-create
+              default-first-option
+              :reserve-keyword="false"
+              placeholder="选择或输入发布风格"
+            >
+              <el-option
+                v-for="option in writingStyleOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </div>
 
           <div class="platform-preview-actions">
             <span>{{ activePreviewDraft ? "当前平台内容已生成，可直接修改或拖放素材。" : "当前平台还没有生成内容。" }}</span>
@@ -1111,6 +1171,26 @@ function dropClass(tab: MediaTab, index: number) {
           @delete="handleMediaDelete"
         />
       </aside>
+    </div>
+
+    <div class="batch-agent-style-row">
+      <span>一键优化风格</span>
+      <el-select
+        v-model="batchWritingStyleValue"
+        class="agent-style-select"
+        filterable
+        allow-create
+        default-first-option
+        :reserve-keyword="false"
+        placeholder="选择或输入发布风格"
+      >
+        <el-option
+          v-for="option in writingStyleOptions"
+          :key="`batch-${option.value}`"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
     </div>
 
     <div class="action-row">
@@ -1586,6 +1666,29 @@ function dropClass(tab: MediaTab, index: number) {
 
 .agent-option-row > span {
   font-weight: 650;
+}
+
+.agent-style-row,
+.batch-agent-style-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  color: #607086;
+  font-size: 13px;
+}
+
+.agent-style-row > span,
+.batch-agent-style-row > span {
+  font-weight: 650;
+}
+
+.agent-style-select {
+  width: min(100%, 320px);
+}
+
+.batch-agent-style-row {
+  margin: 2px 0 10px;
 }
 
 .platform-preview-actions {
