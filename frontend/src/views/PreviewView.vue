@@ -259,6 +259,12 @@ function collectDraftAssets(draft: PlatformDraft): DraftAsset[] {
 }
 
 function findAssetByName(assets: DraftAsset[], name: string, kind: string): DraftAsset | undefined {
+  const [displayName, id] = name.split("｜id:");
+  if (id) {
+    const byId = assets.find((asset) => asset.id === id.trim());
+    if (byId) return byId;
+  }
+  const cleanName = displayName.split("/").pop()?.trim() || displayName.trim();
   const typeMap: Record<string, string[]> = {
     image: ["image", "cover"],
     video: ["video"],
@@ -267,8 +273,8 @@ function findAssetByName(assets: DraftAsset[], name: string, kind: string): Draf
   const allowedTypes = typeMap[kind] ?? [];
   return assets.find(
     (a) =>
-      (a.name && a.name === name) ||
-      (allowedTypes.includes(a.type ?? "") && name.includes(a.name ?? ""))
+      (a.name && (a.name === cleanName || a.name === displayName || displayName.endsWith(`/${a.name}`))) ||
+      (allowedTypes.includes(a.type ?? "") && displayName.includes(a.name ?? ""))
   );
 }
 
