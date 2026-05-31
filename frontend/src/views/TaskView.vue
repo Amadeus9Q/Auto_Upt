@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { Check, Clock, Close, DocumentChecked, Loading, Promotion, Refresh } from "@element-plus/icons-vue";
 
 import type { PlatformKey, PublishResult, PublishTaskResponse } from "@/api/client";
+import { PLATFORM_LABELS } from "@/utils/platforms";
 
 interface TaskStep {
   name: string;
@@ -21,13 +22,6 @@ const emit = defineEmits<{
   refreshTask: [taskId: string];
   publishDraft: [publicationId: string];
 }>();
-
-const platformLabels: Record<PlatformKey, string> = {
-  wechat: "公众号",
-  bilibili: "B站",
-  zhihu: "知乎",
-  xiaohongshu: "小红书"
-};
 
 const statusText = {
   pending: "等待中",
@@ -93,7 +87,7 @@ const taskItems = computed(() =>
 
       return {
         platform: key,
-        label: result?.display_name ?? platformLabels[key] ?? platform,
+        label: result?.display_name ?? PLATFORM_LABELS[key] ?? platform,
         result,
         failed,
         succeeded,

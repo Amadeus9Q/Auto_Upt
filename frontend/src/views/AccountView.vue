@@ -25,6 +25,7 @@ import {
   type PlatformKey,
   type WechatConnectPayload
 } from "@/api/client";
+import { getErrorMessage } from "@/utils/errors";
 
 type AccountStatus = "connected" | "disconnected" | "placeholder" | "error";
 type SupportedPlatform = PlatformKey;
@@ -301,7 +302,7 @@ async function initializeBilibiliCaptcha() {
       }
     );
   } catch (error) {
-    bilibiliCaptchaState.message = error instanceof Error ? error.message : "验证码获取失败";
+    bilibiliCaptchaState.message = getErrorMessage(error, "验证码获取失败");
     ElMessage.error(bilibiliCaptchaState.message);
   } finally {
     loadingAction.value = "";
@@ -319,7 +320,7 @@ async function refreshAccounts(showToast = false) {
       ElMessage.success("账号状态已刷新");
     }
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : "账号状态刷新失败";
+    loadError.value = getErrorMessage(error, "账号状态刷新失败");
     if (showToast) {
       ElMessage.error("暂时无法读取账号状态");
     }
@@ -354,7 +355,7 @@ async function connectWechat() {
       platform.status = "error";
       platform.note = "连接接口未完成或配置校验失败";
     }
-    ElMessage.error(error instanceof Error ? error.message : "公众号连接失败");
+    ElMessage.error(getErrorMessage(error, "公众号连接失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -410,7 +411,7 @@ async function connectBilibili() {
     resetBilibiliCaptcha();
     ElMessage.success(result.message);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "B站登录失败";
+    const message = getErrorMessage(error, "B站登录失败");
     const platform = platformByKey("bilibili");
     if (platform) {
       platform.status = "error";
@@ -445,7 +446,7 @@ async function testConnection(platformKey: SupportedPlatform) {
       platform.status = "error";
       platform.note = "当前暂时无法测试连接";
     }
-    ElMessage.error(error instanceof Error ? error.message : "连接测试失败");
+    ElMessage.error(getErrorMessage(error, "连接测试失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -470,7 +471,7 @@ async function disconnect(platformKey: SupportedPlatform) {
     platform.loginResult = "";
     ElMessage.success("已断开连接");
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "断开连接失败");
+    ElMessage.error(getErrorMessage(error, "断开连接失败"));
   } finally {
     loadingAction.value = "";
   }
