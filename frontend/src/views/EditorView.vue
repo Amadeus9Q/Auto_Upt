@@ -6,6 +6,9 @@ import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, P
 import { importDocument, type AgentWritingStyle, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
 import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
+import { ASSET_MARKER_PATTERN, kindLabel } from "@/utils/assetMarkers";
+import { getErrorMessage } from "@/utils/errors";
+import { parseTagText } from "@/utils/text";
 
 type DraftAssetEntry = { type?: string; name?: string; preview_url?: string; url?: string };
 
@@ -132,11 +135,12 @@ const editorShellStyle = computed(() => {
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 const contentAssetReferences = computed<ContentAssetReference[]>(() => {
   const references: ContentAssetReference[] = [];
-  const pattern = /【(图片|视频|音频)：([^】]+)】/g;
+  const pattern = ASSET_MARKER_PATTERN;
+  pattern.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content.value)) !== null) {
-    const label = match[1];
-    const token = match[2];
+    const label = match[1] ? kindLabel(match[1]) : match[3] ?? "";
+    const token = match[2] ?? match[4] ?? "";
     references.push({
       marker: match[0],
       index: match.index,
@@ -194,7 +198,7 @@ async function handleImportFileChange(event: Event) {
     }
     console.log("[ImportDoc]", result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "导入文件失败。";
+    const message = getErrorMessage(error, "导入文件失败。");
     window.alert(message);
   } finally {
     importLoading.value = false;
@@ -204,13 +208,6 @@ async function handleImportFileChange(event: Event) {
 
 function kindFromTab(tab: MediaTab): MediaKind {
   return tab === "images" ? "image" : tab === "videos" ? "video" : "audio";
-}
-
-function parseTagText(value: string): string[] {
-  return value
-    .split(/[,，\s]+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 }
 
 function resolveWritingStyle(value: AgentWritingStyle | string): Pick<AgentOptimizeOptions, "writingStyle" | "customWritingStyle"> | null {
@@ -428,12 +425,6 @@ function clearCoverImage() {
   assets.value.coverImage = null;
 }
 
-const kindLabel: Record<MediaKind, string> = {
-  image: "图片",
-  video: "视频",
-  audio: "音频"
-};
-
 function assetFolderPath(asset: LocalAsset, name = asset.name) {
   const names: string[] = [];
   let cursor = asset.folderId;
@@ -447,7 +438,7 @@ function assetFolderPath(asset: LocalAsset, name = asset.name) {
 }
 
 function makeAssetMarker(asset: LocalAsset, name = asset.name) {
-  return `【${kindLabel[asset.kind]}：${assetFolderPath(asset, name)}】`;
+  return `【${kindLabel(asset.kind)}：${assetFolderPath(asset, name)}】`;
 }
 
 function assetMarker(asset: LocalAsset) {
@@ -459,13 +450,13 @@ function markerMatchesAsset(kind: MediaKind, token: string, asset: LocalAsset, l
   const cleanToken = token.split("｜id:")[0].trim();
   const currentPath = assetFolderPath(asset);
   const oldPath = legacyName ? assetFolderPath(asset, legacyName) : "";
-  return kindLabel[kind] === kindLabel[asset.kind] && [asset.name, legacyName, currentPath, oldPath, ...(asset.aliasPaths ?? [])].filter(Boolean).includes(cleanToken);
+  return kindLabel(kind) === kindLabel(asset.kind) && [asset.name, legacyName, currentPath, oldPath, ...(asset.aliasPaths ?? [])].filter(Boolean).includes(cleanToken);
 }
 
 function kindFromLabel(label: string): MediaKind | null {
-  if (label === kindLabel.image || label === "图片") return "image";
-  if (label === kindLabel.video || label === "视频") return "video";
-  if (label === kindLabel.audio || label === "音频") return "audio";
+  if (label === kindLabel("image") || label === "图片") return "image";
+  if (label === kindLabel("video") || label === "视频") return "video";
+  if (label === kindLabel("audio") || label === "音频") return "audio";
   return null;
 }
 
@@ -490,7 +481,9 @@ function locateContentReference(reference: ContentAssetReference) {
 }
 
 function refreshAssetMarkersInText(text: string, changedAsset?: LocalAsset, legacyName?: string) {
-  return text.replace(/【(图片|视频|音频)：([^】]+)】/g, (full, label: string, token: string) => {
+  return text.replace(ASSET_MARKER_PATTERN, (full, rawKind: string | undefined, rawToken: string | undefined, rawLabel: string | undefined, rawTextToken: string | undefined) => {
+    const label = rawKind ? kindLabel(rawKind) : rawLabel ?? "";
+    const token = rawToken ?? rawTextToken ?? "";
     const assetsForKind = label === "图片" ? assets.value.images : label === "视频" ? assets.value.videos : assets.value.audios;
     const asset = changedAsset
       ? markerMatchesAsset(changedAsset.kind, token, changedAsset, legacyName) ? changedAsset : undefined
@@ -500,8 +493,10 @@ function refreshAssetMarkersInText(text: string, changedAsset?: LocalAsset, lega
 }
 
 function removeAssetMarkersFromText(text: string, removedAsset: LocalAsset) {
-  return text.replace(/【(图片|视频|音频)：([^】]+)】\s*/g, (full, label: string, token: string) => {
-    return markerMatchesAsset(removedAsset.kind, token, removedAsset) && label === kindLabel[removedAsset.kind] ? "" : full;
+  return text.replace(ASSET_MARKER_PATTERN, (full, rawKind: string | undefined, rawToken: string | undefined, rawLabel: string | undefined, rawTextToken: string | undefined) => {
+    const label = rawKind ? kindLabel(rawKind) : rawLabel ?? "";
+    const token = rawToken ?? rawTextToken ?? "";
+    return markerMatchesAsset(removedAsset.kind, token, removedAsset) && label === kindLabel(removedAsset.kind) ? "" : full;
   });
 }
 

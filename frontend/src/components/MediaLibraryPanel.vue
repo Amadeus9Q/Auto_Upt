@@ -474,6 +474,7 @@ function cancelRename() {
             class="media-unit folder-unit"
             :class="{ 'is-folder-drag-target': folderDragTargetId === folder.id }"
             draggable="false"
+            @click="activeFolderId = folder.id"
             @dragstart="onFolderDragStart(folder, $event)"
             @dragover.prevent="onFolderDragOver(folder, $event)"
             @dragleave="onFolderDragLeave(folder, $event)"
@@ -481,11 +482,9 @@ function cancelRename() {
             @dragend="disableDragHandle($event); folderDragTargetId = null"
           >
             <span class="drag-handle" @mousedown="enableDragHandle" @mouseup="resetDragHandle" />
-            <button type="button" class="folder-open-button" @click="activeFolderId = folder.id">
-              <el-icon><FolderOpened /></el-icon>
-              <strong>{{ folder.name }}</strong>
-              <small>打开文件夹</small>
-            </button>
+            <el-icon><FolderOpened /></el-icon>
+            <strong>{{ folder.name }}</strong>
+            <small>打开文件夹</small>
             <el-button class="folder-delete-button" text type="danger" :icon="Delete" @click.stop="removeFolder(folder)" />
           </article>
 
@@ -696,8 +695,7 @@ function cancelRename() {
   transition: outline 0.15s, background 0.15s, transform 0.15s;
 }
 
-.folder-unit > .el-icon,
-.folder-open-button .el-icon {
+.folder-unit > .el-icon {
   color: #1f6feb;
   font-size: 22px;
 }
@@ -715,10 +713,6 @@ function cancelRename() {
   color: #607086;
   font-size: 11px;
   line-height: 1.3;
-}
-
-.folder-open-button {
-  display: contents;
 }
 
 .folder-delete-button {
