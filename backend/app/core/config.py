@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "deepseek-chat"
+    import_use_llm: bool = True
+    import_llm_timeout_seconds: float = 25.0
+    import_llm_max_chars: int = 12000
+    import_analysis_use_llm: bool = False
 
     browser_headless: bool = False
     screenshot_dir: str = "storage/screenshots"

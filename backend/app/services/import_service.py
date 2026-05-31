@@ -14,6 +14,7 @@ from fastapi import UploadFile
 
 from backend.app.agents.content_analyst import ContentAnalystAgent
 from backend.app.agents.document_extractor import DocumentExtractorAgent
+from backend.app.core.config import get_settings
 from backend.app.schemas.content import ImportDocumentResponse, ImportedMedia
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,7 @@ class ImportService:
             ImportDocumentResponse 包含提取的标题/正文/标签/媒体。
         """
         raw_text, file_media = self._parse_upload(file)
+        settings = get_settings()
 
         # LLM 深入提取
         extracted = self._extractor.extract(raw_text)
@@ -190,6 +192,7 @@ class ImportService:
             title=extracted.get("title", ""),
             tags=extracted.get("tags", []),
             content_type=extracted.get("content_type", "article"),
+            allow_llm=settings.import_analysis_use_llm,
         )
 
         def _serialize_chapters(chapters: list[Any]) -> list[dict[str, Any]]:

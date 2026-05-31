@@ -57,25 +57,24 @@ class AccountService:
                 seconds=max(int(token_payload.get("expires_in", 7200)) - 300, 60)
             )
 
-        record = ConnectedAccountRecord(
+        encrypted = self.cipher.encrypt_json(
+            {
+                "app_id": request.app_id,
+                "app_secret": request.app_secret,
+                "access_token": token_payload.get("access_token"),
+            }
+        )
+
+        # UPSERT：如果该平台已有连接记录则更新，否则新建
+        record = await self._upsert_account(
             platform="wechat",
             display_name=request.display_name or "微信公众号",
-            status="connected",
             auth_type="app_secret",
             external_user_id=request.app_id,
-            encrypted_credentials=self.cipher.encrypt_json(
-                {
-                    "app_id": request.app_id,
-                    "app_secret": request.app_secret,
-                    "access_token": token_payload.get("access_token"),
-                }
-            ),
+            encrypted_credentials=encrypted,
             credential_metadata={"token_tested": request.test_connection},
             token_expires_at=token_expires_at,
         )
-        self.session.add(record)
-        await self.session.commit()
-        await self.session.refresh(record)
         return self._to_response(get_adapter("wechat"), record)
 
     async def get_bilibili_captcha(self) -> BilibiliCaptchaResponse:
@@ -115,22 +114,21 @@ class AccountService:
             nav_payload = {}
 
         nav_data = nav_payload.get("data") or {}
-        record = ConnectedAccountRecord(
+        encrypted = self.cipher.encrypt_json(cookies)
+
+        # UPSERT：如果该平台已有连接记录则更新 Cookie，否则新建
+        record = await self._upsert_account(
             platform="bilibili",
             display_name=request.display_name or nav_data.get("uname") or "B站账号",
-            status="connected",
             auth_type="cookie",
             external_user_id=str(nav_data.get("mid") or cookies.get("DedeUserID") or ""),
-            encrypted_credentials=self.cipher.encrypt_json(cookies),
+            encrypted_credentials=encrypted,
             credential_metadata={
                 "login_method": "password",
                 "nav_checked": bool(nav_payload),
             },
             token_expires_at=None,
         )
-        self.session.add(record)
-        await self.session.commit()
-        await self.session.refresh(record)
         return BilibiliLoginResponse(
             account=self._to_response(get_adapter("bilibili"), record),
             message="B站登录成功，Cookie 凭据已加密保存。",
@@ -199,6 +197,50 @@ class AccountService:
 
     def decrypt_credentials(self, record: ConnectedAccountRecord) -> dict[str, Any]:
         return self.cipher.decrypt_json(record.encrypted_credentials)
+
+    async def _upsert_account(
+        self,
+        platform: str,
+        display_name: str,
+        auth_type: str,
+        external_user_id: str,
+        encrypted_credentials: str,
+        credential_metadata: dict[str, Any],
+        token_expires_at: datetime | None,
+    ) -> ConnectedAccountRecord:
+        """对同一平台执行 UPSERT：有则更新，无则新建。
+
+        避免重复连接同一个平台时产生多条僵尸记录。
+        """
+        if self.session is None:
+            raise RuntimeError("AccountService._upsert_account requires a database session.")
+        existing = await self._get_latest_account(platform)
+        if existing is not None:
+            existing.display_name = display_name
+            existing.status = "connected"
+            existing.auth_type = auth_type
+            existing.external_user_id = external_user_id
+            existing.encrypted_credentials = encrypted_credentials
+            existing.credential_metadata = credential_metadata
+            existing.token_expires_at = token_expires_at
+            await self.session.commit()
+            await self.session.refresh(existing)
+            return existing
+
+        record = ConnectedAccountRecord(
+            platform=platform,
+            display_name=display_name,
+            status="connected",
+            auth_type=auth_type,
+            external_user_id=external_user_id,
+            encrypted_credentials=encrypted_credentials,
+            credential_metadata=credential_metadata,
+            token_expires_at=token_expires_at,
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
 
     async def _latest_accounts_by_platform(self) -> dict[str, ConnectedAccountRecord]:
         if self.session is None:

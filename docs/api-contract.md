@@ -1,6 +1,6 @@
 # API 契约
 
-当前后端已实现第一阶段最小闭环，并在第二阶段新增公众号和 B站真实发布接口。
+当前后端已实现第一阶段最小闭环，并在第二阶段新增公众号、B站真实发布接口；小红书已加入 myaibot API Adapter 和发布字段映射，但账号连接入口与真实联调仍需补齐。
 
 ## 内容
 
@@ -45,7 +45,24 @@
 - `GET /api/v1/publish-tasks/{task_id}`：查询任务状态。
 - `POST /api/v1/publish-tasks/{task_id}/refresh`：刷新真实平台发布状态。
 
-当前第二阶段中，`mode=draft` 和 `mode=publish` 仅允许 `wechat`、`bilibili`。真实发布任务会保存 `account_ids`、`asset_ids`、`platform_options`、`drafts` 和 `content_ir`，并由 Celery worker 执行。`zhihu` 和 `xiaohongshu` 在真实发布模式下返回不支持状态，后续浏览器辅助发布阶段再接入。
+当前第二阶段中，`mode=draft` 和 `mode=publish` 的目标状态如下：
+
+| 平台 | `simulate` | `draft` / `publish` | 说明 |
+|------|------------|---------------------|------|
+| `wechat` | 支持 | 支持 | 依赖公众号账号、封面图和正文图片素材上传 |
+| `bilibili` | 支持 | 支持 | 依赖 B站登录凭据、视频素材和可选封面图 |
+| `xiaohongshu` | 支持 | 代码路径已接入 | 依赖 myaibot API Key、素材公网 URL、账号上下文；前端账号入口仍需补齐 |
+| `zhihu` | 支持 | 不支持 | 当前仅做预览和模拟 |
+
+真实发布任务会保存 `account_ids`、`asset_ids`、`platform_options`、`drafts` 和 `content_ir`，并由 Celery worker 执行。
+
+`platform_options` 按平台传入用户确认后的字段：
+
+- `wechat`：`title`、`author`、`digest`、`content_source_url`、`need_open_comment`、`only_fans_can_comment`、`direct_publish`、`cover_asset_id`。
+- `bilibili`：`title`、`description`、`tags`、`tid`、`copyright`、`source`、`no_reprint`、`dynamic`、`video_asset_id`、`cover_asset_id`。
+- `xiaohongshu`：`title`、`content`、`cover_asset_id`。
+
+更完整的字段回退链和 API 映射见 [发布字段映射](./publish-field-mapping.md)。
 
 ## Agent 编排
 
@@ -79,7 +96,7 @@
 - `recommendations`
 - `created_at`
 
-当前 Agent 编排是规则模拟流程，不调用真实大模型、不调用真实平台、不写入数据库。
+旧的 `preview` 编排是规则模拟流程，不调用真实大模型、不调用真实平台、不写入数据库。
 
 `adapt-preview` 新增字段：
 
@@ -106,7 +123,7 @@
 - `compliance_report`
 - `recommendations`
 
-当前工具编排使用内置工具注册表模拟 MCP 调用规范，不自动执行真实发布。真实发布仍需要用户基于 `preview_id` 进入发布确认流程。
+当前工具编排使用内置工具注册表模拟 MCP 调用规范；当 `use_llm=auto/enabled` 且环境变量中存在可用 `OPENAI_API_KEY` 时，可以尝试 LLM 增强，失败时回退到规则结果。工具编排不自动执行真实发布，真实发布仍需要用户基于 `preview_id` 进入发布确认流程。
 
 ## 账号
 

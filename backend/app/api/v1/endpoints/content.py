@@ -126,5 +126,12 @@ async def import_document(
             status_code=400,
             detail=f"不支持的文件格式：{file.filename}。请上传 .md、.txt 或 .docx 文件。",
         )
+    # 文件大小限制 20MB
+    max_size = 20 * 1024 * 1024
+    if file.size is not None and file.size > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件大小 {file.size / 1024 / 1024:.1f}MB 超过上限 20MB。请压缩图片或分割文档后重试。",
+        )
     service = ImportService()
     return await service.import_document(file)
