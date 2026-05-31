@@ -4,26 +4,37 @@ import { CircleCheck, InfoFilled, WarningFilled } from "@element-plus/icons-vue"
 
 import type { PlatformKey, PublishMode, ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
+import { PLATFORM_LABELS } from "@/utils/platforms";
+import { useDebounce } from "@/composables/useDebounce";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
+
+const { debounce } = useDebounce(150);
 
 const props = defineProps<{
   selectedPlatforms: PlatformKey[];
   loading: boolean;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
   assets: EditorAssets;
+  editorTitle: string;
+  platformDrafts?: Record<string, { title?: string; body?: string; summary?: string }>;
 }>();
 
 const emit = defineEmits<{
   back: [];
-  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode }];
+  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }];
 }>();
 
 const publishForms = defineModel<PublishForms>("publishForms", { required: true });
 const useUnifiedSettings = ref(true);
 
 // ---- 全局字段（独立状态，同步至各平台） ----
-const globalTitle = ref(publishForms.value.wechat.title);
-const globalSummary = ref(publishForms.value.wechat.summary);
+// 统一配置下默认值来自编辑页标题；独立配置下各平台默认值来自 Agent 输出
+const globalTitle = ref(props.editorTitle);
+const globalSummary = ref(
+  props.platformDrafts?.wechat?.summary
+  || props.platformDrafts?.bilibili?.body?.slice(0, 120)
+  || ""
+);
 
 function syncGlobalToPlatforms() {
   const gt = globalTitle.value;
@@ -36,23 +47,38 @@ function syncGlobalToPlatforms() {
   publishForms.value.xiaohongshu.content = gs;
 }
 
-watch(globalTitle, syncGlobalToPlatforms);
-watch(globalSummary, syncGlobalToPlatforms);
+const debouncedSyncToPlatforms = () => debounce(syncGlobalToPlatforms);
+watch(globalTitle, debouncedSyncToPlatforms);
+watch(globalSummary, debouncedSyncToPlatforms);
 
-// ---- 反向：独立模式下用户修改了 wechat 字段后切回统一，需同步回全局 ----
-watch(useUnifiedSettings, (unified) => {
-  if (unified) {
-    globalTitle.value = publishForms.value.wechat.title;
-    globalSummary.value = publishForms.value.wechat.summary;
+// ---- 切换到独立配置时，各平台字段从 Agent 输出取默认值 ----
+function populateFromAgent(platform: PlatformKey) {
+  const draft = props.platformDrafts?.[platform];
+  if (!draft) return;
+  if (platform === "wechat") {
+    publishForms.value.wechat.title = draft.title || "";
+    publishForms.value.wechat.summary = draft.summary || "";
+  } else if (platform === "bilibili") {
+    publishForms.value.bilibili.title = draft.title || "";
+    publishForms.value.bilibili.description = draft.body || "";
+  } else if (platform === "xiaohongshu") {
+    publishForms.value.xiaohongshu.title = draft.title || "";
+    publishForms.value.xiaohongshu.content = draft.body || "";
   }
-});
+}
 
-const platformLabels: Record<PlatformKey, string> = {
-  wechat: "公众号",
-  bilibili: "B站",
-  zhihu: "知乎",
-  xiaohongshu: "小红书"
-};
+watch(useUnifiedSettings, (unified) => {
+  if (!unified) {
+    // 切到独立：各平台从 Agent 草稿初始化
+    for (const platform of selectedConfirmPlatforms.value) {
+      populateFromAgent(platform);
+    }
+  }
+  // 切回统一：globalTitle/globalSummary 保持原值，重新同步至所有平台
+  if (unified) {
+    syncGlobalToPlatforms();
+  }
+}, { immediate: true });
 
 const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const selectedMode = ref<PublishMode>("simulate");
@@ -76,7 +102,7 @@ function issueType(issue: ValidationIssue) {
 
 const platformOptions = computed(() => {
   const allowed = selectedMode.value === "simulate" ? props.selectedPlatforms : props.selectedPlatforms.filter((platform) => publishablePlatforms.includes(platform));
-  return allowed.map((platform) => ({ label: platformLabels[platform], value: platform }));
+  return allowed.map((platform) => ({ label: PLATFORM_LABELS[platform], value: platform }));
 });
 
 const selectedIssues = computed(() =>
@@ -107,7 +133,8 @@ function submit() {
 
   emit("submit", {
     platforms: selectedConfirmPlatforms.value,
-    mode: selectedMode.value
+    mode: selectedMode.value,
+    useUnifiedSettings: useUnifiedSettings.value
   });
 }
 </script>
@@ -277,7 +304,7 @@ function submit() {
       <ul v-else>
         <li v-for="issue in selectedIssues" :key="`${issue.platform}-${issue.code}-${issue.field}`">
           <el-tag :type="issue.level === 'error' ? 'danger' : issue.level === 'warning' ? 'warning' : 'info'" size="small">
-            {{ platformLabels[issue.platform] }}
+            {{ PLATFORM_LABELS[issue.platform] }}
           </el-tag>
           <span>{{ issue.field }}：{{ issue.message }}</span>
         </li>

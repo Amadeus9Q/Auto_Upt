@@ -34,6 +34,17 @@ import { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView from "@/views/TaskView.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaTab } from "@/types/media";
 
+import {
+  getErrorMessage,
+  parseTagText,
+  PLATFORM_AGENT_STYLE_GOALS,
+  PLATFORM_LABELS,
+  REAL_PUBLISH_PLATFORMS,
+  STORAGE_KEYS,
+} from "@/utils";
+import { useDebounce } from "@/composables/useDebounce";
+import { useIndexedDB } from "@/composables/useIndexedDB";
+
 type WorkspaceTab = "preview" | "confirm" | "task" | "media" | "account";
 type TaskStep = {
   name: string;
@@ -46,20 +57,6 @@ type AgentOptimizeOptions = {
   customWritingStyle?: string | null;
 };
 
-const platformLabels: Record<PlatformKey, string> = {
-  wechat: "公众号",
-  bilibili: "B站",
-  zhihu: "知乎",
-  xiaohongshu: "小红书"
-};
-
-const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
-const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
-  wechat: "professional",
-  bilibili: "video",
-  zhihu: "knowledge",
-  xiaohongshu: "social"
-};
 const activeTab = ref<WorkspaceTab>("preview");
 const title = ref("");
 const content = ref("");
@@ -142,8 +139,8 @@ const drafts = computed<PlatformDraft[]>(() => {
 
     return {
       key: platform,
-      label: platformLabels[platform],
-      title: draft?.title ?? platformLabels[platform],
+      label: PLATFORM_LABELS[platform],
+      title: draft?.title ?? PLATFORM_LABELS[platform],
       summary: draft?.summary || draft?.body || "暂无摘要。",
       body: draft?.body ?? "",
       tags: draft?.tags ?? [],
@@ -202,69 +199,21 @@ const taskSteps = computed<TaskStep[]>(() => {
 watch(title, (nextTitle) => {
   publishForms.value.bilibili.title = nextTitle;
   publishForms.value.wechat.title = nextTitle;
+  publishForms.value.xiaohongshu.title = nextTitle;
 });
 
 watch(tags, (nextTags) => {
   publishForms.value.bilibili.tags = nextTags;
 });
 
-const MEDIA_LIBRARY_DB = "auto-upt-media-library";
-const MEDIA_LIBRARY_STORE = "assets";
-const MEDIA_FOLDERS_KEY = "auto-upt-media-folders";
-const MEDIA_COVER_KEY = "auto-upt-cover-image-id";
-let mediaPersistTimer: number | null = null;
-let mediaHydrated = false;
+const { readAll: readStoredAssets, writeAll: writeStoredAssets } = useIndexedDB<StoredAssetRecord>(
+  STORAGE_KEYS.MEDIA_LIBRARY_DB,
+  STORAGE_KEYS.MEDIA_LIBRARY_STORE
+);
 
 type StoredAssetRecord = Omit<LocalAsset, "previewUrl" | "file"> & { file: File };
-
-function openMediaLibraryDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(MEDIA_LIBRARY_DB, 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(MEDIA_LIBRARY_STORE)) {
-        db.createObjectStore(MEDIA_LIBRARY_STORE, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function readStoredAssets(): Promise<StoredAssetRecord[]> {
-  const db = await openMediaLibraryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readonly");
-    const request = tx.objectStore(MEDIA_LIBRARY_STORE).getAll();
-    request.onsuccess = () => resolve(request.result as StoredAssetRecord[]);
-    request.onerror = () => reject(request.error);
-    tx.oncomplete = () => db.close();
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
-
-async function writeStoredAssets(records: StoredAssetRecord[]) {
-  const db = await openMediaLibraryDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readwrite");
-    const store = tx.objectStore(MEDIA_LIBRARY_STORE);
-    store.clear();
-    for (const record of records) {
-      store.put(record);
-    }
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
+let mediaPersistTimer: number | null = null;
+let mediaHydrated = false;
 
 function assetsToStoredRecords(): StoredAssetRecord[] {
   return (["images", "videos", "audios"] as MediaTab[]).flatMap((tab) =>
@@ -285,7 +234,7 @@ function assetsToStoredRecords(): StoredAssetRecord[] {
 }
 
 async function hydrateMediaLibrary() {
-  const storedFolders = localStorage.getItem(MEDIA_FOLDERS_KEY);
+  const storedFolders = localStorage.getItem(STORAGE_KEYS.MEDIA_FOLDERS);
   if (storedFolders) {
     try {
       mediaFolders.value = JSON.parse(storedFolders) as MediaFolder[];
@@ -296,7 +245,7 @@ async function hydrateMediaLibrary() {
 
   try {
     const records = await readStoredAssets();
-    const storedCoverImageId = localStorage.getItem(MEDIA_COVER_KEY);
+    const storedCoverImageId = localStorage.getItem(STORAGE_KEYS.COVER_IMAGE_ID);
     const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
     for (const record of records) {
       const asset: LocalAsset = {
@@ -320,11 +269,11 @@ function scheduleMediaLibraryPersist() {
   if (!mediaHydrated) return;
   if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
   mediaPersistTimer = window.setTimeout(() => {
-    localStorage.setItem(MEDIA_FOLDERS_KEY, JSON.stringify(mediaFolders.value));
+    localStorage.setItem(STORAGE_KEYS.MEDIA_FOLDERS, JSON.stringify(mediaFolders.value));
     if (editorAssets.value.coverImageId) {
-      localStorage.setItem(MEDIA_COVER_KEY, editorAssets.value.coverImageId);
+      localStorage.setItem(STORAGE_KEYS.COVER_IMAGE_ID, editorAssets.value.coverImageId);
     } else {
-      localStorage.removeItem(MEDIA_COVER_KEY);
+      localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
     }
     void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
       console.warn("[MediaLibrary] 保存本地素材失败", error);
@@ -545,7 +494,7 @@ function scheduleDraftSync(platform: PlatformKey) {
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "同步平台内容失败，请检查网络连接。";
+      const message = getErrorMessage(error, "同步平台内容失败，请检查网络连接。");
       errorMessage.value = message;
       ElMessage.error(message);
     } finally {
@@ -591,7 +540,7 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
         platform,
         {
           platform,
-          display_name: platformLabels[platform],
+          display_name: PLATFORM_LABELS[platform],
           mode,
           status: "failed",
           message
@@ -623,15 +572,10 @@ async function ensureBackendAsset(asset: LocalAsset, purpose: string): Promise<s
   const uploaded = await uploadAsset(asset.file, getUploadAssetType(asset), purpose);
   asset.backendAssetId = uploaded.asset_id;
   asset.backendUrl = uploaded.url;
-  asset.uploadPurpose = purpose;
+  if (!asset.uploadPurpose) {
+    asset.uploadPurpose = purpose;
+  }
   return uploaded.asset_id;
-}
-
-function parseTagText(value: string): string[] {
-  return value
-    .split(/[,，\s]+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 }
 
 async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Partial<Record<PlatformKey, string>>> {
@@ -641,7 +585,7 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   for (const platform of platforms) {
     const account = accounts.find((item) => item.platform === platform && item.status === "connected" && item.account_id);
     if (!account?.account_id) {
-      throw new Error(`请先在「账号管理」中连接${platformLabels[platform]}账号，再执行发布操作。`);
+      throw new Error(`请先在「账号管理」中连接${PLATFORM_LABELS[platform]}账号，再执行发布操作。`);
     }
     accountIds[platform] = account.account_id;
   }
@@ -649,15 +593,19 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
-function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+function buildPlatformOptions(platforms: PlatformKey[], unified: boolean): NonNullable<PublishTaskCreatePayload["platform_options"]> {
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
     const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
-      title: publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      title: unified
+        ? publishForms.value.wechat.title.trim() || title.value.trim()
+        : publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
       author: publishForms.value.wechat.author.trim(),
-      digest: publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
+      digest: unified
+        ? publishForms.value.wechat.summary.trim()
+        : publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
       content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
       need_open_comment: publishForms.value.wechat.needOpenComment,
       only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
@@ -668,8 +616,12 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
   if (platforms.includes("bilibili")) {
     const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
-      title: publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
-      description: publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      title: unified
+        ? publishForms.value.bilibili.title.trim() || title.value.trim()
+        : publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
+      description: unified
+        ? publishForms.value.bilibili.description.trim()
+        : publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
       tags: parseTagText(publishForms.value.bilibili.tags).length
         ? parseTagText(publishForms.value.bilibili.tags)
         : bilibiliDraft?.tags ?? [],
@@ -684,33 +636,37 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
   if (platforms.includes("xiaohongshu")) {
     const xhsDraft = preview.value?.drafts.xiaohongshu;
     platformOptions.xiaohongshu = {
-      title: publishForms.value.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
-      content: publishForms.value.xiaohongshu.content.trim() || xhsDraft?.body || "",
+      title: unified
+        ? publishForms.value.xiaohongshu.title.trim() || title.value.trim()
+        : publishForms.value.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
+      content: unified
+        ? publishForms.value.xiaohongshu.content.trim()
+        : publishForms.value.xiaohongshu.content.trim() || xhsDraft?.body || "",
     };
   }
 
   return platformOptions;
 }
 
-async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
+async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
     throw new Error("请先生成内容预览。");
   }
 
-  const selectedPlatformOptions = buildPlatformOptions(payload.platforms);
+  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings);
 
   if (payload.mode === "simulate") {
     return {
       preview_id: preview.value.preview_id,
       mode: payload.mode,
       platforms: payload.platforms,
-      platform_options: selectedPlatformOptions,
+      platform_options: platformOptions,
       inline_drafts: preview.value.drafts,
       inline_content_ir: preview.value.content_ir
     };
   }
 
-  const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
+  const platforms = payload.platforms.filter((platform) => REAL_PUBLISH_PLATFORMS.includes(platform));
   if (!platforms.length) {
     throw new Error("当前版本只有公众号、B站和小红书支持保存草稿或真实发布。");
   }
@@ -720,7 +676,6 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const accountIds = await resolveConnectedAccountIds(platforms);
   const assetIds: NonNullable<PublishTaskCreatePayload["asset_ids"]> = {};
-  const platformOptions = buildPlatformOptions(platforms);
 
   if (platforms.includes("wechat")) {
     const cover = getCoverImage();
@@ -810,7 +765,7 @@ async function loadPublishTasks(showToast = false) {
       ElMessage.success("任务列表已刷新。");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "加载任务列表失败。";
+    const message = getErrorMessage(error, "加载任务列表失败。");
     errorMessage.value = message;
     if (showToast) {
       ElMessage.error(message);
@@ -827,7 +782,7 @@ async function refreshTaskStatus(taskId: string) {
     upsertTask(nextTask);
     ElMessage.success("任务状态已更新。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "更新任务状态失败。";
+    const message = getErrorMessage(error, "更新任务状态失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -852,7 +807,7 @@ async function publishDraftFromTask(publicationId: string) {
     await loadPublishTasks(false);
     ElMessage.success("内容已加入发布队列。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "提交发布请求失败。";
+    const message = getErrorMessage(error, "提交发布请求失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -875,7 +830,7 @@ async function generatePreview() {
     preview.value = await createPreview(buildContentPayload());
     ElMessage.success("预览已生成。");
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
+    errorMessage.value = getErrorMessage(error, "预览生成失败，请稍后重试。");
     ElMessage.error("预览生成失败，请稍后重试。");
   } finally {
     previewLoading.value = false;
@@ -931,7 +886,7 @@ async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
     }
     ElMessage.success("所选平台的智能优化结果已生成。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "智能优化失败。";
+    const message = getErrorMessage(error, "智能优化失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -961,14 +916,14 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
       preview_id: preview.value.preview_id,
       body: basePayload.body,
       platforms: [platform],
-      style_goal: platformAgentStyleGoal[platform],
+      style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
       rewrite_strength: "medium",
       use_llm: "auto",
       persist_preview: false
     });
     const generatedDraft = run.drafts[platform];
     if (!generatedDraft) {
-      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
+      throw new Error(`${PLATFORM_LABELS[platform]}没有生成可用的优化内容。`);
     }
     const optimizedDraft = preserveAgentDraftMetadata(
       { [platform]: generatedDraft },
@@ -976,7 +931,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
       [platform]
     )[platform];
     if (!optimizedDraft) {
-      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
+      throw new Error(`${PLATFORM_LABELS[platform]}没有生成可用的优化内容。`);
     }
     preview.value = {
       ...preview.value,
@@ -989,9 +944,9 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
         [platform]: run.validation_report[platform] ?? []
       }
     };
-    ElMessage.success(`${platformLabels[platform]}内容已优化。`);
+    ElMessage.success(`${PLATFORM_LABELS[platform]}内容已优化。`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "智能优化失败。";
+    const message = getErrorMessage(error, "智能优化失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -1008,7 +963,7 @@ function enterPublishConfirm() {
   activeTab.value = "confirm";
 }
 
-async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode }) {
+async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }) {
   if (!preview.value) {
     ElMessage.warning("请先生成预览。");
     return;
@@ -1040,7 +995,7 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
     upsertTask(await createPublishTask(await buildPublishTaskPayload(payload)));
     ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "创建发布任务失败。";
+    const message = getErrorMessage(error, "创建发布任务失败。");
     const failedTask = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
     task.value = failedTask;
     tasks.value = [failedTask, ...tasks.value];
@@ -1135,6 +1090,8 @@ onMounted(async () => {
           :loading="taskLoading"
           :validation-report="validationReport"
           :assets="editorAssets"
+          :editor-title="title"
+          :platform-drafts="preview?.drafts"
           @back="activeTab = 'preview'"
           @submit="submitPublish"
         />
