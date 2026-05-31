@@ -14,14 +14,19 @@ from backend.app.schemas.agent import (
     AgentStep,
     AgentStepStatusLiteral,
 )
+from backend.app.schemas.analysis import (
+    Chapter,
+    ContentAnalysis,
+    MediaItem,
+)
 from backend.app.services.preview_service import PreviewService
 
 
 class SimulatedAgentOrchestrator:
-    """模拟 Agent 编排器。
+    """Agent 编排器。
 
-    第一阶段的规则引擎编排，整合内容分析（章节划分、媒体识别）
-    和平台文案生成智能体。后续可替换为 LLM 驱动的 Agent。
+    整合内容分析（LLM 章节划分 + 媒体识别）、平台文案生成、
+    草稿渲染、格式校验、合规检查和模拟发布的完整工作流。
     """
 
     def __init__(self) -> None:
@@ -34,27 +39,13 @@ class SimulatedAgentOrchestrator:
         run_id = str(uuid4())
         steps: list[AgentStep] = []
 
-        # ---- Step 1: 内容标准化 (PreviewService) ----
+        # ---- Step 1: 内容标准化 + 深度分析 (PreviewService) ----
+        # normalize_content 内部已调用 ContentAnalystAgent.analyze()，
+        # 返回的 content_ir 已包含 chapters, flat_chapters, all_media, media_by_kind
         content_ir = self.preview_service.normalize_content(request)
 
-        # ---- Step 2: 深度内容分析 (ContentAnalystAgent) ----
-        # 章节划分、子标题提取、媒体识别
-        analysis = self.content_analyst.analyze(
-            body=request.body,
-            title=request.title,
-            tags=content_ir.get("tags", []),
-            content_blocks=[b.model_dump() for b in request.content_blocks] if request.content_blocks else None,
-            assets=content_ir.get("assets", []),
-            content_type=request.content_type,
-        )
-        # 将分析结果注入 content_ir 以供后续步骤使用
-        content_ir["chapters"] = [ch.model_dump() for ch in analysis.chapters]
-        content_ir["flat_chapters"] = [ch.model_dump() for ch in analysis.flat_chapters]
-        content_ir["media_by_kind"] = {
-            k: [m.model_dump() for m in v]
-            for k, v in analysis.media_by_kind.items()
-        }
-        content_ir["subtitle"] = analysis.subtitle
+        # ---- Step 2: 提取分析结果（从 content_ir 中读取，避免重复调用 analyze）----
+        analysis = self._analysis_from_ir(content_ir)
 
         steps.append(
             self._step(
@@ -236,6 +227,43 @@ class SimulatedAgentOrchestrator:
             simulation_results=simulation_results,
             recommendations=recommendations,
             created_at=created_at,
+        )
+
+    # ------------------------------------------------------------------
+    # 工具方法
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _analysis_from_ir(content_ir: dict[str, Any]) -> ContentAnalysis:
+        """从 content_ir（normalize_content 输出）重建 ContentAnalysis 对象。
+
+        normalize_content 已将 analyze() 结果序列化到 content_ir 中，
+        此方法反序列化回 Pydantic 模型，供 PlatformStylistAgent 等下游使用。
+        避免重复调用 analyze()（尤其是 LLM API 调用）。
+        """
+        # 重建 chapters
+        chapters = [Chapter(**ch) for ch in content_ir.get("chapters", [])]
+        flat_chapters = [Chapter(**ch) for ch in content_ir.get("flat_chapters", [])]
+
+        # 重建 all_media
+        all_media = [MediaItem(**m) for m in content_ir.get("all_media", [])]
+
+        # 重建 media_by_kind
+        media_by_kind: dict[str, list[MediaItem]] = {}
+        for kind, items in content_ir.get("media_by_kind", {}).items():
+            media_by_kind[kind] = [MediaItem(**m) for m in items]
+
+        return ContentAnalysis(
+            title=content_ir.get("title"),
+            subtitle=content_ir.get("subtitle"),
+            chapters=chapters,
+            flat_chapters=flat_chapters,
+            all_media=all_media,
+            media_by_kind=media_by_kind,
+            summary=content_ir.get("summary", ""),
+            total_word_count=content_ir.get("word_count", 0),
+            tags=content_ir.get("tags", []),
+            content_type=content_ir.get("content_type", "article"),
         )
 
     @staticmethod

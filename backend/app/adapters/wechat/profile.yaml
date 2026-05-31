@@ -11,7 +11,9 @@ auth:
   type: oauth_or_cookie
   required_for_real_publish: true
 limits:
-  tags_max_count: 5
+  title_max_length: 200
+  body_max_length: 0
+  tags_max_count: 20
   assets_min_count: 0
 style:
   tone: 保留原始风格，专业长文

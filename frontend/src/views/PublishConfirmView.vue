@@ -67,7 +67,7 @@ function submit() {
     <div class="section-title">
       <div>
         <p>发布确认</p>
-        <h2>选择平台与发布模式</h2>
+        <h2>选择发布方式并确认提交</h2>
       </div>
       <el-icon :size="24"><Promotion /></el-icon>
     </div>
@@ -76,7 +76,7 @@ function submit() {
       <el-form-item label="发布模式">
         <el-radio-group v-model="selectedMode" class="mode-group">
           <el-radio-button value="simulate">模拟</el-radio-button>
-          <el-radio-button value="draft">草稿</el-radio-button>
+          <el-radio-button value="draft">保存草稿</el-radio-button>
           <el-radio-button value="publish">真实发布</el-radio-button>
         </el-radio-group>
       </el-form-item>
@@ -93,7 +93,7 @@ function submit() {
     <el-alert
       v-if="hasRealPublish"
       class="confirm-alert"
-      title="真实发布或创建草稿将调用平台官方接口，请在提交前仔细确认账号、素材、标题、封面及平台合规性。"
+      title="选择保存草稿或真实发布后，系统会把内容提交到对应平台。请先确认账号、素材、标题和封面无误。"
       type="warning"
       show-icon
       :closable="false"
@@ -102,7 +102,7 @@ function submit() {
     <el-alert
       v-if="hasRealPublish && selectedPlatforms.some((platform) => !publishablePlatforms.includes(platform))"
       class="confirm-alert"
-      title="知乎和小红书当前阶段暂不支持真实发布，仅可选择模拟模式。"
+      title="知乎和小红书当前只能查看模拟结果，暂不能直接发布。"
       type="info"
       show-icon
       :closable="false"
@@ -111,9 +111,9 @@ function submit() {
     <div class="risk-panel">
       <header>
         <el-icon><WarningFilled /></el-icon>
-        <strong>校验风险</strong>
+        <strong>需要留意的提示</strong>
       </header>
-      <el-empty v-if="!selectedIssues.length" description="当前选择的平台未发现校验问题" />
+      <el-empty v-if="!selectedIssues.length" description="当前选择的平台没有发现明显问题" />
       <ul v-else>
         <li v-for="issue in selectedIssues" :key="`${issue.platform}-${issue.code}-${issue.field}`">
           <el-tag :type="issue.level === 'error' ? 'danger' : issue.level === 'warning' ? 'warning' : 'info'" size="small">

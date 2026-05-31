@@ -49,6 +49,9 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
     "zhihu": {
         "display_name": "知乎",
         "tone": "专业严谨，理性深度知识分享",
+        "title_max_length": 60,
+        "body_max_length": 0,
+        "tags_max_count": 5,
         "supported_media": ["image"],
         "template": "article",
         "structure_hint": "引题 + 观点/结论 + 分点论证 + 总结。保持逻辑严密，引用数据和案例增强说服力。",
@@ -598,7 +601,7 @@ class PlatformStylistAgent:
             lines.append("")  # 空行分隔
         body = "\n".join(lines).strip()
         max_len = style.get("body_max_length", 20000)
-        if len(body) > max_len:
+        if max_len and len(body) > max_len:
             body = body[: max_len - 3] + "..."
         return body
 

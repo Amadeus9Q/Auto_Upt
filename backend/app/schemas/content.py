@@ -149,6 +149,9 @@ class PublishTaskResponse(BaseModel):
     mode: PublishModeLiteral = Field(description="发布模式。")
     status: TaskStatusLiteral = Field(description="任务状态，例如 succeeded 或 failed。")
     platforms: list[str] = Field(description="本次任务覆盖的平台列表。")
+    account_ids: dict[str, str] = Field(default_factory=dict, description="提交任务时使用的平台账号 ID 映射。")
+    asset_ids: dict[str, list[str]] = Field(default_factory=dict, description="提交任务时使用的平台素材 ID 映射。")
+    platform_options: dict[str, dict[str, Any]] = Field(default_factory=dict, description="提交任务时使用的平台 API 参数。")
     results: dict[str, Any] = Field(description="按平台分组的发布结果。")
     error_message: str | None = Field(default=None, description="任务级错误信息。成功时为空。")
     created_at: datetime | None = Field(default=None, description="任务创建时间。")
@@ -161,3 +164,41 @@ class PublishTaskListResponse(BaseModel):
 
 class PlatformListResponse(BaseModel):
     platforms: list[PlatformLiteral] = Field(description="当前后端支持的平台列表。")
+
+
+class DraftUpdateRequest(BaseModel):
+    """单个平台草稿的独立编辑请求——标题、正文、标签可被前端直接修改。"""
+    title: str | None = Field(default=None, max_length=200, description="修改后的平台标题。为空时不更新。")
+    body: str | None = Field(default=None, min_length=1, description="修改后的平台正文。为空时不更新。")
+    tags: list[str] | None = Field(default=None, description="修改后的平台标签列表。为 None 时不更新。")
+
+
+class DraftUpdateResponse(BaseModel):
+    preview_id: str = Field(description="预览记录 ID。")
+    platform: str = Field(description="被更新的平台标识。")
+    draft: dict[str, Any] = Field(description="更新后的平台草稿。")
+    validation_report: list[dict[str, Any]] = Field(description="更新后的校验报告。")
+
+
+class ImportedMedia(BaseModel):
+    """从文档中提取的媒体资源"""
+    index: int = Field(default=0, description="媒体在正文中的位置序号。")
+    name: str = Field(default="", description="文件名或自动生成的名称。")
+    kind: str = Field(default="image", description="媒体类型：image / video / audio。")
+    description: str | None = Field(default=None, description="媒体描述/alt文本。")
+
+
+class ImportDocumentResponse(BaseModel):
+    """文档导入 & LLM 提取结果。可直接用于填充编辑器。"""
+    title: str = Field(default="", description="提取的标题。")
+    subtitle: str = Field(default="", description="副标题或导语。")
+    body: str = Field(default="", description="提取的正文（Markdown 纯文本）。")
+    tags: list[str] = Field(default_factory=list, description="自动生成的标签。")
+    content_type: str = Field(default="article", description="推断的内容类型。")
+    summary: str = Field(default="", description="内容摘要。")
+    media: list[ImportedMedia] = Field(default_factory=list, description="从文档中提取的媒体资源列表。")
+    chapters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="章节划分结果：[{level, title, content, word_count, sub_chapters}]。",
+    )
+    raw_text: str = Field(default="", description="文档原始纯文本，供前端兜底。")

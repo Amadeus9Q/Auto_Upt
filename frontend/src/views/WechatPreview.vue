@@ -59,6 +59,8 @@ defineProps<{
             <strong>{{ segment.name || '音频素材' }}</strong>
             <p>公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。</p>
           </div>
+          <p v-else-if="segment.type === 'summary'" class="wx-summary">{{ segment.text }}</p>
+          <h2 v-else-if="segment.type === 'heading'" :class="`wx-heading wx-heading-${segment.level ?? 1}`">{{ segment.text }}</h2>
           <p v-else class="wx-paragraph">{{ segment.text }}</p>
         </template>
       </template>
@@ -79,8 +81,11 @@ defineProps<{
 
 <style scoped>
 .wechat-phone-frame {
+  display: flex;
+  flex-direction: column;
   width: 375px;
   max-width: 100%;
+  height: min(72vh, 760px);
   margin: 0 auto;
   border: 1px solid #dcdcdc;
   border-radius: 20px;
@@ -148,6 +153,9 @@ defineProps<{
 
 /* ── 正文 ── */
 .article-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding: 0 16px 16px;
   font-size: 16px;
   line-height: 1.8;
@@ -155,6 +163,42 @@ defineProps<{
 }
 .wx-paragraph {
   margin: 0 0 14px;
+}
+.wx-summary {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  color: #576b95;
+  background: #f7f9fb;
+  border-left: 3px solid #576b95;
+  border-radius: 0 6px 6px 0;
+  font-size: 15px;
+  line-height: 1.75;
+}
+.wx-heading {
+  margin: 22px 0 12px;
+  color: #1a1a1a;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.wx-heading-1 {
+  padding-left: 10px;
+  border-left: 4px solid #07c160;
+  font-size: 18px;
+}
+.wx-heading-2,
+.wx-heading-3 {
+  font-size: 16px;
+}
+.wx-heading-2::before,
+.wx-heading-3::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: middle;
+  background: #07c160;
+  border-radius: 50%;
 }
 .wx-image {
   margin: 16px 0;

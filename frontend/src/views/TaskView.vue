@@ -38,24 +38,24 @@ const statusText = {
 
 const modeText = {
   simulate: "模拟",
-  draft: "草稿",
+  draft: "保存草稿",
   publish: "真实发布"
 } as const;
 
 function finalStepTextForMode(mode: PublishTaskResponse["mode"]) {
-  if (mode === "draft") return "草稿已创建";
-  if (mode === "simulate") return "模拟完成";
+  if (mode === "draft") return "已保存为草稿";
+  if (mode === "simulate") return "检查完成";
   return "已发布";
 }
 
 function stepNamesForMode(mode: PublishTaskResponse["mode"]): [string, string, string] {
   if (mode === "draft") {
-    return ["准备素材", "创建草稿", "草稿已创建"];
+    return ["准备素材", "保存到草稿箱", "已保存为草稿"];
   }
   if (mode === "simulate") {
-    return ["生成任务", "模拟校验", "模拟完成"];
+    return ["生成任务", "检查发布准备", "检查完成"];
   }
-  return ["提交发布", "平台处理", "发布完成"];
+  return ["提交发布", "提交到平台", "发布完成"];
 }
 
 function progressTextForMode(mode: PublishTaskResponse["mode"]) {
@@ -133,7 +133,7 @@ function stepIcon(step: TaskStep) {
     <div class="section-title">
       <div>
         <p>任务状态</p>
-        <h2>草稿与发布任务管理</h2>
+        <h2>发布进度管理</h2>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="emit('refreshTasks')">刷新列表</el-button>
     </div>
@@ -148,7 +148,7 @@ function stepIcon(step: TaskStep) {
             {{ statusText[taskItem.task.status] }}
           </el-tag>
           <el-tag type="info">{{ modeText[taskItem.task.mode] }}</el-tag>
-          <span>Task ID：{{ taskItem.task.task_id }}</span>
+          <span>任务编号：{{ taskItem.task.task_id }}</span>
           <span v-if="taskItem.task.created_at">创建时间：{{ taskItem.task.created_at }}</span>
           <el-button
             v-if="taskItem.canRefresh"
@@ -187,8 +187,8 @@ function stepIcon(step: TaskStep) {
             <div class="platform-result">
               <el-icon><DocumentChecked /></el-icon>
               <div>
-                <span>{{ item.result?.message || "任务已提交，等待平台处理结果。" }}</span>
-                <small v-if="item.result?.external_status">平台状态：{{ item.result.external_status }}</small>
+                <span>{{ item.result?.message || "任务已提交，等待平台返回结果。" }}</span>
+                <small v-if="item.result?.external_status">平台返回：{{ item.result.external_status }}</small>
                 <small v-if="item.result?.external_url">{{ item.result.external_url }}</small>
                 <small v-if="item.result?.preview_url">{{ item.result.preview_url }}</small>
                 <small v-if="item.result?.screenshot_path">{{ item.result.screenshot_path }}</small>
@@ -202,7 +202,7 @@ function stepIcon(step: TaskStep) {
                 :loading="isActionLoading('publish', item.result.publication_id)"
                 @click="emit('publishDraft', item.result.publication_id)"
               >
-                发布草稿
+                发布这份草稿
               </el-button>
             </div>
           </article>

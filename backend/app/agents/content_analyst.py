@@ -1,21 +1,26 @@
 """
 内容分析智能体 —— 章节划分、子标题提取、媒体（图片/视频/音频）识别。
 
-当前阶段使用规则引擎实现，后续可替换为 LLM 调用。
+LLM 驱动模式：当正文不含 Markdown 标题时，优先调用 LLM 进行语义分段和标题提取；
+LLM 不可用或调用失败时自动回退到规则引擎。
 设计的输出结构（ContentAnalysis）保持稳定，便于后续接入 AI 模型。
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
+from backend.app.agents.llm_analyzer import LLMContentAnalyzer
 from backend.app.schemas.analysis import (
     Chapter,
     ContentAnalysis,
     MediaItem,
     MediaKindLiteral,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ContentAnalystAgent:
@@ -25,7 +30,25 @@ class ContentAnalystAgent:
     1. 解析正文 Markdown 结构，提取章节层级（h1/h2/h3）
     2. 识别正文中的图片、视频、音频引用
     3. 生成结构化分析结果
+
+    策略优先级：
+    - Markdown 标题存在 → 规则引擎解析
+    - 纯文本正文 → LLM 语义分段（fallback 规则引擎）
     """
+
+    def __init__(self) -> None:
+        self._llm: LLMContentAnalyzer | None = None
+
+    @property
+    def llm(self) -> LLMContentAnalyzer:
+        """延迟初始化 LLM 分析器（避免在无 API key 时抛异常）。"""
+        if self._llm is None:
+            self._llm = LLMContentAnalyzer()
+        return self._llm
+
+    # ------------------------------------------------------------------
+    # 正则（类级别）
+    # ------------------------------------------------------------------
 
     # Markdown 标题正则：匹配 # / ## / ### 开头的行
     HEADING_PATTERN = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
@@ -170,14 +193,44 @@ class ContentAnalystAgent:
         # 7. 按位置分配媒体到章节
         media_by_position = self._index_media_by_position(body, all_media)
 
-        # 8. 章节划分
-        chapters, flat_chapters = self._parse_chapters(body, media_by_position)
+        # 8. 章节划分 —— LLM 优先，规则引擎兜底
+        headings = list(self.HEADING_PATTERN.finditer(body))
+        llm_result: ContentAnalysis | None = None
+        llm_used = False
+
+        if headings:
+            # 有 Markdown 标题 → 规则引擎（最准确）
+            chapters, flat_chapters = self._parse_markdown_chapters(
+                body, headings, media_by_position
+            )
+            llm_used = False
+        else:
+            # 无 Markdown 标题 → 尝试 LLM 语义分段
+            llm_result = self._try_llm_segmentation(
+                body=body, title=title, tags=_tags, content_type=content_type
+            )
+            if llm_result is not None:
+                chapters = llm_result.chapters
+                flat_chapters = llm_result.flat_chapters
+                # 将媒体回填到 LLM 章节
+                self._assign_media_to_chapters(chapters, flat_chapters, media_by_position, body)
+                # 用 LLM 的标题/摘要（如果比前端/规则引擎更好）
+                if not title and llm_result.title:
+                    title = llm_result.title
+                llm_used = True
+            else:
+                # LLM 不可用 → 规则引擎兜底
+                chapters, flat_chapters = self._parse_chapters(body, media_by_position)
+                llm_used = False
 
         # 9. 提取标题 & 副标题
         detected_title, subtitle = self._extract_title_and_subtitle(title, body, chapters)
 
-        # 10. 生成摘要
-        summary = self._generate_summary(body, chapters)
+        # 10. 生成摘要（LLM 已生成则优先使用）
+        if llm_used and llm_result and llm_result.summary:
+            summary = llm_result.summary
+        else:
+            summary = self._generate_summary(body, chapters)
 
         # 11. 按类型分组媒体
         media_by_kind: dict[str, list[MediaItem]] = {"image": [], "video": [], "audio": []}
@@ -198,7 +251,86 @@ class ContentAnalystAgent:
         )
 
     # ------------------------------------------------------------------
-    # 章节解析
+    # LLM 章节分析
+    # ------------------------------------------------------------------
+
+    def _try_llm_segmentation(
+        self,
+        body: str,
+        title: str | None,
+        tags: list[str],
+        content_type: str,
+    ) -> ContentAnalysis | None:
+        """尝试使用 LLM 进行语义分段。
+
+        Returns:
+            ContentAnalysis 或 None（LLM 不可用/失败）。
+        """
+        try:
+            return self.llm.segment(
+                body=body,
+                title=title,
+                content_type=content_type,
+                tags=tags,
+            )
+        except Exception:
+            logger.debug("LLM 分段失败，回退到规则引擎。", exc_info=True)
+            return None
+
+    def _assign_media_to_chapters(
+        self,
+        chapters: list[Chapter],
+        flat_chapters: list[Chapter],
+        media_by_position: dict[int, list[MediaItem]],
+        body: str,
+    ) -> None:
+        """将媒体按文本位置回填到 LLM 生成的章节中。
+
+        LLM 返回的章节 content 是原文片段，通过字符串查找确定各章节
+        在正文中的起止位置，然后按位置分配媒体。
+        """
+        if not media_by_position:
+            return
+
+        # 为每个章节计算在 body 中的位置范围
+        chapter_ranges: list[tuple[int, int, Chapter]] = []
+        search_from = 0
+        for ch in flat_chapters:
+            if not ch.content:
+                chapter_ranges.append((0, 0, ch))
+                continue
+            start = body.find(ch.content, search_from)
+            if start >= 0:
+                end = start + len(ch.content)
+                ch.start_index = start
+                chapter_ranges.append((start, end, ch))
+                search_from = end
+            else:
+                # 模糊匹配：用前 80 字符定位
+                head = ch.content[:80]
+                start = body.find(head, search_from)
+                if start >= 0:
+                    end = start + len(ch.content)
+                    ch.start_index = start
+                    chapter_ranges.append((start, end, ch))
+                    search_from = end
+                else:
+                    chapter_ranges.append((0, 0, ch))
+
+        # 将媒体分配到对应章节
+        for pos, media_list in media_by_position.items():
+            assigned = False
+            for c_start, c_end, ch in chapter_ranges:
+                if c_start <= pos < c_end:
+                    ch.media_items.extend(media_list)
+                    assigned = True
+                    break
+            if not assigned and chapter_ranges:
+                # 未匹配到任何章节 → 放入最后一个章节
+                chapter_ranges[-1][2].media_items.extend(media_list)
+
+    # ------------------------------------------------------------------
+    # 章节解析（规则引擎）
     # ------------------------------------------------------------------
 
     def _parse_chapters(

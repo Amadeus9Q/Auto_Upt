@@ -69,6 +69,17 @@ export interface DraftPayload {
   author?: string;
   style_notes: string[];
   metadata: Record<string, unknown>;
+  content_points?: string[];
+  highlights?: string[];
+  zhihu_blocks?: ZhihuBlockPayload[];
+}
+
+export interface ZhihuBlockPayload {
+  type: "conclusion" | "heading-1" | "heading-2" | "text" | "separator" | "quote" | "image";
+  text?: string;
+  detail?: string;
+  src?: string;
+  name?: string;
 }
 
 export interface ValidationIssue {
@@ -154,6 +165,9 @@ export interface PublishTaskResponse {
   mode: PublishMode;
   status: PublishStatus;
   platforms: PlatformKey[];
+  account_ids: Partial<Record<PlatformKey, string>>;
+  asset_ids: Partial<Record<PlatformKey, string[]>>;
+  platform_options: Partial<Record<PlatformKey, Record<string, unknown>>>;
   results: Partial<Record<PlatformKey, PublishResult>>;
   error_message: string | null;
   created_at: string | null;
@@ -177,9 +191,72 @@ export interface PublishResult {
   external_url?: string;
   external_status?: string;
   platform_code?: string;
+  platform_options?: Record<string, unknown>;
+  api_payload?: Record<string, unknown>;
   retryable?: boolean;
   next_action?: string;
   message: string;
+}
+
+export interface DraftUpdatePayload {
+  title?: string | null;
+  body?: string | null;
+  tags?: string[] | null;
+}
+
+export interface DraftUpdateResponse {
+  preview_id: string;
+  platform: string;
+  draft: DraftPayload;
+  validation_report: ValidationIssue[];
+}
+
+export interface ImportedMediaPayload {
+  index: number;
+  name: string;
+  kind: "image" | "video" | "audio";
+  description?: string | null;
+}
+
+export interface ImportChapterPayload {
+  level: number;
+  title: string;
+  content: string;
+  start_index: number;
+  word_count: number;
+  sub_chapters?: ImportChapterPayload[];
+}
+
+export interface ImportDocumentResponse {
+  title: string;
+  subtitle?: string;
+  body: string;
+  tags: string[];
+  content_type: ContentType;
+  summary: string;
+  media: ImportedMediaPayload[];
+  chapters?: ImportChapterPayload[];
+  raw_text: string;
+}
+
+export function updatePlatformDraft(
+  previewId: string,
+  platform: PlatformKey,
+  payload: DraftUpdatePayload,
+): Promise<DraftUpdateResponse> {
+  return request<DraftUpdateResponse>(`/api/v1/previews/${encodeURIComponent(previewId)}/drafts/${encodeURIComponent(platform)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function importDocument(file: File): Promise<ImportDocumentResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return request<ImportDocumentResponse>("/api/v1/content/import", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export interface PublishTaskCreatePayload {

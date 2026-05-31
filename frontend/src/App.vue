@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ArrowDown, ArrowRight, Check, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowRight, Check, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -25,13 +25,15 @@ import {
   type PublishTaskResponse
 } from "@/api/client";
 import AccountView from "@/views/AccountView.vue";
-import EditorView, { type EditorAssets, type LocalAsset } from "@/views/EditorView.vue";
+import EditorView from "@/views/EditorView.vue";
+import MediaLibraryView from "@/views/MediaLibraryView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
 import PublishConfirmView from "@/views/PublishConfirmView.vue";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView from "@/views/TaskView.vue";
+import type { EditorAssets, LocalAsset, MediaFolder, MediaTab } from "@/types/media";
 
-type WorkspaceTab = "preview" | "confirm" | "task" | "account";
+type WorkspaceTab = "preview" | "confirm" | "task" | "media" | "account";
 type TaskStep = {
   name: string;
   state: "wait" | "process" | "finish" | "error" | "success";
@@ -45,11 +47,6 @@ const platformLabels: Record<PlatformKey, string> = {
 };
 
 const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili"];
-const bilibiliTidByCategory: Record<string, number> = {
-  tech: 201,
-  knowledge: 124,
-  life: 21
-};
 const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
   wechat: "professional",
   bilibili: "video",
@@ -68,17 +65,21 @@ const editorAssets = ref<EditorAssets>({
   coverImage: null,
   coverImageId: null
 });
+const mediaFolders = ref<MediaFolder[]>([]);
 const publishForms = ref<PublishForms>({
   bilibili: {
-    title: title.value,
-    description: content.value,
-    tags: tags.value,
+    title: "",
+    description: "",
+    tags: "",
     category: ""
   },
   wechat: {
-    title: title.value,
-    summary: content.value.slice(0, 80),
-    author: "Auto_Upt",
+    title: "",
+    summary: "",
+    author: "",
+    contentSourceUrl: "",
+    needOpenComment: false,
+    onlyFansCanComment: false,
     directPublish: false
   }
 });
@@ -110,6 +111,7 @@ const tabSubtitle = computed(() => {
     preview: "内容预览",
     confirm: "发布确认",
     task: "任务看板",
+    media: "多媒体库",
     account: "账号管理"
   };
   return subtitles[activeTab.value] ?? "内容预览";
@@ -152,8 +154,8 @@ const drafts = computed<PlatformDraft[]>(() => {
 });
 
 const taskSteps = computed<TaskStep[]>(() => {
-  const middleStep = task.value?.mode === "draft" ? "创建草稿" : task.value?.mode === "simulate" ? "模拟校验" : "平台处理";
-  const finalStep = task.value?.mode === "draft" ? "草稿已创建" : task.value?.mode === "simulate" ? "模拟完成" : "已发布";
+  const middleStep = task.value?.mode === "draft" ? "保存到平台草稿箱" : task.value?.mode === "simulate" ? "检查发布准备" : "提交到平台";
+  const finalStep = task.value?.mode === "draft" ? "已保存为草稿" : task.value?.mode === "simulate" ? "检查完成" : "已发布";
 
   if (!task.value && taskLoading.value) {
     return [
@@ -194,6 +196,132 @@ watch(title, (nextTitle) => {
 watch(tags, (nextTags) => {
   publishForms.value.bilibili.tags = nextTags;
 });
+
+const MEDIA_LIBRARY_DB = "auto-upt-media-library";
+const MEDIA_LIBRARY_STORE = "assets";
+const MEDIA_FOLDERS_KEY = "auto-upt-media-folders";
+const MEDIA_COVER_KEY = "auto-upt-cover-image-id";
+let mediaPersistTimer: number | null = null;
+let mediaHydrated = false;
+
+type StoredAssetRecord = Omit<LocalAsset, "previewUrl" | "file"> & { file: File };
+
+function openMediaLibraryDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(MEDIA_LIBRARY_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(MEDIA_LIBRARY_STORE)) {
+        db.createObjectStore(MEDIA_LIBRARY_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readStoredAssets(): Promise<StoredAssetRecord[]> {
+  const db = await openMediaLibraryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readonly");
+    const request = tx.objectStore(MEDIA_LIBRARY_STORE).getAll();
+    request.onsuccess = () => resolve(request.result as StoredAssetRecord[]);
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+async function writeStoredAssets(records: StoredAssetRecord[]) {
+  const db = await openMediaLibraryDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readwrite");
+    const store = tx.objectStore(MEDIA_LIBRARY_STORE);
+    store.clear();
+    for (const record of records) {
+      store.put(record);
+    }
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+function assetsToStoredRecords(): StoredAssetRecord[] {
+  return (["images", "videos", "audios"] as MediaTab[]).flatMap((tab) =>
+    editorAssets.value[tab].map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      size: asset.size,
+      mimeType: asset.mimeType,
+      kind: asset.kind,
+      folderId: asset.folderId,
+      backendAssetId: asset.backendAssetId,
+      backendUrl: asset.backendUrl,
+      uploadPurpose: asset.uploadPurpose,
+      file: asset.file
+    }))
+  );
+}
+
+async function hydrateMediaLibrary() {
+  const storedFolders = localStorage.getItem(MEDIA_FOLDERS_KEY);
+  if (storedFolders) {
+    try {
+      mediaFolders.value = JSON.parse(storedFolders) as MediaFolder[];
+    } catch {
+      mediaFolders.value = [];
+    }
+  }
+
+  try {
+    const records = await readStoredAssets();
+    const storedCoverImageId = localStorage.getItem(MEDIA_COVER_KEY);
+    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
+    for (const record of records) {
+      const asset: LocalAsset = {
+        ...record,
+        previewUrl: URL.createObjectURL(record.file),
+        file: record.file
+      };
+      const tab: MediaTab = asset.kind === "image" ? "images" : asset.kind === "video" ? "videos" : "audios";
+      nextAssets[tab].push(asset);
+    }
+    nextAssets.coverImage = nextAssets.images.find((image) => image.id === storedCoverImageId) ?? null;
+    editorAssets.value = nextAssets;
+  } catch (error) {
+    console.warn("[MediaLibrary] 恢复本地素材失败", error);
+  } finally {
+    mediaHydrated = true;
+  }
+}
+
+function scheduleMediaLibraryPersist() {
+  if (!mediaHydrated) return;
+  if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
+  mediaPersistTimer = window.setTimeout(() => {
+    localStorage.setItem(MEDIA_FOLDERS_KEY, JSON.stringify(mediaFolders.value));
+    if (editorAssets.value.coverImageId) {
+      localStorage.setItem(MEDIA_COVER_KEY, editorAssets.value.coverImageId);
+    } else {
+      localStorage.removeItem(MEDIA_COVER_KEY);
+    }
+    void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
+      console.warn("[MediaLibrary] 保存本地素材失败", error);
+    });
+  }, 250);
+}
+
+watch(editorAssets, scheduleMediaLibraryPersist, { deep: true });
+watch(mediaFolders, scheduleMediaLibraryPersist, { deep: true });
 
 function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: string): AssetPayload {
   return {
@@ -317,7 +445,7 @@ function scheduleDraftSync(platform: PlatformKey) {
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "同步草稿失败，请检查网络连接。";
+      const message = error instanceof Error ? error.message : "同步平台内容失败，请检查网络连接。";
       errorMessage.value = message;
       ElMessage.error(message);
     } finally {
@@ -355,6 +483,9 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
     mode,
     status: "failed",
     platforms,
+    account_ids: {},
+    asset_ids: {},
+    platform_options: {},
     results: Object.fromEntries(
       platforms.map((platform) => [
         platform,
@@ -418,16 +549,54 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
+function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+  const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
+
+  if (platforms.includes("wechat")) {
+    const wechatDraft = preview.value?.drafts.wechat;
+    platformOptions.wechat = {
+      title: publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      author: publishForms.value.wechat.author.trim(),
+      digest: publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
+      content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
+      need_open_comment: publishForms.value.wechat.needOpenComment,
+      only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
+      direct_publish: publishForms.value.wechat.directPublish
+    };
+  }
+
+  if (platforms.includes("bilibili")) {
+    const bilibiliDraft = preview.value?.drafts.bilibili;
+    platformOptions.bilibili = {
+      title: publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
+      description: publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      tags: parseTagText(publishForms.value.bilibili.tags).length
+        ? parseTagText(publishForms.value.bilibili.tags)
+        : bilibiliDraft?.tags ?? [],
+      tid: 201,
+      copyright: 1,
+      source: "",
+      no_reprint: true,
+      dynamic: ""
+    };
+  }
+
+  return platformOptions;
+}
+
 async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
     throw new Error("请先生成内容预览。");
   }
+
+  const selectedPlatformOptions = buildPlatformOptions(payload.platforms);
 
   if (payload.mode === "simulate") {
     return {
       preview_id: preview.value.preview_id,
       mode: payload.mode,
       platforms: payload.platforms,
+      platform_options: selectedPlatformOptions,
       inline_drafts: preview.value.drafts,
       inline_content_ir: preview.value.content_ir
     };
@@ -435,15 +604,15 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
   if (!platforms.length) {
-    throw new Error("当前版本草稿及真实发布仅支持公众号与 B 站。");
+    throw new Error("当前版本只有公众号与 B 站支持保存草稿或真实发布。");
   }
   if (platforms.length !== payload.platforms.length) {
-    throw new Error("知乎和小红书当前版本不支持草稿及真实发布，请使用模拟发布。");
+    throw new Error("知乎和小红书当前只能查看模拟结果，暂不能直接发布。");
   }
 
   const accountIds = await resolveConnectedAccountIds(platforms);
   const assetIds: NonNullable<PublishTaskCreatePayload["asset_ids"]> = {};
-  const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
+  const platformOptions = buildPlatformOptions(platforms);
 
   if (platforms.includes("wechat")) {
     const cover = getCoverImage();
@@ -458,15 +627,9 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     }
 
     assetIds.wechat = [...wechatAssetIds];
-    const wechatDraft = preview.value.drafts.wechat;
     platformOptions.wechat = {
-      title: publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
-      author: publishForms.value.wechat.author.trim() || "匿名",
-      digest: publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
+      ...(platformOptions.wechat ?? {}),
       cover_asset_id: coverAssetId,
-      need_open_comment: false,
-      only_fans_can_comment: false,
-      direct_publish: publishForms.value.wechat.directPublish
     };
   }
 
@@ -481,21 +644,10 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     const coverAssetId = cover ? await ensureBackendAsset(cover, "bilibili_cover") : undefined;
     assetIds.bilibili = coverAssetId ? [videoAssetId, coverAssetId] : [videoAssetId];
 
-    const category = publishForms.value.bilibili.category;
-    const bilibiliDraft = preview.value.drafts.bilibili;
     platformOptions.bilibili = {
-      title: publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
-      description: publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
-      tags: parseTagText(publishForms.value.bilibili.tags).length
-        ? parseTagText(publishForms.value.bilibili.tags)
-        : bilibiliDraft?.tags ?? [],
+      ...(platformOptions.bilibili ?? {}),
       video_asset_id: videoAssetId,
       cover_asset_id: coverAssetId,
-      tid: bilibiliTidByCategory[category] ?? 201,
-      copyright: 1,
-      source: "",
-      no_reprint: true,
-      dynamic: ""
     };
   }
 
@@ -552,7 +704,7 @@ async function refreshTaskStatus(taskId: string) {
 
 async function publishDraftFromTask(publicationId: string) {
   try {
-    await ElMessageBox.confirm("确认提交该草稿至平台发布？提交后将调用平台官方接口进行发布。", "确认发布草稿", {
+    await ElMessageBox.confirm("确认把这份内容提交到平台？提交后系统会开始执行发布流程。", "确认发布", {
       confirmButtonText: "确认",
       cancelButtonText: "取消",
       type: "warning"
@@ -565,7 +717,7 @@ async function publishDraftFromTask(publicationId: string) {
   try {
     await publishDraftPublication(publicationId);
     await loadPublishTasks(false);
-    ElMessage.success("草稿已提交至发布队列。");
+    ElMessage.success("内容已加入发布队列。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "提交发布请求失败。";
     errorMessage.value = message;
@@ -634,9 +786,9 @@ async function optimizeAllWithAgent() {
         }
       };
     }
-    ElMessage.success("四个平台 Agent 优化结果已生成。");
+    ElMessage.success("四个平台的智能优化结果已生成。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    const message = error instanceof Error ? error.message : "智能优化失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -674,7 +826,7 @@ async function optimizeWithAgent(platform: PlatformKey) {
     });
     const optimizedDraft = run.drafts[platform];
     if (!optimizedDraft) {
-      throw new Error(`${platformLabels[platform]}没有返回可用的优化草稿。`);
+      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
     }
     preview.value = {
       ...preview.value,
@@ -689,7 +841,7 @@ async function optimizeWithAgent(platform: PlatformKey) {
     };
     ElMessage.success(`${platformLabels[platform]}内容已优化。`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    const message = error instanceof Error ? error.message : "智能优化失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -717,8 +869,8 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
       await ElMessageBox.confirm(
         payload.mode === "publish"
           ? "确认后会调用真实平台接口提交发布。请确认账号、素材和平台规则已经检查无误。"
-          : "确认后会调用真实平台接口创建草稿。请确认账号和素材已经检查无误。",
-        "真实平台操作确认",
+          : "确认后会把内容保存到平台草稿箱。请确认账号和素材已经检查无误。",
+        "提交前确认",
         {
           confirmButtonText: "确认调用",
           cancelButtonText: "取消",
@@ -758,7 +910,8 @@ function openPreviewDialog(platform?: PlatformKey) {
   previewDialogVisible.value = true;
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await hydrateMediaLibrary();
   void loadPublishTasks(false);
 });
 </script>
@@ -793,6 +946,10 @@ onMounted(() => {
 
       <div class="sidebar-bottom">
         <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
+          <el-menu-item index="media">
+            <el-icon><FolderOpened /></el-icon>
+            <span>多媒体库</span>
+          </el-menu-item>
           <el-menu-item index="account">
             <el-icon><User /></el-icon>
             <span>账号管理</span>
@@ -812,6 +969,13 @@ onMounted(() => {
 
       <el-main v-if="activeTab === 'account'" class="account-workspace">
         <AccountView />
+      </el-main>
+
+      <el-main v-else-if="activeTab === 'media'" class="media-workspace">
+        <MediaLibraryView
+          v-model:assets="editorAssets"
+          v-model:folders="mediaFolders"
+        />
       </el-main>
 
       <el-main v-else-if="activeTab === 'confirm'" class="confirm-workspace">
@@ -843,6 +1007,7 @@ onMounted(() => {
           v-model:tags="tags"
           v-model:platforms="selectedPlatforms"
           v-model:assets="editorAssets"
+          v-model:media-folders="mediaFolders"
           :word-count="wordCount"
           :preview-loading="previewLoading"
           :agent-loading="agentLoading"
@@ -861,9 +1026,12 @@ onMounted(() => {
     <!-- 预览弹窗 -->
     <el-dialog
       v-model="previewDialogVisible"
-      width="90%"
-      top="5vh"
+      width="min(96vw, 1680px)"
+      top="2vh"
       destroy-on-close
+      :close-on-click-modal="false"
+      :close-on-press-escape="true"
+      show-close
       class="preview-dialog"
     >
       <template #header>
@@ -889,7 +1057,7 @@ onMounted(() => {
                   <ArrowDown v-if="publishFormExpanded.includes('publish-params')" />
                   <ArrowRight v-else />
                 </el-icon>
-                <span>发布参数（可选调整）</span>
+                <span>发布前设置</span>
               </span>
             </template>
             <PublishFormView
@@ -901,11 +1069,13 @@ onMounted(() => {
           </el-collapse-item>
         </el-collapse>
 
-        <!-- 发布确认按钮 — 置于真实发布参数下方 -->
-        <div v-if="preview?.preview_id" class="preview-dialog-footer">
+      </div>
+
+      <template #footer>
+        <div class="preview-dialog-footer">
           <div class="dialog-notice">
             <el-icon><WarningFilled /></el-icon>
-            <span>预览编号：{{ preview.preview_id }}<template v-if="preview.created_at">，创建时间：{{ preview.created_at }}</template></span>
+            <span>预览记录：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
           </div>
 
           <el-button
@@ -917,7 +1087,7 @@ onMounted(() => {
             进入发布确认
           </el-button>
         </div>
-      </div>
+      </template>
     </el-dialog>
   </el-container>
 </template>
@@ -1038,13 +1208,63 @@ onMounted(() => {
 
 .account-workspace,
 .confirm-workspace,
+.media-workspace,
 .task-workspace {
   padding: 24px 32px 32px;
 }
 
 /* ---------- 预览弹窗 ---------- */
+.preview-dialog :deep(.el-overlay-dialog) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-dialog :deep(.el-dialog) {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 96vh;
+  max-height: 96vh;
+  max-width: 1680px;
+  margin: 0 auto;
+  overflow: hidden;
+  position: relative;
+}
+
+:global(.el-input__inner::placeholder),
+:global(.el-textarea__inner::placeholder) {
+  color: #a8b4c4;
+  opacity: 1;
+}
+
 .preview-dialog :deep(.el-dialog__header) {
-  padding: 20px 24px 0;
+  padding: 14px 72px 8px 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.preview-dialog :deep(.el-dialog__headerbtn) {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 5;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+
+.preview-dialog :deep(.el-dialog__headerbtn .el-dialog__close) {
+  color: #607086;
+  font-size: 22px;
+}
+
+.preview-dialog :deep(.el-dialog__headerbtn .el-dialog__close:hover) {
+  color: #172033;
 }
 
 .dialog-title {
@@ -1054,7 +1274,10 @@ onMounted(() => {
 }
 
 .preview-dialog :deep(.el-dialog__body) {
-  padding: 8px 24px 24px;
+  padding: 8px 24px 104px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .preview-dialog-body {
@@ -1101,13 +1324,27 @@ onMounted(() => {
   padding-bottom: 16px;
 }
 
+.preview-dialog :deep(.el-dialog__footer) {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  left: 24px;
+  z-index: 4;
+  padding: 0;
+  pointer-events: none;
+}
+
 .preview-dialog-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #e8ecf2;
+  pointer-events: none;
+}
+
+.preview-dialog-footer .el-button,
+.preview-dialog-footer .dialog-notice {
+  pointer-events: auto;
 }
 
 .dialog-notice {
@@ -1118,6 +1355,12 @@ onMounted(() => {
   font-size: 13px;
   word-break: break-all;
   min-width: 0;
+  max-width: min(720px, calc(100% - 220px));
+  padding: 8px 12px;
+  border: 1px solid #e8ecf2;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.1);
 }
 
 @media (max-width: 960px) {
@@ -1165,8 +1408,11 @@ onMounted(() => {
   }
 
   .preview-dialog-footer {
-    flex-direction: column;
-    align-items: stretch;
+    justify-content: flex-end;
+  }
+
+  .dialog-notice {
+    display: none;
   }
 }
 </style>

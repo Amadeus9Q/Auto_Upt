@@ -9,7 +9,9 @@ auth:
   type: browser_or_cookie
   required_for_real_publish: true
 limits:
-  tags_max_count: 10
+  title_max_length: 200
+  body_max_length: 0
+  tags_max_count: 20
   assets_min_count: 1
 style:
   tone: 谈心式，亲切真诚

@@ -88,6 +88,7 @@ class BilibiliAdapter(PlatformAdapter):
             "external_url": external_url,
             "external_status": data.get("status", "submitted"),
             "message": "Bilibili video submitted.",
+            "api_payload": payload,
             "raw_response": submit_result,
             "upload_response": upload_result,
             "cover_response": cover_result,
