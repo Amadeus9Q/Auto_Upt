@@ -23,7 +23,7 @@ from backend.app.schemas.publication import PublicationDeleteResponse, Publicati
 from backend.app.services.account_service import AccountService
 
 
-REAL_PUBLISH_PLATFORMS = {"wechat", "bilibili"}
+REAL_PUBLISH_PLATFORMS = {"wechat", "bilibili", "xiaohongshu"}
 
 
 class PublishService:

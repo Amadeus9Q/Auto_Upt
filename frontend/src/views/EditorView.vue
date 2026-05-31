@@ -16,6 +16,14 @@ interface DragState {
   position: "before" | "after";
 }
 
+interface ContentAssetReference {
+  marker: string;
+  index: number;
+  label: string;
+  token: string;
+  asset?: LocalAsset;
+}
+
 interface AgentOptimizeOptions {
   updateTitle: boolean;
   updateTags: boolean;
@@ -118,6 +126,23 @@ const editorShellStyle = computed(() => {
 });
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
+const contentAssetReferences = computed<ContentAssetReference[]>(() => {
+  const references: ContentAssetReference[] = [];
+  const pattern = /【(图片|视频|音频)：([^】]+)】/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content.value)) !== null) {
+    const label = match[1];
+    const token = match[2];
+    references.push({
+      marker: match[0],
+      index: match.index,
+      label,
+      token,
+      asset: findAssetByReference(label, token)
+    });
+  }
+  return references;
+});
 const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
 const activePreviewTitle = computed({
   get: () => activePreviewDraft.value?.title ?? "",
@@ -272,6 +297,20 @@ function fileToLocalAsset(file: File): LocalAsset | null {
   };
 }
 
+function overwriteAsset(target: LocalAsset, source: LocalAsset) {
+  target.size = source.size;
+  target.mimeType = source.mimeType;
+  target.previewUrl = source.previewUrl;
+  target.file = source.file;
+  target.backendAssetId = undefined;
+  target.backendUrl = undefined;
+  target.uploadPurpose = undefined;
+}
+
+function findSameNameAsset(tab: MediaTab, name: string) {
+  return assets.value[tab].find((item) => item.name === name);
+}
+
 function addExternalFilesToAssets(files: FileList | File[]): LocalAsset[] {
   const added: LocalAsset[] = [];
   for (const file of Array.from(files)) {
@@ -281,10 +320,12 @@ function addExternalFilesToAssets(files: FileList | File[]): LocalAsset[] {
     }
 
     const tab = tabFromKind(asset.kind);
-    const existing = assets.value[tab].find(
-      (item) => item.name === asset.name && item.size === asset.size && item.mimeType === asset.mimeType
-    );
+    const existing = findSameNameAsset(tab, asset.name);
     if (existing) {
+      const confirmed = window.confirm(`已存在名为「${asset.name}」的素材，是否覆盖原文件？`);
+      if (confirmed) {
+        overwriteAsset(existing, asset);
+      }
       added.push(existing);
       continue;
     }
@@ -298,8 +339,13 @@ function addExternalFilesToAssets(files: FileList | File[]): LocalAsset[] {
 const onCoverChange: UploadProps["onChange"] = (file) => {
   const asset = toLocalAsset(file, "images");
   if (!asset) return;
-  const existing = assets.value.images.find((item) => item.name === asset.name && item.size === asset.size && item.mimeType === asset.mimeType);
+  const existing = findSameNameAsset("images", asset.name);
   const cover = existing ?? asset;
+  if (existing) {
+    const confirmed = window.confirm(`已存在名为「${asset.name}」的图片，是否覆盖原图？`);
+    if (!confirmed) return;
+    overwriteAsset(existing, asset);
+  }
   if (!existing) {
     assets.value.images.push(asset);
   }
@@ -310,7 +356,13 @@ const onCoverChange: UploadProps["onChange"] = (file) => {
 function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
   return (file) => {
     const asset = toLocalAsset(file, tab);
-    if (!asset || assets.value[tab].some((item) => item.id === asset.id)) {
+    if (!asset) {
+      return;
+    }
+    const existing = findSameNameAsset(tab, asset.name);
+    if (existing) {
+      const confirmed = window.confirm(`已存在名为「${asset.name}」的素材，是否覆盖原文件？`);
+      if (confirmed) overwriteAsset(existing, asset);
       return;
     }
     assets.value[tab].push(asset);
@@ -334,44 +386,131 @@ const kindLabel: Record<MediaKind, string> = {
   audio: "音频"
 };
 
-function makeMarker(kind: MediaKind, name: string) {
-  return `【${kindLabel[kind]}：${name}】`;
+function assetFolderPath(asset: LocalAsset, name = asset.name) {
+  const names: string[] = [];
+  let cursor = asset.folderId;
+  while (cursor) {
+    const folder = mediaFolders.value.find((item) => item.id === cursor);
+    if (!folder) break;
+    names.unshift(folder.name);
+    cursor = folder.parentId ?? undefined;
+  }
+  return [...names, name].join("/");
+}
+
+function makeAssetMarker(asset: LocalAsset, name = asset.name) {
+  return `【${kindLabel[asset.kind]}：${assetFolderPath(asset, name)}】`;
 }
 
 function assetMarker(asset: LocalAsset) {
-  return makeMarker(asset.kind, asset.name);
+  return makeAssetMarker(asset);
+}
+
+function markerMatchesAsset(kind: MediaKind, token: string, asset: LocalAsset, legacyName?: string) {
+  if (token.includes(`id:${asset.id}`)) return true;
+  const cleanToken = token.split("｜id:")[0].trim();
+  const currentPath = assetFolderPath(asset);
+  const oldPath = legacyName ? assetFolderPath(asset, legacyName) : "";
+  return kindLabel[kind] === kindLabel[asset.kind] && [asset.name, legacyName, currentPath, oldPath, ...(asset.aliasPaths ?? [])].filter(Boolean).includes(cleanToken);
+}
+
+function kindFromLabel(label: string): MediaKind | null {
+  if (label === kindLabel.image || label === "图片") return "image";
+  if (label === kindLabel.video || label === "视频") return "video";
+  if (label === kindLabel.audio || label === "音频") return "audio";
+  return null;
+}
+
+function findAssetByReference(label: string, token: string): LocalAsset | undefined {
+  const kind = kindFromLabel(label);
+  if (!kind) return undefined;
+  const list = kind === "image" ? assets.value.images : kind === "video" ? assets.value.videos : assets.value.audios;
+  return list.find((asset) => markerMatchesAsset(kind, token, asset));
+}
+
+function locateContentReference(reference: ContentAssetReference) {
+  const textarea = document.querySelector<HTMLTextAreaElement>(".editor-panel-content textarea");
+  if (!textarea) return;
+  nextTick(() => {
+    textarea.focus();
+    textarea.setSelectionRange(reference.index, reference.index + reference.marker.length);
+    const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight || "22");
+    const before = content.value.slice(0, reference.index);
+    const line = before.split("\n").length - 1;
+    textarea.scrollTop = Math.max(0, line * lineHeight - textarea.clientHeight / 2);
+  });
+}
+
+function refreshAssetMarkersInText(text: string, changedAsset?: LocalAsset, legacyName?: string) {
+  return text.replace(/【(图片|视频|音频)：([^】]+)】/g, (full, label: string, token: string) => {
+    const assetsForKind = label === "图片" ? assets.value.images : label === "视频" ? assets.value.videos : assets.value.audios;
+    const asset = changedAsset
+      ? markerMatchesAsset(changedAsset.kind, token, changedAsset, legacyName) ? changedAsset : undefined
+      : assetsForKind.find((item) => markerMatchesAsset(item.kind, token, item));
+    return asset ? makeAssetMarker(asset) : full;
+  });
+}
+
+function removeAssetMarkersFromText(text: string, removedAsset: LocalAsset) {
+  return text.replace(/【(图片|视频|音频)：([^】]+)】\s*/g, (full, label: string, token: string) => {
+    return markerMatchesAsset(removedAsset.kind, token, removedAsset) && label === kindLabel[removedAsset.kind] ? "" : full;
+  });
+}
+
+function handleMediaDelete(asset: LocalAsset) {
+  const nextContent = removeAssetMarkersFromText(content.value, asset);
+  if (nextContent !== content.value) content.value = nextContent;
+
+  for (const [platform, draft] of Object.entries(props.platformDrafts)) {
+    if (!draft?.body) continue;
+    const nextBody = removeAssetMarkersFromText(draft.body, asset);
+    if (nextBody !== draft.body) {
+      emit("updatePlatformDraft", platform as PlatformKey, { body: nextBody });
+    }
+  }
 }
 
 function handleMediaRename(payload: { asset: LocalAsset; oldName: string; newName: string }) {
-  const oldMarker = makeMarker(payload.asset.kind, payload.oldName);
-  const newMarker = makeMarker(payload.asset.kind, payload.newName);
-  if (oldMarker === newMarker) return;
-
-  // Replace markers in all text fields that reference this asset
-  const replaceIn = (text: string): string =>
-    text.includes(oldMarker) ? text.replaceAll(oldMarker, newMarker) : text;
-
+  const replaceIn = (text: string): string => refreshAssetMarkersInText(text, payload.asset, payload.oldName);
   const newContent = replaceIn(content.value);
   if (newContent !== content.value) {
     content.value = newContent;
   }
 
   const activeDraft = activePreviewDraft.value;
-  if (activeDraft?.body && activeDraft.body.includes(oldMarker)) {
+  if (activeDraft?.body) {
     // Update through the activePreviewText setter to ensure two-way sync
-    activePreviewText.value = activeDraft.body.replaceAll(oldMarker, newMarker);
+    const nextBody = replaceIn(activeDraft.body);
+    if (nextBody !== activeDraft.body) activePreviewText.value = nextBody;
   }
 
   // Also update other non-active platform drafts that contain the old marker
   for (const [platform, draft] of Object.entries(props.platformDrafts)) {
     if (platform === activePreviewPlatform.value) continue; // already handled above
-    if (draft?.body?.includes(oldMarker)) {
+    if (draft?.body) {
+      const nextBody = replaceIn(draft.body);
+      if (nextBody === draft.body) continue;
       emit("updatePlatformDraft", platform as PlatformKey, {
-        body: draft.body.replaceAll(oldMarker, newMarker)
+        body: nextBody
       });
     }
   }
 }
+
+function refreshAllAssetMarkers() {
+  const nextContent = refreshAssetMarkersInText(content.value);
+  if (nextContent !== content.value) content.value = nextContent;
+
+  for (const [platform, draft] of Object.entries(props.platformDrafts)) {
+    if (!draft?.body) continue;
+    const nextBody = refreshAssetMarkersInText(draft.body);
+    if (nextBody !== draft.body) {
+      emit("updatePlatformDraft", platform as PlatformKey, { body: nextBody });
+    }
+  }
+}
+
+watch([assets, mediaFolders], refreshAllAssetMarkers, { deep: true });
 
 function insertTextAtCursor(text: string, textarea?: HTMLTextAreaElement | null, target?: { value: string } | null) {
   const ref = target ?? content;
@@ -854,6 +993,33 @@ function dropClass(tab: MediaTab, index: number) {
           <div v-if="isContentDragOver && contentDropCaretStyle" class="content-drop-caret" :style="contentDropCaretStyle" />
           <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
         </div>
+        <div v-if="contentAssetReferences.length" class="content-asset-references">
+          <div class="reference-header">
+            <span>本文引用素材</span>
+            <small>点击可定位到正文引用</small>
+          </div>
+          <div class="reference-list">
+            <button
+              v-for="reference in contentAssetReferences"
+              :key="`${reference.index}-${reference.marker}`"
+              type="button"
+              class="reference-card"
+              :class="{ 'is-missing': !reference.asset }"
+              @click="locateContentReference(reference)"
+            >
+              <span class="reference-preview">
+                <img v-if="reference.asset?.kind === 'image'" :src="reference.asset.previewUrl" :alt="reference.asset.name" />
+                <video v-else-if="reference.asset?.kind === 'video'" :src="reference.asset.previewUrl" />
+                <audio v-else-if="reference.asset?.kind === 'audio'" :src="reference.asset.previewUrl" />
+                <span v-else>未找到</span>
+              </span>
+              <span class="reference-info">
+                <strong>{{ reference.asset?.name || reference.token }}</strong>
+                <small>{{ reference.asset ? assetFolderPath(reference.asset) : "素材已删除或路径已失效" }}</small>
+              </span>
+            </button>
+          </div>
+        </div>
       </el-form-item>
       </section>
 
@@ -1002,6 +1168,7 @@ function dropClass(tab: MediaTab, index: number) {
           title="多媒体库"
           @insert="insertAssetReference"
           @rename="handleMediaRename"
+          @delete="handleMediaDelete"
         />
       </aside>
     </div>
@@ -1335,6 +1502,106 @@ function dropClass(tab: MediaTab, index: number) {
   border: 1px solid #b8d3ff;
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(23, 32, 51, 0.12);
+  font-size: 12px;
+}
+
+.content-asset-references {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.reference-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.reference-header span {
+  color: #253247;
+  font-weight: 650;
+}
+
+.reference-header small {
+  color: #607086;
+}
+
+.reference-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.reference-card {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.reference-card:hover {
+  border-color: #b8d3ff;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.08);
+}
+
+.reference-card.is-missing {
+  border-color: #f4c7c7;
+}
+
+.reference-preview {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 46px;
+  overflow: hidden;
+  color: #9aa9bb;
+  background: #eef3f8;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.reference-preview img,
+.reference-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.reference-preview audio {
+  width: 52px;
+}
+
+.reference-info {
+  min-width: 0;
+}
+
+.reference-info strong,
+.reference-info small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-info strong {
+  color: #253247;
+  font-size: 13px;
+}
+
+.reference-info small {
+  margin-top: 3px;
+  color: #607086;
   font-size: 12px;
 }
 
