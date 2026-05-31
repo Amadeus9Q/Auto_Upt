@@ -53,7 +53,7 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
         "display_name": "知乎",
         "tone": "理性、有深度，适合知识分享",
         "title_max_length": 60,
-        "body_max_length": 30000,
+        "body_max_length": 0,
         "tags_max_count": 5,
         "supported_media": ["image"],
         "template": "article",
@@ -567,7 +567,7 @@ class PlatformStylistAgent:
             lines.append("")  # 空行分隔
         body = "\n".join(lines).strip()
         max_len = style.get("body_max_length", 20000)
-        if len(body) > max_len:
+        if max_len and len(body) > max_len:
             body = body[: max_len - 3] + "..."
         return body
 

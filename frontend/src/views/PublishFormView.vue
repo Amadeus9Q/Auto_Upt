@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { DocumentChecked, InfoFilled, VideoCamera, WarningFilled } from "@element-plus/icons-vue";
+import { DocumentChecked, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/views/EditorView.vue";
@@ -16,6 +16,9 @@ export interface WechatPublishForm {
   title: string;
   summary: string;
   author: string;
+  contentSourceUrl: string;
+  needOpenComment: boolean;
+  onlyFansCanComment: boolean;
   directPublish: boolean;
 }
 
@@ -32,22 +35,12 @@ const props = defineProps<{
 
 const forms = defineModel<PublishForms>("forms", { required: true });
 
-const defaultTab = computed(() => (props.selectedPlatforms.includes("bilibili") ? "bilibili" : "wechat"));
+const defaultTab = computed(() => props.selectedPlatforms.find((platform) => ["wechat", "bilibili", "zhihu", "xiaohongshu"].includes(platform)) ?? "wechat");
 const coverImage = computed(
   () => props.assets.coverImage ?? props.assets.images.find((image) => image.id === props.assets.coverImageId) ?? props.assets.images[0] ?? null
 );
 const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
-const bilibiliIssues = computed(() => props.validationReport.bilibili ?? []);
 const wechatIssues = computed(() => props.validationReport.wechat ?? []);
-
-const bilibiliMissing = computed(() => [
-  ...(!forms.value.bilibili.title.trim() ? ["标题"] : []),
-  ...(!forms.value.bilibili.description.trim() ? ["简介"] : []),
-  ...(!forms.value.bilibili.tags.trim() ? ["标签"] : []),
-  ...(!forms.value.bilibili.category.trim() ? ["分区"] : []),
-  ...(!coverImage.value ? ["封面图片"] : []),
-  ...(!bilibiliVideo.value ? ["视频文件"] : [])
-]);
 
 const wechatMissing = computed(() => [
   ...(!forms.value.wechat.title.trim() ? ["标题"] : []),
@@ -66,67 +59,22 @@ function issueType(issue: ValidationIssue) {
   <section class="publish-form-view">
     <div class="section-title">
       <div>
-        <p>发布表单</p>
-        <h2>真实发布参数准备</h2>
+        <p>平台参数</p>
+        <h2>按公开 API 准备发布字段</h2>
       </div>
       <el-icon :size="24"><DocumentChecked /></el-icon>
     </div>
 
     <el-empty
-      v-if="!selectedPlatforms.includes('bilibili') && !selectedPlatforms.includes('wechat')"
-      description="选择公众号或 B站后填写发布参数"
+      v-if="!selectedPlatforms.length"
+      description="选择平台后查看发布参数"
     />
 
     <el-tabs v-else :model-value="defaultTab" class="publish-tabs">
-      <el-tab-pane v-if="selectedPlatforms.includes('bilibili')" label="B站" name="bilibili">
-        <div class="platform-heading">
-          <el-icon><VideoCamera /></el-icon>
-          <strong>B站稿件信息</strong>
-        </div>
-
-        <el-alert
-          v-if="bilibiliMissing.length"
-          class="form-alert"
-          :title="`缺失项：${bilibiliMissing.join('、')}`"
-          type="warning"
-          show-icon
-          :closable="false"
-        />
-
-        <div v-if="bilibiliIssues.length" class="issue-list">
-          <el-tag v-for="issue in bilibiliIssues" :key="`${issue.code}-${issue.field}`" :type="issueType(issue)">
-            {{ issue.field }}：{{ issue.message }}
-          </el-tag>
-        </div>
-
-        <el-form label-position="top">
-          <el-form-item label="标题">
-            <el-input v-model="forms.bilibili.title" maxlength="80" show-word-limit />
-          </el-form-item>
-          <el-form-item label="简介">
-            <el-input v-model="forms.bilibili.description" type="textarea" :rows="4" resize="none" />
-          </el-form-item>
-          <el-form-item label="标签">
-            <el-input v-model="forms.bilibili.tags" placeholder="用逗号分隔，例如 AI Agent, 内容运营" />
-          </el-form-item>
-          <el-form-item label="分区">
-            <el-select v-model="forms.bilibili.category" placeholder="请选择分区">
-              <el-option label="科技 / 计算机技术" value="tech" />
-              <el-option label="知识 / 职业职场" value="knowledge" />
-              <el-option label="生活 / 日常" value="life" />
-            </el-select>
-          </el-form-item>
-          <div class="asset-status">
-            <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
-            <span>视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
-          </div>
-        </el-form>
-      </el-tab-pane>
-
       <el-tab-pane v-if="selectedPlatforms.includes('wechat')" label="公众号" name="wechat">
         <div class="platform-heading">
           <el-icon><InfoFilled /></el-icon>
-          <strong>公众号图文信息</strong>
+          <strong>公众号草稿箱 API 参数</strong>
         </div>
 
         <el-alert
@@ -146,13 +94,35 @@ function issueType(issue: ValidationIssue) {
 
         <el-form label-position="top">
           <el-form-item label="标题">
-            <el-input v-model="forms.wechat.title" maxlength="64" show-word-limit />
+            <el-input v-model="forms.wechat.title" maxlength="64" show-word-limit placeholder="对应公众号草稿 title 字段" />
           </el-form-item>
           <el-form-item label="摘要">
-            <el-input v-model="forms.wechat.summary" type="textarea" :rows="3" resize="none" maxlength="120" show-word-limit />
+            <el-input
+              v-model="forms.wechat.summary"
+              type="textarea"
+              :rows="3"
+              resize="none"
+              maxlength="120"
+              show-word-limit
+              placeholder="对应公众号草稿 digest 字段，可作为图文摘要"
+            />
           </el-form-item>
           <el-form-item label="作者">
-            <el-input v-model="forms.wechat.author" />
+            <el-input v-model="forms.wechat.author" placeholder="对应公众号草稿 author 字段" />
+          </el-form-item>
+          <el-form-item label="原文链接">
+            <el-input v-model="forms.wechat.contentSourceUrl" placeholder="对应 content_source_url 字段，可为空" />
+          </el-form-item>
+          <el-form-item label="评论设置">
+            <div class="switch-row">
+              <el-switch v-model="forms.wechat.needOpenComment" active-text="开启评论" inactive-text="关闭评论" />
+              <el-switch
+                v-model="forms.wechat.onlyFansCanComment"
+                :disabled="!forms.wechat.needOpenComment"
+                active-text="仅粉丝可评论"
+                inactive-text="所有人可评论"
+              />
+            </div>
           </el-form-item>
           <el-form-item label="发布方式">
             <el-switch v-model="forms.wechat.directPublish" active-text="直接提交发布" inactive-text="仅创建草稿" />
@@ -163,11 +133,47 @@ function issueType(issue: ValidationIssue) {
           </div>
         </el-form>
       </el-tab-pane>
+
+      <el-tab-pane v-if="selectedPlatforms.includes('bilibili')" label="B站" name="bilibili">
+        <div class="platform-heading">
+          <el-icon><InfoFilled /></el-icon>
+          <strong>B站发布参数</strong>
+        </div>
+        <el-alert
+          class="form-alert"
+          title="未找到稳定公开的官方投稿 API 文档，当前使用系统缺省参数。"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+        <div class="asset-status">
+          <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
+          <span>视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="selectedPlatforms.includes('zhihu')" label="知乎" name="zhihu">
+        <el-alert
+          title="未找到稳定公开的发布 API 文档，发布参数暂缺省。"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">
+        <el-alert
+          title="未找到稳定公开的发布 API 文档，发布参数暂缺省。"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+      </el-tab-pane>
     </el-tabs>
 
     <div class="risk-note">
       <el-icon><WarningFilled /></el-icon>
-      <span>这里展示的是发布前参数与平台校验风险，真实发布提交会在后续确认流程中二次确认。</span>
+      <span>这里只展示有公开 API 依据的字段；未确认公开接口的平台使用系统缺省参数，并在发布确认中二次确认。</span>
     </div>
   </section>
 </template>
@@ -240,6 +246,12 @@ function issueType(issue: ValidationIssue) {
   background: #f7f9fc;
   border: 1px solid #e6edf5;
   border-radius: 8px;
+}
+
+.switch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .risk-note {

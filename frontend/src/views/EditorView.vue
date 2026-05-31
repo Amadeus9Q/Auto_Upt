@@ -4,6 +4,7 @@ import type { UploadFile, UploadFiles, UploadProps } from "element-plus";
 import { Connection, Delete, EditPen, MagicStick, Plus, Upload } from "@element-plus/icons-vue";
 
 import type { PlatformKey } from "@/api/client";
+import { importDocument } from "@/api/client";
 
 export type MediaKind = "image" | "video" | "audio";
 
@@ -71,8 +72,46 @@ const assets = defineModel<EditorAssets>("assets", { required: true });
 const dragState = ref<DragState | null>(null);
 const isContentDragOver = ref(false);
 const contentDropIndex = ref<number | null>(null);
+const importLoading = ref(false);
+const importInputRef = ref<HTMLInputElement | null>(null);
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
+
+async function handleImportClick() {
+  importInputRef.value?.click();
+}
+
+async function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  importLoading.value = true;
+  try {
+    const result = await importDocument(file);
+    // Auto-fill title
+    if (result.title) {
+      title.value = result.title;
+    }
+    // Auto-fill tags
+    if (result.tags?.length) {
+      tags.value = result.tags.join("、");
+    }
+    // Auto-fill body
+    if (result.body) {
+      content.value = result.body;
+    }
+    // Show import summary in console / we'll add toast later
+    console.log("[ImportDoc]", result);
+  } catch (err: any) {
+    console.error("[ImportDoc] Error:", err);
+    alert(`导入失败：${err?.message ?? "未知错误"}`);
+  } finally {
+    importLoading.value = false;
+    // Reset input to allow re-import of same file
+    if (input) input.value = "";
+  }
+}
 
 function kindFromTab(tab: MediaTab): MediaKind {
   return tab === "images" ? "image" : tab === "videos" ? "video" : "audio";
@@ -92,6 +131,59 @@ function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
     kind: kindFromTab(tab),
     file: file.raw
   };
+}
+
+function mediaKindFromFile(file: File): MediaKind | null {
+  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("audio/")) return "audio";
+  return null;
+}
+
+function tabFromKind(kind: MediaKind): MediaTab {
+  if (kind === "image") return "images";
+  if (kind === "video") return "videos";
+  return "audios";
+}
+
+function fileToLocalAsset(file: File): LocalAsset | null {
+  const kind = mediaKindFromFile(file);
+  if (!kind) {
+    return null;
+  }
+
+  return {
+    id: `${kind}-${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+    name: file.name,
+    size: file.size,
+    mimeType: file.type || "application/octet-stream",
+    previewUrl: URL.createObjectURL(file),
+    kind,
+    file
+  };
+}
+
+function addExternalFilesToAssets(files: FileList | File[]): LocalAsset[] {
+  const added: LocalAsset[] = [];
+  for (const file of Array.from(files)) {
+    const asset = fileToLocalAsset(file);
+    if (!asset) {
+      continue;
+    }
+
+    const tab = tabFromKind(asset.kind);
+    const existing = assets.value[tab].find(
+      (item) => item.name === asset.name && item.size === asset.size && item.mimeType === asset.mimeType
+    );
+    if (existing) {
+      added.push(existing);
+      continue;
+    }
+
+    assets.value[tab].push(asset);
+    added.push(asset);
+  }
+  return added;
 }
 
 const onCoverChange: UploadProps["onChange"] = (file) => {
@@ -294,8 +386,16 @@ function findDraggedAsset(event: DragEvent): LocalAsset | null {
   return assets.value[dragState.value.tab]?.[dragState.value.fromIndex] ?? null;
 }
 
+function hasSupportedExternalFiles(event: DragEvent) {
+  const files = event.dataTransfer?.files;
+  if (!files?.length) {
+    return false;
+  }
+  return Array.from(files).some((file) => Boolean(mediaKindFromFile(file)));
+}
+
 function onContentDragOver(event: DragEvent) {
-  if (!findDraggedAsset(event)) {
+  if (!findDraggedAsset(event) && !hasSupportedExternalFiles(event)) {
     return;
   }
   isContentDragOver.value = true;
@@ -306,9 +406,10 @@ function onContentDragOver(event: DragEvent) {
 }
 
 function onContentDrop(event: DragEvent) {
+  const externalAssets = event.dataTransfer?.files?.length ? addExternalFilesToAssets(event.dataTransfer.files) : [];
   const asset = findDraggedAsset(event);
   isContentDragOver.value = false;
-  if (!asset) {
+  if (!asset && !externalAssets.length) {
     return;
   }
 
@@ -316,7 +417,11 @@ function onContentDrop(event: DragEvent) {
   if (textarea && contentDropIndex.value !== null) {
     textarea.setSelectionRange(contentDropIndex.value, contentDropIndex.value);
   }
-  insertAssetReference(asset, textarea);
+  if (externalAssets.length) {
+    insertTextAtCursor(externalAssets.map((item) => assetMarker(item)).join("\n\n"), textarea);
+  } else if (asset) {
+    insertAssetReference(asset, textarea);
+  }
   contentDropIndex.value = null;
   dragState.value = null;
 }
@@ -436,8 +541,8 @@ function dropClass(tab: MediaTab, index: number) {
   <section class="editor-view">
     <div class="section-title">
       <div>
-        <p>内容输入</p>
-        <h2>统一内容 IR 草稿</h2>
+        <p>内容编辑</p>
+        <h2>生成多平台预览的源内容</h2>
       </div>
       <el-tag type="info">{{ wordCount }} 字</el-tag>
     </div>
@@ -446,11 +551,17 @@ function dropClass(tab: MediaTab, index: number) {
       <div class="title-cover-row">
         <div class="title-tag-fields">
           <el-form-item label="标题">
-            <el-input v-model="title" :prefix-icon="EditPen" maxlength="64" show-word-limit />
+            <el-input
+              v-model="title"
+              :prefix-icon="EditPen"
+              maxlength="64"
+              show-word-limit
+              placeholder="填写本次投放内容的标题"
+            />
           </el-form-item>
 
           <el-form-item label="标签">
-            <el-input v-model="tags" placeholder="用逗号或空格分隔" />
+            <el-input v-model="tags" placeholder="输入话题标签，用逗号或空格分隔" />
           </el-form-item>
         </div>
 
@@ -491,8 +602,14 @@ function dropClass(tab: MediaTab, index: number) {
           @dragleave="onContentDragLeave"
           @drop.prevent="onContentDrop"
         >
-          <el-input v-model="content" type="textarea" :rows="15" resize="none" placeholder="粘贴 Markdown、富文本要点或视频简介。" />
-          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入到正文当前位置</div>
+          <el-input
+            v-model="content"
+            type="textarea"
+            :rows="15"
+            resize="none"
+            placeholder="输入正文，支持 Markdown、图文要点、视频简介；也可从文件夹直接拖入图片/视频/音频。"
+          />
+          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
         </div>
       </el-form-item>
 
@@ -566,17 +683,27 @@ function dropClass(tab: MediaTab, index: number) {
     </el-form>
 
     <div class="action-row">
+      <el-button :icon="Plus" :loading="importLoading" @click="handleImportClick">
+        导入文档
+      </el-button>
+      <input
+        ref="importInputRef"
+        type="file"
+        accept=".md,.markdown,.docx,.txt"
+        style="display:none"
+        @change="handleImportFileChange"
+      />
       <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
-        生成预览
+        生成平台预览
       </el-button>
       <el-button :icon="Upload" :disabled="!hasPreview" :loading="taskLoading" @click="$emit('simulatePublish')">
-        模拟发布
+        创建模拟发布任务
       </el-button>
     </div>
 
     <div class="lint-strip">
       <el-icon><MagicStick /></el-icon>
-      <span>已选择 {{ assetCount }} 个多媒体文件。拖拽文件卡片可调整顺序，封面图会优先用于平台发布表单。</span>
+      <span>已选择 {{ assetCount }} 个多媒体文件。拖拽文件卡片可调整顺序，也可从文件夹拖入正文并自动归入素材库。</span>
     </div>
   </section>
 </template>

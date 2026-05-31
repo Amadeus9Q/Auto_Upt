@@ -9,9 +9,9 @@ auth:
   type: browser_or_cookie
   required_for_real_publish: true
 limits:
-  title_max_length: 20
-  body_max_length: 1000
-  tags_max_count: 10
+  title_max_length: 200
+  body_max_length: 0
+  tags_max_count: 20
   assets_min_count: 1
 style:
   tone: concise note

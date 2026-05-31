@@ -137,6 +137,7 @@ class PublishService:
                 publication.response_payload = publish_result
                 results[platform] = {
                     **publish_result,
+                    "platform_options": task.platform_options.get(platform, {}) if task.platform_options else {},
                     "publication_id": publication.id,
                 }
             except PlatformClientError as exc:
@@ -342,6 +343,9 @@ class PublishService:
             mode=record.mode,
             status=record.status,
             platforms=record.platforms,
+            account_ids=record.account_ids or {},
+            asset_ids=record.asset_ids or {},
+            platform_options=record.platform_options or {},
             results=record.results,
             error_message=record.error_message,
             created_at=record.created_at,
@@ -390,7 +394,13 @@ class PublishService:
 
             try:
                 adapter = get_adapter(platform)
-                results[platform] = await adapter.publish(draft, mode=request.mode)
+                options = request.platform_options.get(platform, {}) if request.platform_options else {}
+                simulated_draft = self._apply_platform_options(platform, draft, options)
+                result = await adapter.publish(simulated_draft, mode=request.mode)
+                results[platform] = {
+                    **result,
+                    "platform_options": options,
+                }
             except Exception as exc:
                 status = PublishTaskStatus.FAILED
                 results[platform] = {
@@ -415,6 +425,31 @@ class PublishService:
         await self.session.commit()
         await self.session.refresh(task)
         return task
+
+    @staticmethod
+    def _apply_platform_options(
+        platform: str,
+        draft: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not options:
+            return dict(draft)
+
+        next_draft = dict(draft)
+        if title := options.get("title"):
+            next_draft["title"] = title
+        if platform == "wechat":
+            if digest := options.get("digest"):
+                next_draft["summary"] = digest
+            if author := options.get("author"):
+                next_draft["author"] = author
+        elif platform == "bilibili":
+            if description := options.get("description"):
+                next_draft["body"] = description
+                next_draft["summary"] = description
+            if tags := options.get("tags"):
+                next_draft["tags"] = tags
+        return next_draft
 
     @staticmethod
     def _validate_real_publish_request(

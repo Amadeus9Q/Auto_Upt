@@ -14,7 +14,7 @@ import html
 import re
 from typing import Any
 
-from backend.app.adapters.base import clip_text, first_non_empty, split_paragraphs
+from backend.app.adapters.base import first_non_empty, split_paragraphs
 
 # 匹配正文中的中文媒体标记：【图片：xxx.jpg】【视频：xxx.mp4】【音频：xxx.mp3】
 CN_MEDIA_MARKER_RE = re.compile(r"【(?:图片|视频|音频)[：:]\s*[^】]+】")
@@ -340,12 +340,8 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
     - wechat_html: WeChat API 兼容的 HTML 正文，可直接传入 draft/add 接口。
     - chapters: 来自 Agent 分析的章节数据（含媒体定位信息）。
     """
-    limits = profile.get("limits", {})
     paragraphs = split_paragraphs(content_ir["body"])
-    title = clip_text(
-        first_non_empty(content_ir.get("title"), content_ir.get("summary")),
-        limits.get("title_max_length", 64),
-    )
+    title = first_non_empty(content_ir.get("title"), content_ir.get("summary")) or ""
     summary = content_ir.get("summary", "")
     body_blocks = content_ir.get("body_blocks", [])
     media_slots = content_ir.get("media_slots", {})
@@ -353,6 +349,13 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
 
     # ---- 生成公众号 HTML ----
     wechat_html = render_wechat_html(content_ir)
+
+    # ---- rich_body：优先使用 Agent 章节结构 ----
+    if chapters:
+        all_media = content_ir.get("all_media", [])
+        rich_body = _build_rich_body_from_chapters(chapters, all_media)
+    else:
+        rich_body = _build_rich_body(paragraphs, content_ir.get("assets", []), body_blocks)
 
     # ---- 传统文本正文 ----
     body_parts = [
@@ -369,12 +372,12 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
         "display_name": profile.get("display_name", profile["platform"]),
         "title": title,
         "body": "\n".join(body_parts),
-        "summary": clip_text(summary, 120),
-        "tags": content_ir.get("tags", [])[: limits.get("tags_max_count", 5)],
+        "summary": summary,
+        "tags": content_ir.get("tags", []),
         "assets": content_ir.get("assets", []),
         "body_blocks": body_blocks,
         "media_slots": media_slots,
-        "rich_body": _build_rich_body(paragraphs, content_ir.get("assets", []), body_blocks),
+        "rich_body": rich_body,
         "cover_image": media_slots.get("cover") or _pick_cover(content_ir.get("assets", [])),
         "author": content_ir.get("author", "Auto_Upt"),
         "publish_date": content_ir.get("created_at", ""),
@@ -450,4 +453,63 @@ def _build_rich_body(
             rich.append({"type": "image", "src": _asset_src(asset), "alt": asset.get("name", "")})
         elif asset.get("type") in {"video", "audio"}:
             rich.append(_external_media_block(asset.get("type", "video"), asset))
+    return rich
+
+
+def _build_rich_body_from_chapters(
+    chapters: list[dict[str, Any]],
+    all_media: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """将 Agent 分析的章节结构转换为前端 rich_body 格式。
+
+    相比 _build_rich_body（从原始 body 段落拆分），此函数使用 Agent 输出的
+    章节标题、层级关系和媒体定位信息，确保前端预览展示 Agent 的分析结果。
+    """
+    rich: list[dict[str, Any]] = []
+
+    # 构建媒体索引（按 id 快速查找）
+    media_by_id: dict[str, dict[str, Any]] = {}
+    for m in all_media:
+        mid = m.get("id") or m.get("asset_id") or ""
+        if mid:
+            media_by_id[mid] = m
+
+    for ch in chapters:
+        level = ch.get("level", 1)
+        heading = ch.get("title", "")
+        content = ch.get("content", "")
+        media_items: list[dict[str, Any]] = ch.get("media_items", [])
+
+        # 章节标题
+        if heading:
+            rich.append({"type": "heading", "level": level, "text": heading})
+
+        # 章节内媒体（标题后、正文前）
+        for mi in media_items:
+            kind = mi.get("kind") or mi.get("type", "image")
+            src = mi.get("url") or mi.get("preview_url") or mi.get("src", "")
+            name = mi.get("name") or mi.get("alt", "")
+            if kind in ("video", "audio"):
+                rich.append(_external_media_block(kind, {"name": name, "url": src}))
+            else:
+                rich.append({
+                    "type": "image",
+                    "src": src,
+                    "alt": name,
+                    "asset_id": mi.get("id") or mi.get("asset_id", ""),
+                    "mime_type": mi.get("mime_type", ""),
+                })
+
+        # 章节正文段落
+        if content:
+            for para in split_paragraphs(content):
+                clean = CN_MEDIA_MARKER_RE.sub("", para).strip()
+                if clean:
+                    rich.append({"type": "paragraph", "text": clean})
+
+        # 递归子章节
+        for sub in ch.get("sub_chapters", []):
+            sub_blocks = _build_rich_body_from_chapters([sub], all_media)
+            rich.extend(sub_blocks)
+
     return rich

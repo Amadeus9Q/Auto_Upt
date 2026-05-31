@@ -87,6 +87,7 @@ class WechatAdapter(PlatformAdapter):
                 "external_id": media_id,
                 "external_status": "draft_created",
                 "message": "WeChat draft created.",
+                "api_payload": {"articles": [article]},
                 "raw_response": draft_result,
             }
 
@@ -101,6 +102,7 @@ class WechatAdapter(PlatformAdapter):
             "external_id": publish_id,
             "external_status": "submitted",
             "message": "WeChat publish submitted.",
+            "api_payload": {"articles": [article]},
             "raw_response": submit_result,
             "draft_media_id": media_id,
         }

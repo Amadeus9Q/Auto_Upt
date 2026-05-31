@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.adapters.registry import select_adapters
+from backend.app.adapters.registry import get_adapter, select_adapters
 from backend.app.agents.content_analyst import ContentAnalystAgent
 from backend.app.agents.platform_stylist import PlatformStylistAgent
 from backend.app.models.content import PreviewRecord
@@ -42,6 +42,8 @@ class PreviewService:
             assets=assets,
             content_type=request.content_type,
         )
+        target_platforms = getattr(request, "platforms", None)
+        platform_copies = self.platform_stylist.generate(analysis, target_platforms)
 
         return {
             "id": str(uuid4()),
@@ -63,6 +65,10 @@ class PreviewService:
             "media_by_kind": {
                 k: [m.model_dump() for m in v]
                 for k, v in analysis.media_by_kind.items()
+            },
+            "platform_copies": {
+                platform: copy.model_dump()
+                for platform, copy in platform_copies.items()
             },
             "created_at": datetime.now(UTC).isoformat(),
         }
@@ -106,6 +112,50 @@ class PreviewService:
         if self.session is None:
             raise RuntimeError("PreviewService.get_preview requires a database session.")
         return await self.session.get(PreviewRecord, preview_id)
+
+    async def update_platform_draft(
+        self,
+        preview_id: str,
+        platform: str,
+        title: str | None,
+        body: str | None,
+        tags: list[str] | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        """更新单个平台的草稿内容并重新校验。"""
+        if self.session is None:
+            raise RuntimeError("PreviewService.update_platform_draft requires a database session.")
+
+        record = await self.session.get(PreviewRecord, preview_id)
+        if record is None:
+            return None
+
+        drafts = dict(record.drafts or {})
+        draft = dict(drafts.get(platform, {}))
+        if not draft:
+            return None
+
+        if title is not None:
+            draft["title"] = title
+        if body is not None:
+            draft["body"] = body
+        if tags is not None:
+            draft["tags"] = tags
+
+        # 重新校验
+        adapter = get_adapter(platform)
+        validation_report = adapter.validate(draft) + self._validate_media_for_platform(platform, draft)
+
+        drafts[platform] = draft
+        record.drafts = drafts
+
+        # 合并更新 validation_report
+        vr = dict(record.validation_report or {})
+        vr[platform] = validation_report
+        record.validation_report = vr
+
+        await self.session.commit()
+        await self.session.refresh(record)
+        return draft, validation_report
 
     @staticmethod
     def to_response(record: PreviewRecord) -> PreviewResponse:

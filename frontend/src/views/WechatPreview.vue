@@ -37,61 +37,63 @@ defineProps<{
       <span class="nav-more">···</span>
     </div>
 
-    <!-- 文章标题区 -->
-    <div class="article-header">
-      <h1 class="article-title">{{ title }}</h1>
-      <div class="article-meta">
-        <span class="meta-author">{{ author || 'Auto_Upt' }}</span>
-        <span class="meta-time">{{ metadata?.estimated_read_time_minutes || 1 }} 分钟</span>
+    <div class="wechat-scroll-area">
+      <!-- 文章标题区 -->
+      <div class="article-header">
+        <h1 class="article-title">{{ title }}</h1>
+        <div class="article-meta">
+          <span class="meta-author">{{ author || 'Auto_Upt' }}</span>
+          <span class="meta-time">{{ metadata?.estimated_read_time_minutes || 1 }} 分钟</span>
+        </div>
       </div>
-    </div>
 
-    <!-- 正文（结构化渲染） -->
-    <div class="article-body">
-      <template v-if="richBody?.length">
-        <template v-for="(block, idx) in richBody" :key="idx">
-          <h2 v-if="block.type === 'heading' && block.level === 1" class="wx-h1">
-            {{ block.text }}
-          </h2>
-          <h3 v-else-if="block.type === 'heading'" class="wx-h2">
-            {{ block.text }}
-          </h3>
-          <blockquote v-else-if="block.type === 'quote'" class="wx-quote">
-            {{ block.text }}
-          </blockquote>
-          <div v-else-if="block.type === 'image'" class="wx-image">
-            <img v-if="block.src" :src="block.src" :alt="block.alt || '图片'" class="wx-media-img" />
-            <div v-else class="wx-image-placeholder">
-              <span>📷 {{ block.alt || '图片' }}</span>
+      <!-- 正文（结构化渲染） -->
+      <div class="article-body">
+        <template v-if="richBody?.length">
+          <template v-for="(block, idx) in richBody" :key="idx">
+            <h2 v-if="block.type === 'heading' && block.level === 1" class="wx-h1">
+              {{ block.text }}
+            </h2>
+            <h3 v-else-if="block.type === 'heading'" class="wx-h2">
+              {{ block.text }}
+            </h3>
+            <blockquote v-else-if="block.type === 'quote'" class="wx-quote">
+              {{ block.text }}
+            </blockquote>
+            <div v-else-if="block.type === 'image'" class="wx-image">
+              <img v-if="block.src" :src="block.src" :alt="block.alt || '图片'" class="wx-media-img" />
+              <div v-else class="wx-image-placeholder">
+                <span>📷 {{ block.alt || '图片' }}</span>
+              </div>
+              <p v-if="block.alt">{{ block.alt }}</p>
             </div>
-            <p v-if="block.alt">{{ block.alt }}</p>
-          </div>
-          <div v-else-if="block.type === 'video' || (block.type === 'unsupported_media' && block.media_type === 'video')" class="wx-link-card">
-            <span class="wx-link-card-icon">视频号</span>
-            <strong>{{ block.alt || '视频素材' }}</strong>
-            <p>{{ block.text || '公众号正文不支持直接嵌入视频，请替换为外链或视频号卡片。' }}</p>
-            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
-          </div>
-          <div v-else-if="block.type === 'audio' || (block.type === 'unsupported_media' && block.media_type === 'audio')" class="wx-link-card">
-            <span class="wx-link-card-icon">外链</span>
-            <strong>{{ block.alt || '音频素材' }}</strong>
-            <p>{{ block.text || '公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。' }}</p>
-            <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
-          </div>
-          <p v-else class="wx-paragraph">{{ block.text }}</p>
+            <div v-else-if="block.type === 'video' || (block.type === 'unsupported_media' && block.media_type === 'video')" class="wx-link-card">
+              <span class="wx-link-card-icon">视频号</span>
+              <strong>{{ block.alt || '视频素材' }}</strong>
+              <p>{{ block.text || '公众号正文不支持直接嵌入视频，请替换为外链或视频号卡片。' }}</p>
+              <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
+            </div>
+            <div v-else-if="block.type === 'audio' || (block.type === 'unsupported_media' && block.media_type === 'audio')" class="wx-link-card">
+              <span class="wx-link-card-icon">外链</span>
+              <strong>{{ block.alt || '音频素材' }}</strong>
+              <p>{{ block.text || '公众号正文不支持直接嵌入音频，请替换为外链或视频号卡片。' }}</p>
+              <a v-if="block.src" :href="block.src" target="_blank" rel="noreferrer">查看外链</a>
+            </div>
+            <p v-else class="wx-paragraph">{{ block.text }}</p>
+          </template>
         </template>
-      </template>
-      <pre v-else class="wx-fallback">{{ body }}</pre>
-    </div>
+        <pre v-else class="wx-fallback">{{ body }}</pre>
+      </div>
 
-    <!-- 标签 -->
-    <div v-if="tags.length" class="article-tags">
-      <span v-for="tag in tags" :key="tag" class="wx-tag">#{{ tag }}</span>
-    </div>
+      <!-- 标签 -->
+      <div v-if="tags.length" class="article-tags">
+        <span v-for="tag in tags" :key="tag" class="wx-tag">#{{ tag }}</span>
+      </div>
 
-    <!-- 底部 -->
-    <div class="article-footer">
-      <span>阅读 {{ metadata?.estimated_read_time_minutes || 1 }} 分钟</span>
+      <!-- 底部 -->
+      <div class="article-footer">
+        <span>阅读 {{ metadata?.estimated_read_time_minutes || 1 }} 分钟</span>
+      </div>
     </div>
   </div>
 </template>
@@ -100,6 +102,7 @@ defineProps<{
 .wechat-phone-frame {
   width: 375px;
   max-width: 100%;
+  height: min(72vh, 760px);
   margin: 0 auto;
   border: 1px solid #dcdcdc;
   border-radius: 20px;
@@ -110,6 +113,8 @@ defineProps<{
     -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
     "Microsoft YaHei", sans-serif;
   color: #3e3e3e;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── 状态栏 ── */
@@ -134,6 +139,14 @@ defineProps<{
   font-weight: 600;
   color: #191919;
   border-bottom: 1px solid #d6d6d6;
+  flex: 0 0 auto;
+}
+
+.wechat-scroll-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .nav-back {
   font-size: 24px;

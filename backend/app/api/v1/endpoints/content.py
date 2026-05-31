@@ -1,15 +1,17 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
 from backend.app.adapters.registry import default_platforms
 from backend.app.schemas.content import (
     AdaptContentRequest,
     AdaptContentResponse,
     ContentInput,
+    ImportDocumentResponse,
     NormalizeResponse,
     PlatformListResponse,
 )
+from backend.app.services.import_service import ImportService
 from backend.app.services.preview_service import PreviewService
 
 
@@ -88,3 +90,41 @@ async def adapt_content(
 )
 async def list_platforms() -> PlatformListResponse:
     return PlatformListResponse(platforms=default_platforms())
+
+
+@router.post(
+    "/import",
+    response_model=ImportDocumentResponse,
+    summary="导入文档并提取结构化内容",
+    description=(
+        "功能：上传 .md、.txt 或 .docx 文件，后端解析后调用 LLM 提取标题、正文、标签、"
+        "摘要、内容类型及媒体资源位置。\n\n"
+        "支持格式：Markdown（.md）、纯文本（.txt）、Word（.docx）。\n\n"
+        "返回值：可直接用于填充前端编辑器的结构化内容，包含：\n"
+        "- title：提取的标题\n"
+        "- body：完整正文（Markdown 纯文本）\n"
+        "- tags：自动生成的中文标签列表\n"
+        "- summary：100-200 字摘要\n"
+        "- content_type：推断的内容类型（article/video/mixed）\n"
+        "- media：文档中的媒体资源列表（含位置、类型、描述）\n"
+        "- raw_text：原始纯文本，供兜底使用"
+    ),
+    response_description="从文档提取的结构化内容。",
+    responses={
+        400: {"description": "不支持的文件格式或文件损坏。"},
+    },
+)
+async def import_document(
+    file: Annotated[
+        UploadFile,
+        File(description="待导入的文档文件（.md 或 .docx）。"),
+    ],
+) -> ImportDocumentResponse:
+    filename = (file.filename or "").lower()
+    if not (filename.endswith(".md") or filename.endswith(".markdown") or filename.endswith(".docx") or filename.endswith(".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式：{file.filename}。请上传 .md、.txt 或 .docx 文件。",
+        )
+    service = ImportService()
+    return await service.import_document(file)

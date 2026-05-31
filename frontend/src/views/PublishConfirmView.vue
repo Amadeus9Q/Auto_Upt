@@ -67,7 +67,7 @@ function submit() {
     <div class="section-title">
       <div>
         <p>发布确认</p>
-        <h2>选择平台与发布模式</h2>
+        <h2>选择任务模式并提交平台处理</h2>
       </div>
       <el-icon :size="24"><Promotion /></el-icon>
     </div>

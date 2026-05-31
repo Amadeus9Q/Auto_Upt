@@ -4,7 +4,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_session
-from backend.app.schemas.content import PreviewCreateRequest, PreviewResponse
+from backend.app.schemas.content import (
+    DraftUpdateRequest,
+    DraftUpdateResponse,
+    PreviewCreateRequest,
+    PreviewResponse,
+)
 from backend.app.services.preview_service import PreviewService
 
 
@@ -67,3 +72,46 @@ async def get_preview(
     if record is None:
         raise HTTPException(status_code=404, detail="Preview not found.")
     return service.to_response(record)
+
+
+@router.put(
+    "/{preview_id}/drafts/{platform}",
+    response_model=DraftUpdateResponse,
+    summary="编辑单个平台草稿",
+    description=(
+        "功能：更新预览记录中单个平台的标题、正文和标签，并重新执行平台校验。\n\n"
+        "参数：路径参数 `preview_id` + `platform`，请求体字段均可选——不传则不更新。\n\n"
+        "返回值：更新后的草稿内容和重新计算的校验报告。\n"
+        "可用于前端在每个平台预览中独立编辑标题、正文和标签。"
+    ),
+    response_description="更新后的平台草稿与校验报告。",
+    responses={
+        404: {"description": "预览记录或平台草稿不存在。"},
+    },
+)
+async def update_platform_draft(
+    preview_id: Annotated[str, Path(description="预览记录 ID。")],
+    platform: Annotated[str, Path(description="平台标识，如 wechat、zhihu、bilibili、xiaohongshu。")],
+    request: Annotated[
+        DraftUpdateRequest,
+        Body(description="要更新的字段，所有字段均可选。"),
+    ],
+    session: AsyncSession = Depends(get_session),
+) -> DraftUpdateResponse:
+    service = PreviewService(session)
+    result = await service.update_platform_draft(
+        preview_id=preview_id,
+        platform=platform,
+        title=request.title,
+        body=request.body,
+        tags=request.tags,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Preview or platform draft not found.")
+    draft, validation_report = result
+    return DraftUpdateResponse(
+        preview_id=preview_id,
+        platform=platform,
+        draft=draft,
+        validation_report=validation_report,
+    )

@@ -9,9 +9,9 @@ auth:
   type: browser_or_cookie
   required_for_real_publish: true
 limits:
-  title_max_length: 100
-  body_max_length: 50000
-  tags_max_count: 5
+  title_max_length: 200
+  body_max_length: 0
+  tags_max_count: 20
   assets_min_count: 0
 style:
   tone: reasoned answer

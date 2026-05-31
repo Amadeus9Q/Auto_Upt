@@ -40,16 +40,10 @@ const platformLabels: Record<PlatformKey, string> = {
 };
 
 const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili"];
-const bilibiliTidByCategory: Record<string, number> = {
-  tech: 201,
-  knowledge: 124,
-  life: 21
-};
-
 const activeTab = ref<WorkspaceTab>("preview");
-const title = ref("AI Agent 发布助手第二阶段说明");
-const content = ref(["输入一篇内容后，系统会生成多平台草稿。", "", "从预览结果进入发布确认页后，可以选择平台和发布模式。"].join("\n"));
-const tags = ref("AI Agent, 内容运营, 自动化");
+const title = ref("");
+const content = ref("");
+const tags = ref("");
 const selectedPlatforms = ref<PlatformKey[]>(["wechat", "bilibili", "zhihu", "xiaohongshu"]);
 const editorAssets = ref<EditorAssets>({
   images: [],
@@ -60,15 +54,18 @@ const editorAssets = ref<EditorAssets>({
 });
 const publishForms = ref<PublishForms>({
   bilibili: {
-    title: title.value,
-    description: content.value,
-    tags: tags.value,
+    title: "",
+    description: "",
+    tags: "",
     category: ""
   },
   wechat: {
-    title: title.value,
-    summary: content.value.slice(0, 80),
+    title: "",
+    summary: "",
     author: "",
+    contentSourceUrl: "",
+    needOpenComment: false,
+    onlyFansCanComment: false,
     directPublish: false
   }
 });
@@ -119,6 +116,9 @@ const drafts = computed<PlatformDraft[]>(() => {
       media_slots: draft?.media_slots ?? {},
       author: draft?.author,
       metadata: draft?.metadata,
+      content_points: draft?.content_points ?? [],
+      highlights: draft?.highlights ?? [],
+      zhihu_blocks: draft?.zhihu_blocks ?? [],
       metrics: [
         { label: "标题", value: `${draft?.title?.length ?? 0} 字` },
         { label: "正文", value: `${draft?.body?.length ?? 0} 字` },
@@ -243,6 +243,9 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
     mode,
     status: "failed",
     platforms,
+    account_ids: {},
+    asset_ids: {},
+    platform_options: {},
     results: Object.fromEntries(
       platforms.map((platform) => [
         platform,
@@ -306,16 +309,50 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
+function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+  const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
+
+  if (platforms.includes("wechat")) {
+    platformOptions.wechat = {
+      title: publishForms.value.wechat.title.trim() || title.value.trim(),
+      author: publishForms.value.wechat.author.trim(),
+      digest: publishForms.value.wechat.summary.trim(),
+      content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
+      need_open_comment: publishForms.value.wechat.needOpenComment,
+      only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
+      direct_publish: publishForms.value.wechat.directPublish
+    };
+  }
+
+  if (platforms.includes("bilibili")) {
+    platformOptions.bilibili = {
+      title: publishForms.value.bilibili.title.trim() || title.value.trim(),
+      description: publishForms.value.bilibili.description.trim() || content.value,
+      tags: parseTagText(publishForms.value.bilibili.tags),
+      tid: 201,
+      copyright: 1,
+      source: "",
+      no_reprint: true,
+      dynamic: ""
+    };
+  }
+
+  return platformOptions;
+}
+
 async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
     throw new Error("请先生成预览。");
   }
 
+  const selectedPlatformOptions = buildPlatformOptions(payload.platforms);
+
   if (payload.mode === "simulate") {
     return {
       preview_id: preview.value.preview_id,
       mode: payload.mode,
-      platforms: payload.platforms
+      platforms: payload.platforms,
+      platform_options: selectedPlatformOptions
     };
   }
 
@@ -329,7 +366,7 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const accountIds = await resolveConnectedAccountIds(platforms);
   const assetIds: NonNullable<PublishTaskCreatePayload["asset_ids"]> = {};
-  const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
+  const platformOptions = buildPlatformOptions(platforms);
 
   if (platforms.includes("wechat")) {
     const cover = getCoverImage();
@@ -345,13 +382,8 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
     assetIds.wechat = [...wechatAssetIds];
     platformOptions.wechat = {
-      title: publishForms.value.wechat.title.trim() || title.value.trim(),
-      author: publishForms.value.wechat.author.trim(),
-      digest: publishForms.value.wechat.summary.trim(),
+      ...(platformOptions.wechat ?? {}),
       cover_asset_id: coverAssetId,
-      need_open_comment: false,
-      only_fans_can_comment: false,
-      direct_publish: publishForms.value.wechat.directPublish
     };
   }
 
@@ -366,18 +398,10 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     const coverAssetId = cover ? await ensureBackendAsset(cover, "bilibili_cover") : undefined;
     assetIds.bilibili = coverAssetId ? [videoAssetId, coverAssetId] : [videoAssetId];
 
-    const category = publishForms.value.bilibili.category;
     platformOptions.bilibili = {
-      title: publishForms.value.bilibili.title.trim() || title.value.trim(),
-      description: publishForms.value.bilibili.description.trim() || content.value,
-      tags: parseTagText(publishForms.value.bilibili.tags),
+      ...(platformOptions.bilibili ?? {}),
       video_asset_id: videoAssetId,
-      cover_asset_id: coverAssetId,
-      tid: bilibiliTidByCategory[category] ?? 201,
-      copyright: 1,
-      source: "",
-      no_reprint: true,
-      dynamic: ""
+      cover_asset_id: coverAssetId
     };
   }
 
@@ -486,6 +510,18 @@ async function generatePreview() {
   }
 }
 
+function handleDraftUpdate(updatedDrafts: PlatformDraft[]) {
+  if (!preview.value) return;
+  // 将编辑后的标题/正文/标签同步回 preview.drafts，保障发布流使用最新数据
+  for (const ud of updatedDrafts) {
+    const existing = preview.value.drafts[ud.key];
+    if (!existing) continue;
+    existing.title = ud.title;
+    existing.body = ud.body;
+    existing.tags = ud.tags;
+  }
+}
+
 function enterPublishConfirm() {
   if (!preview.value) {
     ElMessage.warning("请先生成预览。");
@@ -558,7 +594,7 @@ onMounted(() => {
         <el-icon :size="28"><VideoPlay /></el-icon>
         <div>
           <strong>Auto_Upt</strong>
-          <span>内容发布助手</span>
+          <span>多平台内容投放助手</span>
         </div>
       </div>
 
@@ -592,8 +628,8 @@ onMounted(() => {
     <el-container class="main-area">
       <el-header class="topbar">
         <div>
-          <p>第二阶段工作台</p>
-          <h1>预览、确认并提交发布任务</h1>
+          <p>内容投放工作台</p>
+          <h1>编辑内容、生成预览并确认发布</h1>
         </div>
         <el-tag effect="dark" type="success">Backend Connected</el-tag>
       </el-header>
@@ -644,13 +680,16 @@ onMounted(() => {
     <!-- 预览弹窗 -->
     <el-dialog
       v-model="previewDialogVisible"
-      width="90%"
-      top="5vh"
+      width="min(96vw, 1680px)"
+      top="2vh"
       destroy-on-close
+      :close-on-click-modal="false"
+      :close-on-press-escape="true"
+      show-close
       class="preview-dialog"
     >
       <template #header>
-        <span class="dialog-title">多平台预览</span>
+        <span class="dialog-title">多平台投放预览</span>
       </template>
 
       <div class="preview-dialog-body">
@@ -661,6 +700,7 @@ onMounted(() => {
           :preview-id="preview?.preview_id ?? ''"
           :created-at="preview?.created_at ?? ''"
           @confirm-publish="enterPublishConfirm"
+          @update:drafts="handleDraftUpdate"
         />
 
         <el-collapse v-model="publishFormExpanded" class="publish-form-collapse">
@@ -671,7 +711,7 @@ onMounted(() => {
                   <ArrowDown v-if="publishFormExpanded.includes('publish-params')" />
                   <ArrowRight v-else />
                 </el-icon>
-                <span>发布参数（可选编辑）</span>
+                <span>平台 API 参数</span>
               </span>
             </template>
             <PublishFormView
@@ -682,12 +722,13 @@ onMounted(() => {
             />
           </el-collapse-item>
         </el-collapse>
+      </div>
 
-        <!-- 发布确认按钮 — 置于真实发布参数下方 -->
-        <div v-if="preview?.preview_id" class="preview-dialog-footer">
+      <template #footer>
+        <div class="preview-dialog-footer">
           <div class="dialog-notice">
             <el-icon><WarningFilled /></el-icon>
-            <span>Preview ID：{{ preview.preview_id }}<template v-if="preview.created_at">，创建时间：{{ preview.created_at }}</template></span>
+            <span>Preview ID：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
           </div>
 
           <el-button
@@ -699,7 +740,7 @@ onMounted(() => {
             进入发布确认
           </el-button>
         </div>
-      </div>
+      </template>
     </el-dialog>
   </el-container>
 </template>
@@ -825,8 +866,59 @@ onMounted(() => {
 }
 
 /* ---------- 预览弹窗 ---------- */
+/* 让弹窗撑满视口，内部区域正确滚动 */
+.preview-dialog :deep(.el-overlay-dialog) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-dialog :deep(.el-dialog) {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 96vh;
+  max-height: 96vh;
+  max-width: 1680px;
+  margin: 0 auto;
+  overflow: hidden;
+  position: relative;
+}
+
+:global(.el-input__inner::placeholder),
+:global(.el-textarea__inner::placeholder) {
+  color: #a8b4c4;
+  opacity: 1;
+}
+
 .preview-dialog :deep(.el-dialog__header) {
-  padding: 20px 24px 0;
+  padding: 14px 72px 8px 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 确保关闭按钮 × 始终可见 */
+.preview-dialog :deep(.el-dialog__headerbtn) {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 5;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+
+.preview-dialog :deep(.el-dialog__headerbtn .el-dialog__close) {
+  color: #607086;
+  font-size: 22px;
+}
+
+.preview-dialog :deep(.el-dialog__headerbtn .el-dialog__close:hover) {
+  color: #172033;
 }
 
 .dialog-title {
@@ -836,7 +928,10 @@ onMounted(() => {
 }
 
 .preview-dialog :deep(.el-dialog__body) {
-  padding: 8px 24px 24px;
+  padding: 8px 24px 104px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .preview-dialog-body {
@@ -883,13 +978,27 @@ onMounted(() => {
   padding-bottom: 16px;
 }
 
+.preview-dialog :deep(.el-dialog__footer) {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  left: 24px;
+  z-index: 4;
+  padding: 0;
+  pointer-events: none;
+}
+
 .preview-dialog-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #e8ecf2;
+  pointer-events: none;
+}
+
+.preview-dialog-footer .el-button,
+.preview-dialog-footer .dialog-notice {
+  pointer-events: auto;
 }
 
 .dialog-notice {
@@ -900,6 +1009,12 @@ onMounted(() => {
   font-size: 13px;
   word-break: break-all;
   min-width: 0;
+  max-width: min(720px, calc(100% - 220px));
+  padding: 8px 12px;
+  border: 1px solid #e8ecf2;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.1);
 }
 
 @media (max-width: 960px) {
@@ -947,8 +1062,11 @@ onMounted(() => {
   }
 
   .preview-dialog-footer {
-    flex-direction: column;
-    align-items: stretch;
+    justify-content: flex-end;
+  }
+
+  .dialog-notice {
+    display: none;
   }
 }
 </style>
