@@ -22,9 +22,15 @@ export interface WechatPublishForm {
   directPublish: boolean;
 }
 
+export interface XiaohongshuPublishForm {
+  title: string;
+  content: string;
+}
+
 export interface PublishForms {
   bilibili: BilibiliPublishForm;
   wechat: WechatPublishForm;
+  xiaohongshu: XiaohongshuPublishForm;
 }
 
 const props = defineProps<{
@@ -149,11 +155,41 @@ function issueType(issue: ValidationIssue) {
         </div>
       </el-tab-pane>
 
-      <el-tab-pane v-if="selectedPlatforms.includes('zhihu')" label="知乎" name="zhihu">
-        <el-alert title="当前只展示预览内容，暂不需要填写额外发布设置。" type="info" show-icon :closable="false" />
+      <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">
+        <div class="platform-heading">
+          <el-icon><InfoFilled /></el-icon>
+          <strong>小红书笔记设置</strong>
+        </div>
+        <el-alert
+          class="form-alert"
+          title="标题限制 20 字符（中文占 1 个，英文/数字占 0.5 个），正文最大 1000 字符。"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+        <el-form label-position="top">
+          <el-form-item label="标题">
+            <el-input v-model="forms.xiaohongshu.title" maxlength="20" show-word-limit placeholder="笔记标题，限制 20 字符" />
+          </el-form-item>
+          <el-form-item label="正文">
+            <el-input
+              v-model="forms.xiaohongshu.content"
+              type="textarea"
+              :rows="5"
+              resize="none"
+              maxlength="1000"
+              show-word-limit
+              placeholder="笔记正文内容，支持换行"
+            />
+          </el-form-item>
+          <div class="asset-status">
+            <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
+            <span>图片：{{ assets.images.length }} 张</span>
+          </div>
+        </el-form>
       </el-tab-pane>
 
-      <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">
+      <el-tab-pane v-if="selectedPlatforms.includes('zhihu')" label="知乎" name="zhihu">
         <el-alert title="当前只展示预览内容，暂不需要填写额外发布设置。" type="info" show-icon :closable="false" />
       </el-tab-pane>
     </el-tabs>

@@ -50,7 +50,7 @@ const platformLabels: Record<PlatformKey, string> = {
   xiaohongshu: "小红书"
 };
 
-const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili"];
+const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
   wechat: "professional",
   bilibili: "video",
@@ -86,6 +86,10 @@ const publishForms = ref<PublishForms>({
     needOpenComment: false,
     onlyFansCanComment: false,
     directPublish: false
+  },
+  xiaohongshu: {
+    title: "",
+    content: ""
   }
 });
 const preview = ref<PreviewResponse | null>(null);
@@ -268,6 +272,7 @@ function assetsToStoredRecords(): StoredAssetRecord[] {
       mimeType: asset.mimeType,
       kind: asset.kind,
       folderId: asset.folderId,
+      aliasPaths: asset.aliasPaths,
       backendAssetId: asset.backendAssetId,
       backendUrl: asset.backendUrl,
       uploadPurpose: asset.uploadPurpose,
@@ -339,17 +344,30 @@ function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: st
   };
 }
 
+function assetFolderPath(asset: LocalAsset) {
+  const names: string[] = [];
+  let cursor = asset.folderId;
+  while (cursor) {
+    const folder = mediaFolders.value.find((item) => item.id === cursor);
+    if (!folder) break;
+    names.unshift(folder.name);
+    cursor = folder.parentId ?? undefined;
+  }
+  return [...names, asset.name].join("/");
+}
+
 function collectAssetPayloads(): AssetPayload[] {
   // Collect asset IDs referenced in the body via markers like 【图片：name】 or {{asset:image:id}}
   const referencedIds = new Set<string>();
   const markerPattern = /\{\{asset:(?:image|video|audio):([^}]+)\}\}|【(?:图片|视频|音频)：([^】]+)】/g;
   let match: RegExpExecArray | null;
   while ((match = markerPattern.exec(content.value)) !== null) {
-    const idOrName = match[1] || match[2];
+    const displayToken = match[2]?.split("｜id:") ?? [];
+    const idOrName = match[1] || displayToken[1] || displayToken[0];
     // Try to match by ID first, then by name
     const byId = allAssets.value.find((a) => a.id === idOrName);
     if (byId) { referencedIds.add(byId.id); continue; }
-    const byName = allAssets.value.find((a) => a.name === idOrName);
+    const byName = allAssets.value.find((a) => a.name === idOrName || assetFolderPath(a) === idOrName);
     if (byName) referencedIds.add(byName.id);
   }
 
@@ -377,7 +395,10 @@ function collectContentBlocks(): ContentBlockPayload[] {
   for (const asset of [...editorAssets.value.images, ...editorAssets.value.videos, ...editorAssets.value.audios]) {
     assetMap.set(asset.id, asset);
     const kindLabel = asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : "音频";
-    assetByDisplayToken.set(`${kindLabel}:${asset.name}`, asset);
+    assetByDisplayToken.set(`${kindLabel}:${assetFolderPath(asset)}`, asset);
+    if (!asset.folderId) {
+      assetByDisplayToken.set(`${kindLabel}:${asset.name}`, asset);
+    }
   }
 
   const blocks: ContentBlockPayload[] = [];
@@ -391,9 +412,10 @@ function collectContentBlocks(): ContentBlockPayload[] {
       blocks.push({ type: "text", text });
     }
 
+    const displayToken = match[4]?.split("｜id:") ?? [];
     const asset = match[1]
       ? assetMap.get(match[2])
-      : assetByDisplayToken.get(`${match[3]}:${match[4]}`);
+      : assetMap.get(displayToken[1] ?? "") ?? assetByDisplayToken.get(`${match[3]}:${displayToken[0]}`);
     if (asset) {
       blocks.push({ type: "asset", asset_id: asset.id, asset_kind: asset.kind, role: "inline" });
     }
@@ -652,6 +674,14 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
     };
   }
 
+  if (platforms.includes("xiaohongshu")) {
+    const xhsDraft = preview.value?.drafts.xiaohongshu;
+    platformOptions.xiaohongshu = {
+      title: publishForms.value.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
+      content: publishForms.value.xiaohongshu.content.trim() || xhsDraft?.body || "",
+    };
+  }
+
   return platformOptions;
 }
 
@@ -675,10 +705,10 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
   if (!platforms.length) {
-    throw new Error("当前版本只有公众号与 B 站支持保存草稿或真实发布。");
+    throw new Error("当前版本只有公众号、B站和小红书支持保存草稿或真实发布。");
   }
   if (platforms.length !== payload.platforms.length) {
-    throw new Error("知乎和小红书当前只能查看模拟结果，暂不能直接发布。");
+    throw new Error("知乎当前只能查看模拟结果，暂不能直接发布。");
   }
 
   const accountIds = await resolveConnectedAccountIds(platforms);
@@ -718,6 +748,31 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     platformOptions.bilibili = {
       ...(platformOptions.bilibili ?? {}),
       video_asset_id: videoAssetId,
+      cover_asset_id: coverAssetId,
+    };
+  }
+
+  if (platforms.includes("xiaohongshu")) {
+    const cover = getCoverImage();
+    if (!cover) {
+      throw new Error("小红书发布需要先上传封面图。");
+    }
+
+    const coverAssetId = await ensureBackendAsset(cover, "xiaohongshu_cover");
+    const xhsAssetIds = new Set<string>([coverAssetId]);
+    for (const image of editorAssets.value.images) {
+      xhsAssetIds.add(await ensureBackendAsset(image, image.id === cover.id ? "xiaohongshu_cover" : "xiaohongshu_body_image"));
+    }
+
+    // 视频笔记：需要视频素材
+    const video = editorAssets.value.videos[0] ?? null;
+    if (video) {
+      xhsAssetIds.add(await ensureBackendAsset(video, "xiaohongshu_video"));
+    }
+
+    assetIds.xiaohongshu = [...xhsAssetIds];
+    platformOptions.xiaohongshu = {
+      ...(platformOptions.xiaohongshu ?? {}),
       cover_asset_id: coverAssetId,
     };
   }
