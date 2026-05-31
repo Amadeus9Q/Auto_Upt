@@ -1,36 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import type { UploadFile, UploadProps } from "element-plus";
-import { Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
 
 import { importDocument, type DraftPayload, type PlatformKey } from "@/api/client";
+import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
+import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
 type DraftAssetEntry = { type?: string; name?: string; preview_url?: string; url?: string };
-
-export type MediaKind = "image" | "video" | "audio";
-
-export interface LocalAsset {
-  id: string;
-  name: string;
-  size: number;
-  mimeType: string;
-  previewUrl: string;
-  kind: MediaKind;
-  file: File;
-  backendAssetId?: string;
-  backendUrl?: string;
-  uploadPurpose?: string;
-}
-
-export interface EditorAssets {
-  images: LocalAsset[];
-  videos: LocalAsset[];
-  audios: LocalAsset[];
-  coverImage: LocalAsset | null;
-  coverImageId: string | null;
-}
-
-type MediaTab = "images" | "videos" | "audios";
 
 interface DragState {
   tab: MediaTab;
@@ -74,6 +51,7 @@ const content = defineModel<string>("content", { required: true });
 const tags = defineModel<string>("tags", { required: true });
 const platforms = defineModel<PlatformKey[]>("platforms", { required: true });
 const assets = defineModel<EditorAssets>("assets", { required: true });
+const mediaFolders = defineModel<MediaFolder[]>("mediaFolders", { required: true });
 
 const dragState = ref<DragState | null>(null);
 const isContentDragOver = ref(false);
@@ -83,6 +61,7 @@ const importInputRef = ref<HTMLInputElement | null>(null);
 const isPlatformDragOver = ref(false);
 const platformDropIndex = ref<number | null>(null);
 const activePreviewPlatform = ref<PlatformKey>("wechat");
+const mediaPanelCollapsed = ref(false);
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
@@ -221,8 +200,15 @@ function addExternalFilesToAssets(files: FileList | File[]): LocalAsset[] {
 }
 
 const onCoverChange: UploadProps["onChange"] = (file) => {
-  assets.value.coverImage = toLocalAsset(file, "images");
-  assets.value.coverImageId = null;
+  const asset = toLocalAsset(file, "images");
+  if (!asset) return;
+  const existing = assets.value.images.find((item) => item.name === asset.name && item.size === asset.size && item.mimeType === asset.mimeType);
+  const cover = existing ?? asset;
+  if (!existing) {
+    assets.value.images.push(asset);
+  }
+  assets.value.coverImage = cover;
+  assets.value.coverImageId = cover.id;
 };
 
 function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
@@ -406,7 +392,13 @@ function findDraggedAsset(event: DragEvent): LocalAsset | null {
   const payload = event.dataTransfer?.getData("application/x-auto-upt-asset");
   if (payload) {
     try {
-      const parsed = JSON.parse(payload) as { tab?: MediaTab; index?: number };
+      const parsed = JSON.parse(payload) as { tab?: MediaTab; index?: number; id?: string };
+      if (parsed.id) {
+        for (const tab of ["images", "videos", "audios"] as MediaTab[]) {
+          const found = assets.value[tab].find((item) => item.id === parsed.id);
+          if (found) return found;
+        }
+      }
       if (parsed.tab && typeof parsed.index === "number") {
         return assets.value[parsed.tab]?.[parsed.index] ?? null;
       }
@@ -642,7 +634,11 @@ function dropClass(tab: MediaTab, index: number) {
       @change="handleImportFileChange"
     />
 
+    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed }">
+      <div class="editor-main">
     <el-form label-position="top">
+      <section class="editor-panel editor-panel-meta">
+        <div class="panel-kicker">基础信息</div>
       <div class="title-cover-row">
         <div class="title-tag-fields">
           <el-form-item label="标题">
@@ -681,7 +677,9 @@ function dropClass(tab: MediaTab, index: number) {
           </div>
         </el-form-item>
       </div>
+      </section>
 
+      <section class="editor-panel editor-panel-content">
       <el-form-item>
         <template #label>
           <div class="content-label-row">
@@ -707,72 +705,14 @@ function dropClass(tab: MediaTab, index: number) {
           <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
         </div>
       </el-form-item>
-
-      <el-form-item label="多媒体">
-        <el-tabs class="media-tabs" model-value="images">
-          <el-tab-pane v-for="tab in mediaTabs" :key="tab.key" :label="tab.label" :name="tab.key">
-            <div
-              class="media-list"
-              :class="`media-list-${tab.key}`"
-              @dragover.prevent="onListDragOver(tab.key, $event)"
-              @drop="onDrop(tab.key)"
-              @dragleave.self="dragState = null"
-            >
-              <el-upload
-                class="media-add"
-                drag
-                multiple
-                :auto-upload="false"
-                :accept="tab.accept"
-                :show-file-list="false"
-                :on-change="createChangeHandler(tab.key)"
-              >
-                <div class="add-tile">
-                  <el-icon><Plus /></el-icon>
-                  <span>{{ tab.addText }}</span>
-                </div>
-              </el-upload>
-
-              <article
-                v-for="(asset, index) in assets[tab.key]"
-                :key="asset.id"
-                class="media-card"
-                :class="[`media-card-${asset.kind}`, dropClass(tab.key, index)]"
-                :data-index="index"
-                draggable="true"
-                @dragstart="onDragStart(tab.key, index, $event)"
-                @dragover.prevent="onDragOver(tab.key, index, $event)"
-                @drop.prevent="onDrop(tab.key)"
-                @dragend="dragState = null"
-              >
-                <div class="media-preview">
-                  <img v-if="asset.kind === 'image'" :src="asset.previewUrl" :alt="asset.name" />
-                  <video v-else-if="asset.kind === 'video'" :src="asset.previewUrl" controls />
-                  <audio v-else :src="asset.previewUrl" controls />
-                </div>
-
-                <div class="media-info">
-                  <strong>{{ asset.name }}</strong>
-                  <small>{{ (asset.size / 1024 / 1024).toFixed(2) }} MB</small>
-                </div>
-
-                <div class="media-actions">
-                  <el-button text type="primary" :icon="Plus" @click="insertAssetReference(asset)">
-                    插入正文
-                  </el-button>
-                  <el-button text type="danger" :icon="Delete" @click="removeAsset(tab.key, index)" />
-                </div>
-              </article>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-      </el-form-item>
+      </section>
 
       <div class="asset-strip">
         <el-icon><MagicStick /></el-icon>
         <span>已选择 {{ assetCount }} 个素材。可拖拽调整顺序，封面图将在发布时优先使用。</span>
       </div>
 
+      <section class="editor-panel editor-panel-platform">
       <el-form-item label="平台预览">
         <section class="platform-preview-box">
           <div class="platform-preview-tabs">
@@ -862,7 +802,24 @@ function dropClass(tab: MediaTab, index: number) {
           </el-checkbox-button>
         </el-checkbox-group>
       </el-form-item>
+      </section>
     </el-form>
+      </div>
+
+      <aside class="editor-media-side">
+        <el-button class="media-collapse-button" :icon="mediaPanelCollapsed ? ArrowLeft : ArrowRight" @click="mediaPanelCollapsed = !mediaPanelCollapsed">
+          {{ mediaPanelCollapsed ? "展开多媒体库" : "收起多媒体库" }}
+        </el-button>
+        <MediaLibraryPanel
+          v-show="!mediaPanelCollapsed"
+          v-model:assets="assets"
+          v-model:folders="mediaFolders"
+          compact
+          title="多媒体库"
+          @insert="insertAssetReference"
+        />
+      </aside>
+    </div>
 
     <div class="action-row">
       <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
@@ -911,6 +868,75 @@ function dropClass(tab: MediaTab, index: number) {
 .section-title h2 {
   margin-top: 5px;
   font-size: 20px;
+}
+
+.editor-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  align-items: start;
+  gap: 18px;
+}
+
+.editor-shell.is-media-collapsed {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.editor-main {
+  min-width: 0;
+}
+
+.editor-main :deep(.el-form) {
+  display: grid;
+  gap: 16px;
+}
+
+.editor-panel {
+  padding: 16px;
+  background: #fbfcfe;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+}
+
+.editor-panel-content {
+  background: #ffffff;
+}
+
+.editor-panel-platform {
+  background: #f8fafc;
+}
+
+.panel-kicker {
+  margin-bottom: 12px;
+  color: #607086;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.editor-media-side {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 10px;
+  max-height: calc(100vh - 132px);
+  min-width: 0;
+}
+
+.media-collapse-button {
+  justify-self: end;
+}
+
+.is-media-collapsed .editor-media-side {
+  width: 38px;
+}
+
+.is-media-collapsed .media-collapse-button {
+  width: 38px;
+  min-height: 148px;
+  padding: 10px 6px;
+  white-space: normal;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0;
 }
 
 .section-actions {
@@ -1328,6 +1354,17 @@ function dropClass(tab: MediaTab, index: number) {
 
 .action-row {
   margin-bottom: 14px;
+}
+
+@media (max-width: 1180px) {
+  .editor-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-media-side {
+    position: static;
+    max-height: none;
+  }
 }
 
 .platform-media-strip {
