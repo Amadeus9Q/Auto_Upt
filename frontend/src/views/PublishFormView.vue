@@ -58,19 +58,19 @@ function issueType(issue: ValidationIssue) {
   <section class="publish-form-view">
     <div class="section-title">
       <div>
-        <p>平台参数</p>
-        <h2>按公开 API 准备发布字段</h2>
+        <p>发布设置</p>
+        <h2>确认各平台发布前需要填写的内容</h2>
       </div>
       <el-icon :size="24"><DocumentChecked /></el-icon>
     </div>
 
-    <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看发布参数" />
+    <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看需要确认的发布内容" />
 
     <el-tabs v-else :model-value="defaultTab" class="publish-tabs">
       <el-tab-pane v-if="selectedPlatforms.includes('wechat')" label="公众号" name="wechat">
         <div class="platform-heading">
           <el-icon><InfoFilled /></el-icon>
-          <strong>公众号草稿箱 API 参数</strong>
+          <strong>公众号发布内容</strong>
         </div>
 
         <el-alert
@@ -90,7 +90,7 @@ function issueType(issue: ValidationIssue) {
 
         <el-form label-position="top">
           <el-form-item label="标题">
-            <el-input v-model="forms.wechat.title" maxlength="64" show-word-limit placeholder="对应公众号草稿 title 字段" />
+            <el-input v-model="forms.wechat.title" maxlength="64" show-word-limit placeholder="发布到公众号时显示的文章标题" />
           </el-form-item>
           <el-form-item label="摘要">
             <el-input
@@ -100,14 +100,14 @@ function issueType(issue: ValidationIssue) {
               resize="none"
               maxlength="120"
               show-word-limit
-              placeholder="对应公众号草稿 digest 字段"
+              placeholder="发布到公众号时显示的文章摘要"
             />
           </el-form-item>
           <el-form-item label="作者">
-            <el-input v-model="forms.wechat.author" placeholder="对应公众号草稿 author 字段" />
+            <el-input v-model="forms.wechat.author" placeholder="文章作者名称，可留空" />
           </el-form-item>
           <el-form-item label="原文链接">
-            <el-input v-model="forms.wechat.contentSourceUrl" placeholder="对应 content_source_url 字段，可为空" />
+            <el-input v-model="forms.wechat.contentSourceUrl" placeholder="可选，填写原文或参考来源链接" />
           </el-form-item>
           <el-form-item label="评论设置">
             <div class="switch-row">
@@ -121,7 +121,7 @@ function issueType(issue: ValidationIssue) {
             </div>
           </el-form-item>
           <el-form-item label="发布方式">
-            <el-switch v-model="forms.wechat.directPublish" active-text="直接提交发布" inactive-text="仅创建草稿" />
+            <el-switch v-model="forms.wechat.directPublish" active-text="直接提交发布" inactive-text="先保存到草稿箱" />
           </el-form-item>
           <div class="asset-status">
             <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
@@ -133,11 +133,11 @@ function issueType(issue: ValidationIssue) {
       <el-tab-pane v-if="selectedPlatforms.includes('bilibili')" label="B站" name="bilibili">
         <div class="platform-heading">
           <el-icon><InfoFilled /></el-icon>
-          <strong>B站发布参数</strong>
+          <strong>B站投稿内容</strong>
         </div>
         <el-alert
           class="form-alert"
-          title="未找到稳定公开的官方投稿 API 文档，当前使用系统缺省参数。"
+          title="当前只需要确认封面和视频，其他投稿设置会使用系统默认值。"
           type="info"
           show-icon
           :closable="false"
@@ -149,17 +149,17 @@ function issueType(issue: ValidationIssue) {
       </el-tab-pane>
 
       <el-tab-pane v-if="selectedPlatforms.includes('zhihu')" label="知乎" name="zhihu">
-        <el-alert title="未找到稳定公开的发布 API 文档，发布参数暂缺省。" type="info" show-icon :closable="false" />
+        <el-alert title="当前只展示预览内容，暂不需要填写额外发布设置。" type="info" show-icon :closable="false" />
       </el-tab-pane>
 
       <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">
-        <el-alert title="未找到稳定公开的发布 API 文档，发布参数暂缺省。" type="info" show-icon :closable="false" />
+        <el-alert title="当前只展示预览内容，暂不需要填写额外发布设置。" type="info" show-icon :closable="false" />
       </el-tab-pane>
     </el-tabs>
 
     <div class="risk-note">
       <el-icon><WarningFilled /></el-icon>
-      <span>这里只展示有公开 API 依据的字段；未确认公开接口的平台使用系统缺省参数，并在发布确认中二次确认。</span>
+      <span>这里只展示发布前需要你确认的内容；没有额外设置的平台会使用系统默认值，并在下一步再次确认。</span>
     </div>
   </section>
 </template>
