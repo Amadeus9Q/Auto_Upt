@@ -85,6 +85,8 @@
 
 - `style_goal`：`professional`、`knowledge`、`social`、`video` 或 `original`。
 - `rewrite_strength`：`light`、`medium` 或 `strong`。
+- `writing_style`：`default`、`professional`、`concise`、`vivid` 或 `custom`。默认 `default`，表示使用对应平台的默认文字风格；其他预设只控制文字表达风格，不改变 `style_goal` 的平台结构目标。
+- `custom_writing_style`：自定义文字风格描述，最多 300 字。仅 `writing_style=custom` 时使用；为空时回退到 `default`。
 - `update_title`：是否允许 Agent 修改标题。默认 `false`，未勾选时保留请求中的标题，仅在标题为空时补全。
 - `update_tags`：是否允许 Agent 修改关键词。默认 `false`，未勾选时保留请求中的关键词，仅在关键词为空时补全。
 - `overwrite_existing_metadata`：兼容旧字段；为 `true` 时等同于同时允许修改标题和关键词。

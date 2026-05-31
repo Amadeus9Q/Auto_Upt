@@ -14,6 +14,7 @@ import {
   updatePreviewDraft,
   uploadAsset,
   type AgentStyleGoal,
+  type AgentWritingStyle,
   type AssetPayload,
   type ContentPayload,
   type ContentBlockPayload,
@@ -41,6 +42,8 @@ type TaskStep = {
 type AgentOptimizeOptions = {
   updateTitle: boolean;
   updateTags: boolean;
+  writingStyle: AgentWritingStyle;
+  customWritingStyle?: string | null;
 };
 
 const platformLabels: Record<PlatformKey, string> = {
@@ -428,7 +431,9 @@ function buildContentPayload(): ContentPayload {
 function normalizeAgentOptimizeOptions(options?: AgentOptimizeOptions): AgentOptimizeOptions {
   return {
     updateTitle: options?.updateTitle ?? false,
-    updateTags: options?.updateTags ?? false
+    updateTags: options?.updateTags ?? false,
+    writingStyle: options?.writingStyle ?? "default",
+    customWritingStyle: options?.customWritingStyle?.trim() || null
   };
 }
 
@@ -442,7 +447,9 @@ function buildAgentMetadataPayload(
     title: !options.updateTitle && currentDraft ? currentDraft.title : basePayload.title,
     tags: !options.updateTags && currentDraft ? currentDraft.tags : basePayload.tags,
     update_title: options.updateTitle,
-    update_tags: options.updateTags
+    update_tags: options.updateTags,
+    writing_style: options.writingStyle,
+    custom_writing_style: options.writingStyle === "custom" ? options.customWritingStyle ?? null : null
   };
 }
 

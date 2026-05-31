@@ -107,11 +107,14 @@ export interface PreviewDraftUpdatePayload {
 export type AgentStyleGoal = "professional" | "knowledge" | "social" | "video" | "original";
 export type AgentRewriteStrength = "light" | "medium" | "strong";
 export type AgentLlmMode = "auto" | "enabled" | "disabled";
+export type AgentWritingStyle = "default" | "professional" | "concise" | "vivid" | "custom";
 
 export interface AgentAdaptPreviewPayload extends ContentPayload {
   preview_id?: string | null;
   style_goal?: AgentStyleGoal;
   rewrite_strength?: AgentRewriteStrength;
+  writing_style?: AgentWritingStyle;
+  custom_writing_style?: string | null;
   overwrite_existing_metadata?: boolean;
   update_title?: boolean;
   update_tags?: boolean;
