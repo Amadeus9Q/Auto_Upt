@@ -122,6 +122,15 @@ async function handleImportFileChange(event: Event) {
     if (result.body) {
       content.value = result.body;
     }
+    // 日志输出章节识别结果
+    const chapterCount = result.chapters?.length ?? 0;
+    if (chapterCount > 0) {
+      const toc = result.chapters!.map(
+        (ch) => `  ${ch.level === 1 ? "●" : "○"} ${ch.title}（${ch.word_count}字）`,
+      ).join("\n");
+      console.log(`[ImportDoc] 识别 ${chapterCount} 个章节：\n${toc}`);
+    }
+    console.log("[ImportDoc]", result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "导入文件失败。";
     window.alert(message);
@@ -618,8 +627,20 @@ function dropClass(tab: MediaTab, index: number) {
         <p>内容编辑</p>
         <h2>统一内容编辑区</h2>
       </div>
-      <el-tag type="info">{{ wordCount }} 字</el-tag>
+      <div class="section-actions">
+        <el-button type="primary" plain :icon="Plus" :loading="importLoading" @click="handleImportClick">
+          导入文档（.md / .txt / .docx）
+        </el-button>
+      </div>
     </div>
+
+    <input
+      ref="importInputRef"
+      type="file"
+      accept=".md,.markdown,.docx,.txt"
+      style="display:none"
+      @change="handleImportFileChange"
+    />
 
     <el-form label-position="top">
       <div class="title-cover-row">
@@ -661,7 +682,13 @@ function dropClass(tab: MediaTab, index: number) {
         </el-form-item>
       </div>
 
-      <el-form-item label="正文">
+      <el-form-item>
+        <template #label>
+          <div class="content-label-row">
+            <span>正文</span>
+            <el-tag type="info">{{ wordCount }} 字</el-tag>
+          </div>
+        </template>
         <div
           class="content-drop-zone"
           :class="{ 'is-content-drag-over': isContentDragOver }"
@@ -767,7 +794,7 @@ function dropClass(tab: MediaTab, index: number) {
             <el-input
               v-model="activePreviewTitle"
               class="platform-title-box"
-              placeholder="平台适配标题"
+              placeholder="当前平台将使用的标题"
             />
             <el-input
               v-model="activePreviewTags"
@@ -779,7 +806,7 @@ function dropClass(tab: MediaTab, index: number) {
               type="textarea"
               :rows="12"
               resize="none"
-              placeholder="点击「生成预览」后，此处将显示当前平台的适配内容，支持直接编辑和拖放素材。"
+              placeholder="点击「生成平台预览」后，这里会显示当前平台的正文，可直接修改或拖入素材。"
             />
             <div v-if="isPlatformDragOver" class="content-drop-hint">释放鼠标，将素材插入到光标位置</div>
           </div>
@@ -806,7 +833,7 @@ function dropClass(tab: MediaTab, index: number) {
           </div>
 
           <div class="platform-preview-actions">
-            <span>{{ activePreviewDraft ? "当前平台草稿已生成，可直接编辑或拖放素材。" : "当前平台暂无预览内容。" }}</span>
+            <span>{{ activePreviewDraft ? "当前平台内容已生成，可直接修改或拖放素材。" : "当前平台还没有生成内容。" }}</span>
             <div class="platform-preview-btns">
               <el-button
                 :disabled="!hasPreview"
@@ -821,7 +848,7 @@ function dropClass(tab: MediaTab, index: number) {
                 :disabled="!hasPreview || !content.trim()"
                 @click="$emit('optimizeWithAgent', activePreviewPlatform)"
               >
-                Agent 优化
+                智能优化
               </el-button>
             </div>
           </div>
@@ -838,21 +865,11 @@ function dropClass(tab: MediaTab, index: number) {
     </el-form>
 
     <div class="action-row">
-      <el-button :icon="Plus" :loading="importLoading" @click="handleImportClick">
-        导入文档
-      </el-button>
-      <input
-        ref="importInputRef"
-        type="file"
-        accept=".md,.markdown,.docx,.txt"
-        style="display:none"
-        @change="handleImportFileChange"
-      />
       <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
         生成平台预览
       </el-button>
       <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="$emit('optimizeAllWithAgent')">
-        一键 Agent 优化
+        一键智能优化
       </el-button>
       <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
         多平台预览
@@ -894,6 +911,22 @@ function dropClass(tab: MediaTab, index: number) {
 .section-title h2 {
   margin-top: 5px;
   font-size: 20px;
+}
+
+.section-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.content-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
 }
 
 .title-cover-row {
