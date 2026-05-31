@@ -16,6 +16,11 @@ interface DragState {
   position: "before" | "after";
 }
 
+interface AgentOptimizeOptions {
+  updateTitle: boolean;
+  updateTags: boolean;
+}
+
 const props = defineProps<{
   wordCount: number;
   previewLoading: boolean;
@@ -30,8 +35,8 @@ const emit = defineEmits<{
   generatePreview: [];
   openPreview: [platform?: PlatformKey];
   confirmPublish: [];
-  optimizeAllWithAgent: [];
-  optimizeWithAgent: [platform: PlatformKey];
+  optimizeAllWithAgent: [options: AgentOptimizeOptions];
+  optimizeWithAgent: [platform: PlatformKey, options: AgentOptimizeOptions];
   updatePlatformDraft: [platform: PlatformKey, patch: Partial<Pick<DraftPayload, "title" | "body" | "tags">>];
 }>();
 
@@ -67,6 +72,8 @@ const activePreviewPlatform = ref<PlatformKey>("wechat");
 const mediaPanelCollapsed = ref(false);
 const mediaPanelWidth = ref(340);
 const isResizing = ref(false);
+const agentUpdateTitle = ref(false);
+const agentUpdateTags = ref(false);
 
 function onGutterMouseDown(event: MouseEvent) {
   event.preventDefault();
@@ -112,6 +119,11 @@ const activePreviewTags = computed({
   get: () => activePreviewDraft.value?.tags?.join(", ") ?? "",
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { tags: parseTagText(value) })
 });
+
+const agentOptimizeOptions = computed<AgentOptimizeOptions>(() => ({
+  updateTitle: agentUpdateTitle.value,
+  updateTags: agentUpdateTags.value
+}));
 
 async function handleImportClick() {
   importInputRef.value?.click();
@@ -163,6 +175,14 @@ function parseTagText(value: string): string[] {
     .split(/[,，\s]+/)
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function emitOptimizeAllWithAgent() {
+  emit("optimizeAllWithAgent", agentOptimizeOptions.value);
+}
+
+function emitOptimizeWithAgent() {
+  emit("optimizeWithAgent", activePreviewPlatform.value, agentOptimizeOptions.value);
 }
 
 function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
@@ -861,6 +881,12 @@ function dropClass(tab: MediaTab, index: number) {
             </div>
           </div>
 
+          <div class="agent-option-row">
+            <span>智能优化范围</span>
+            <el-checkbox v-model="agentUpdateTitle">修改标题</el-checkbox>
+            <el-checkbox v-model="agentUpdateTags">修改关键词</el-checkbox>
+          </div>
+
           <div class="platform-preview-actions">
             <span>{{ activePreviewDraft ? "当前平台内容已生成，可直接修改或拖放素材。" : "当前平台还没有生成内容。" }}</span>
             <div class="platform-preview-btns">
@@ -875,7 +901,7 @@ function dropClass(tab: MediaTab, index: number) {
                 :icon="MagicStick"
                 :loading="agentLoading"
                 :disabled="!hasPreview || !content.trim()"
-                @click="$emit('optimizeWithAgent', activePreviewPlatform)"
+                @click="emitOptimizeWithAgent"
               >
                 智能优化
               </el-button>
@@ -924,7 +950,7 @@ function dropClass(tab: MediaTab, index: number) {
       <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
         生成平台预览
       </el-button>
-      <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="$emit('optimizeAllWithAgent')">
+      <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="emitOptimizeAllWithAgent">
         一键智能优化
       </el-button>
       <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
@@ -1280,6 +1306,19 @@ function dropClass(tab: MediaTab, index: number) {
 .platform-keyword-box :deep(.el-input__inner::placeholder),
 .platform-title-box :deep(.el-input__inner::placeholder) {
   color: #9aa9bb;
+}
+
+.agent-option-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  color: #607086;
+  font-size: 13px;
+}
+
+.agent-option-row > span {
+  font-weight: 650;
 }
 
 .platform-preview-actions {

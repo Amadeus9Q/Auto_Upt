@@ -295,19 +295,11 @@ class PlatformStylistAgent:
     def _build_title(self, analysis: ContentAnalysis, style: dict[str, Any]) -> str:
         """按平台风格生成标题。"""
         title = analysis.title or "Untitled"
+        is_social = style.get("template") == "social"
         max_len = style.get("title_max_length", 60)
-        platform = style.get("display_name", "")
 
-        # 小红书：短标题 + emoji
-        if style.get("template") == "social":
-            if len(title) > 18:
-                title = title[:17] + "…"
-            # 如果没有 emoji 前缀，加一个
-            if not any(ord(c) > 127 for c in title[:2]) or not self._has_emoji(title[:5]):
-                pass  # 保持原标题，不强行加 emoji
-
-        # 截断标题
-        if len(title) > max_len:
+        # 小红书保持完整标题，不在 Agent 侧做硬截断。
+        if not is_social and max_len and len(title) > max_len:
             title = title[: max_len - 1] + "…"
 
         return title
@@ -476,21 +468,21 @@ class PlatformStylistAgent:
         """构建社交媒体风格（小红书）的章节内容列表。"""
         sections: list[dict[str, Any]] = []
 
-        # 亮点提炼保持短句，但正文部分不再硬截断原文信息。
+        # 亮点提炼只清理 Markdown 标记，不再截断原文信息。
         highlights: list[str] = []
-        for ch in analysis.flat_chapters[:4]:
+        for ch in analysis.flat_chapters:
             first_line = self._first_social_sentence(ch.content) or self._clean_social_line(ch.title)
             if first_line:
-                highlights.append(f"✨ {self._clip_social_highlight(first_line)}")
+                highlights.append(f"✨ {self._clean_social_line(first_line)}")
         if not highlights:
-            highlights.append(f"✨ {self._clip_social_highlight(analysis.summary)}")
+            highlights.append(f"✨ {self._clean_social_line(analysis.summary)}")
 
         sections.append(
             {
                 "heading": "🌟 亮点速览",
                 "paragraphs": highlights,
                 "media_hints": [],
-                "platform_hints": ["每条亮点不超过一行，用 emoji 引导视线。"],
+                "platform_hints": ["亮点用 emoji 引导视线，保留关键信息完整。"],
             }
         )
 
@@ -560,13 +552,6 @@ class PlatformStylistAgent:
         return ""
 
     @classmethod
-    def _clip_social_highlight(cls, text: str, max_length: int = 56) -> str:
-        line = cls._clean_social_line(text)
-        if len(line) <= max_length:
-            return line
-        return line[: max_length - 1].rstrip() + "…"
-
-    @classmethod
     def _split_social_paragraph(cls, text: str, max_length: int = 90) -> list[str]:
         paragraph = cls._clean_social_line(text)
         if not paragraph:
@@ -600,7 +585,7 @@ class PlatformStylistAgent:
                 lines.append(p)
             lines.append("")  # 空行分隔
         body = "\n".join(lines).strip()
-        max_len = style.get("body_max_length", 20000)
+        max_len = style.get("body_max_length", 0 if style.get("template") == "social" else 20000)
         if max_len and len(body) > max_len:
             body = body[: max_len - 3] + "..."
         return body
@@ -615,22 +600,23 @@ class PlatformStylistAgent:
         """按平台规则生成标签。"""
         import re as _re
 
-        max_count = style.get("tags_max_count", 5)
-        tags = list(analysis.tags[:max_count])
+        is_social = style.get("template") == "social"
+        max_count = None if is_social else style.get("tags_max_count", 5)
+        tags = list(analysis.tags if max_count is None else analysis.tags[:max_count])
 
-        # 如果标签不够，从章节标题中提取
-        if len(tags) < max_count:
+        # 如果标签不够，从章节标题中提取；小红书不在这里做硬数量/长度截断。
+        if max_count is None or len(tags) < max_count:
             for ch in analysis.flat_chapters:
-                if len(tags) >= max_count:
+                if max_count is not None and len(tags) >= max_count:
                     break
                 ch_tag = ch.title.strip()
                 # 去除序号前缀（一、二、三 / 1. 2. 等）
                 ch_tag = _re.sub(r"^[一二三四五六七八九十]+[、.．]\s*", "", ch_tag)
                 ch_tag = _re.sub(r"^\d+[、.．]\s*", "", ch_tag)
                 if ch_tag and ch_tag not in tags:
-                    tags.append(ch_tag[:20])
+                    tags.append(ch_tag)
 
-        return tags[:max_count]
+        return tags if max_count is None else tags[:max_count]
 
     def _build_media_recommendations(
         self,

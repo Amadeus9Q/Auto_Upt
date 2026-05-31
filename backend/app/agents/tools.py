@@ -72,7 +72,12 @@ def build_default_tool_registry() -> AgentToolRegistry:
         AgentTool(
             name="metadata.extract",
             description="在标题或关键词缺失时生成精炼标题、摘要和关键词。",
-            input_schema={"analysis": "ContentAnalysis", "overwrite_existing_metadata": "bool"},
+            input_schema={
+                "analysis": "ContentAnalysis",
+                "update_title": "bool",
+                "update_tags": "bool",
+                "overwrite_existing_metadata": "bool",
+            },
             output_schema={"title": "str", "tags": "list[str]", "summary": "str"},
             supports_llm=True,
         ),

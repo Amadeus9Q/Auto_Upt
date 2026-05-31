@@ -38,6 +38,10 @@ type TaskStep = {
   name: string;
   state: "wait" | "process" | "finish" | "error" | "success";
 };
+type AgentOptimizeOptions = {
+  updateTitle: boolean;
+  updateTags: boolean;
+};
 
 const platformLabels: Record<PlatformKey, string> = {
   wechat: "公众号",
@@ -421,6 +425,52 @@ function buildContentPayload(): ContentPayload {
   };
 }
 
+function normalizeAgentOptimizeOptions(options?: AgentOptimizeOptions): AgentOptimizeOptions {
+  return {
+    updateTitle: options?.updateTitle ?? false,
+    updateTags: options?.updateTags ?? false
+  };
+}
+
+function buildAgentMetadataPayload(
+  basePayload: ContentPayload,
+  options: AgentOptimizeOptions,
+  platform?: PlatformKey
+) {
+  const currentDraft = platform ? preview.value?.drafts[platform] : null;
+  return {
+    title: !options.updateTitle && currentDraft ? currentDraft.title : basePayload.title,
+    tags: !options.updateTags && currentDraft ? currentDraft.tags : basePayload.tags,
+    update_title: options.updateTitle,
+    update_tags: options.updateTags
+  };
+}
+
+function preserveAgentDraftMetadata(
+  generatedDrafts: PreviewResponse["drafts"],
+  options: AgentOptimizeOptions,
+  platforms: PlatformKey[]
+): PreviewResponse["drafts"] {
+  const currentDrafts = preview.value?.drafts ?? {};
+  const nextDrafts: PreviewResponse["drafts"] = { ...generatedDrafts };
+
+  for (const platform of platforms) {
+    const generatedDraft = nextDrafts[platform];
+    const currentDraft = currentDrafts[platform];
+    if (!generatedDraft || !currentDraft) {
+      continue;
+    }
+
+    nextDrafts[platform] = {
+      ...generatedDraft,
+      title: options.updateTitle ? generatedDraft.title : currentDraft.title,
+      tags: options.updateTags ? generatedDraft.tags : currentDraft.tags
+    };
+  }
+
+  return nextDrafts;
+}
+
 function previewFromAgentRun(run: Awaited<ReturnType<typeof runAgentAdaptPreview>>): PreviewResponse {
   return {
     preview_id: run.preview_id ?? "",
@@ -770,12 +820,18 @@ async function generatePreview() {
   }
 }
 
-async function optimizeAllWithAgent() {
+async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
   if (!content.value.trim()) {
     ElMessage.warning("请先输入正文内容。");
     return;
   }
+  if (!selectedPlatforms.value.length) {
+    ElMessage.warning("请至少选择一个平台。");
+    return;
+  }
 
+  const options = normalizeAgentOptimizeOptions(rawOptions);
+  const targetPlatforms = [...selectedPlatforms.value];
   agentLoading.value = true;
   errorMessage.value = "";
 
@@ -783,23 +839,27 @@ async function optimizeAllWithAgent() {
     const basePayload = buildContentPayload();
     const run = await runAgentAdaptPreview({
       ...basePayload,
+      ...buildAgentMetadataPayload(basePayload, options),
       preview_id: preview.value?.preview_id ?? null,
-      platforms: selectedPlatforms.value,
+      platforms: targetPlatforms,
       style_goal: editorAssets.value.videos.length ? "video" : "professional",
       rewrite_strength: "medium",
-      overwrite_existing_metadata: false,
       use_llm: "auto",
       persist_preview: !preview.value
     });
+    const optimizedDrafts = preserveAgentDraftMetadata(run.drafts, options, targetPlatforms);
 
     if (!preview.value) {
-      preview.value = previewFromAgentRun(run);
+      preview.value = previewFromAgentRun({
+        ...run,
+        drafts: optimizedDrafts
+      });
     } else {
       preview.value = {
         ...preview.value,
         drafts: {
           ...preview.value.drafts,
-          ...run.drafts
+          ...optimizedDrafts
         },
         validation_report: {
           ...preview.value.validation_report,
@@ -807,7 +867,7 @@ async function optimizeAllWithAgent() {
         }
       };
     }
-    ElMessage.success("四个平台的智能优化结果已生成。");
+    ElMessage.success("所选平台的智能优化结果已生成。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "智能优化失败。";
     errorMessage.value = message;
@@ -817,7 +877,7 @@ async function optimizeAllWithAgent() {
   }
 }
 
-async function optimizeWithAgent(platform: PlatformKey) {
+async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimizeOptions) {
   if (!content.value.trim()) {
     ElMessage.warning("请先输入正文内容。");
     return;
@@ -827,6 +887,7 @@ async function optimizeWithAgent(platform: PlatformKey) {
     return;
   }
 
+  const options = normalizeAgentOptimizeOptions(rawOptions);
   agentLoading.value = true;
   errorMessage.value = "";
 
@@ -834,18 +895,24 @@ async function optimizeWithAgent(platform: PlatformKey) {
     const basePayload = buildContentPayload();
     const run = await runAgentAdaptPreview({
       ...basePayload,
+      ...buildAgentMetadataPayload(basePayload, options, platform),
       preview_id: preview.value.preview_id,
-      title: basePayload.title,
       body: basePayload.body,
-      tags: basePayload.tags,
       platforms: [platform],
       style_goal: platformAgentStyleGoal[platform],
       rewrite_strength: "medium",
-      overwrite_existing_metadata: false,
       use_llm: "auto",
       persist_preview: false
     });
-    const optimizedDraft = run.drafts[platform];
+    const generatedDraft = run.drafts[platform];
+    if (!generatedDraft) {
+      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
+    }
+    const optimizedDraft = preserveAgentDraftMetadata(
+      { [platform]: generatedDraft },
+      options,
+      [platform]
+    )[platform];
     if (!optimizedDraft) {
       throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
     }

@@ -42,7 +42,15 @@ class AgentAdaptPreviewRequest(ContentInput):
     )
     overwrite_existing_metadata: bool = Field(
         default=False,
-        description="用户已有标题或关键词时是否允许 Agent 覆盖。",
+        description="兼容旧字段：用户已有标题或关键词时是否允许 Agent 同时覆盖标题和关键词。",
+    )
+    update_title: bool = Field(
+        default=False,
+        description="是否允许 Agent 修改标题。为 false 时保留请求中已有标题，仅在标题为空时补全。",
+    )
+    update_tags: bool = Field(
+        default=False,
+        description="是否允许 Agent 修改关键词。为 false 时保留请求中已有关键词，仅在关键词为空时补全。",
     )
     use_llm: AgentLlmModeLiteral = Field(
         default="auto",

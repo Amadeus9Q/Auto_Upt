@@ -85,7 +85,9 @@
 
 - `style_goal`：`professional`、`knowledge`、`social`、`video` 或 `original`。
 - `rewrite_strength`：`light`、`medium` 或 `strong`。
-- `overwrite_existing_metadata`：用户已有标题或关键词时是否允许 Agent 覆盖，默认 `false`。
+- `update_title`：是否允许 Agent 修改标题。默认 `false`，未勾选时保留请求中的标题，仅在标题为空时补全。
+- `update_tags`：是否允许 Agent 修改关键词。默认 `false`，未勾选时保留请求中的关键词，仅在关键词为空时补全。
+- `overwrite_existing_metadata`：兼容旧字段；为 `true` 时等同于同时允许修改标题和关键词。
 - `use_llm`：`auto`、`enabled` 或 `disabled`。默认 `auto`，无 `OPENAI_API_KEY` 时自动回退到规则引擎。
 - `persist_preview`：是否保存 preview，默认 `true`。
 
