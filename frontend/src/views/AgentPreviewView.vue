@@ -65,7 +65,7 @@ const llmStatusType = computed(() => {
   <section v-if="run" class="agent-preview-view">
     <header class="agent-header">
       <div>
-        <p>Agent 优化结果</p>
+        <p>智能优化结果</p>
         <h2>先预览，再应用到编辑器</h2>
       </div>
       <div class="header-tags">
@@ -103,15 +103,15 @@ const llmStatusType = computed(() => {
         <template #title>
           <span class="panel-title">
             <el-icon><MagicStick /></el-icon>
-            风格改写稿
+            优化后的正文
           </span>
         </template>
         <el-input :model-value="run.rewritten_content.body" type="textarea" :rows="10" resize="none" readonly />
         <div class="inline-actions">
-          <el-tag type="info">风格：{{ run.rewritten_content.style_goal }}</el-tag>
-          <el-tag type="info">强度：{{ run.rewritten_content.rewrite_strength }}</el-tag>
-          <el-tag type="info">来源：{{ run.rewritten_content.source }}</el-tag>
-          <el-button type="primary" :icon="Check" @click="emit('applyBody')">应用改写正文</el-button>
+          <el-tag type="info">写作方向：{{ run.rewritten_content.style_goal }}</el-tag>
+          <el-tag type="info">调整幅度：{{ run.rewritten_content.rewrite_strength }}</el-tag>
+          <el-tag type="info">生成方式：{{ run.rewritten_content.source }}</el-tag>
+          <el-button type="primary" :icon="Check" @click="emit('applyBody')">使用这版正文</el-button>
         </div>
       </el-collapse-item>
 
@@ -119,7 +119,7 @@ const llmStatusType = computed(() => {
         <template #title>
           <span class="panel-title">
             <el-icon><DocumentChecked /></el-icon>
-            多平台草稿
+            各平台预览内容
           </span>
         </template>
         <div class="draft-grid">
@@ -142,7 +142,7 @@ const llmStatusType = computed(() => {
     </el-collapse>
 
     <footer class="agent-actions">
-      <span v-if="run.preview_id">Preview ID：{{ run.preview_id }}</span>
+      <span v-if="run.preview_id">预览记录：{{ run.preview_id }}</span>
       <el-button @click="emit('close')">放弃</el-button>
       <el-button type="success" :disabled="!run.preview_id" @click="emit('usePreview')">使用该预览发布</el-button>
     </footer>
