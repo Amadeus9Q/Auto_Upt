@@ -5,12 +5,14 @@ content_types:
   - mixed
 publish_modes:
   - simulate
+  - draft
+  - publish
 auth:
-  type: browser_or_cookie
+  type: api_key
   required_for_real_publish: true
 limits:
-  title_max_length: 200
-  body_max_length: 0
+  title_max_length: 20
+  body_max_length: 1000
   tags_max_count: 20
   assets_min_count: 1
 style:

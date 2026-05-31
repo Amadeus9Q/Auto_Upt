@@ -19,6 +19,33 @@ const emit = defineEmits<{
 }>();
 
 const publishForms = defineModel<PublishForms>("publishForms", { required: true });
+const useUnifiedSettings = ref(true);
+
+// ---- 全局字段（独立状态，同步至各平台） ----
+const globalTitle = ref(publishForms.value.wechat.title);
+const globalSummary = ref(publishForms.value.wechat.summary);
+
+function syncGlobalToPlatforms() {
+  const gt = globalTitle.value;
+  const gs = globalSummary.value;
+  publishForms.value.wechat.title = gt;
+  publishForms.value.bilibili.title = gt;
+  publishForms.value.xiaohongshu.title = gt;
+  publishForms.value.wechat.summary = gs;
+  publishForms.value.bilibili.description = gs;
+  publishForms.value.xiaohongshu.content = gs;
+}
+
+watch(globalTitle, syncGlobalToPlatforms);
+watch(globalSummary, syncGlobalToPlatforms);
+
+// ---- 反向：独立模式下用户修改了 wechat 字段后切回统一，需同步回全局 ----
+watch(useUnifiedSettings, (unified) => {
+  if (unified) {
+    globalTitle.value = publishForms.value.wechat.title;
+    globalSummary.value = publishForms.value.wechat.summary;
+  }
+});
 
 const platformLabels: Record<PlatformKey, string> = {
   wechat: "公众号",
@@ -27,20 +54,19 @@ const platformLabels: Record<PlatformKey, string> = {
   xiaohongshu: "小红书"
 };
 
-const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili"];
+const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const selectedMode = ref<PublishMode>("simulate");
 const selectedConfirmPlatforms = ref<PlatformKey[]>([...props.selectedPlatforms]);
-const useUnifiedSettings = ref(true);
 
 const coverImage = computed(
   () => props.assets.coverImage ?? props.assets.images.find((image) => image.id === props.assets.coverImageId) ?? props.assets.images[0] ?? null
 );
 const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
 const wechatIssues = computed(() => props.validationReport.wechat ?? []);
-const wechatMissing = computed(() => [
-  ...(!publishForms.value.wechat.title.trim() ? ["标题"] : []),
-  ...(!publishForms.value.wechat.summary.trim() ? ["摘要"] : []),
-  ...(!publishForms.value.wechat.author.trim() ? ["作者"] : []),
+const hasPublishablePlatform = computed(() => selectedConfirmPlatforms.value.some((p) => publishablePlatforms.includes(p)));
+const commonMissing = computed(() => [
+  ...(!globalTitle.value.trim() ? ["标题"] : []),
+  ...(!globalSummary.value.trim() ? ["摘要/简介"] : []),
   ...(!coverImage.value ? ["封面图片"] : [])
 ]);
 
@@ -89,7 +115,17 @@ function submit() {
 <template>
   <section class="publish-confirm-view">
 
-    <!-- 统一发布设置 -->
+    <!-- 平台选择（放在最前面） -->
+    <div class="platform-select-section">
+      <label class="platform-select-label">发布平台</label>
+      <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
+        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
+          {{ option.label }}
+        </el-checkbox-button>
+      </el-checkbox-group>
+    </div>
+
+    <!-- 发布设置 -->
     <section class="unified-publish-section">
       <div class="section-title">
         <div>
@@ -104,7 +140,7 @@ function submit() {
 
       <!-- 统一设置表单 -->
       <div v-if="useUnifiedSettings" class="unified-form">
-        <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看需要确认的发布内容" />
+        <el-empty v-if="!selectedConfirmPlatforms.length" description="请在上方选择要发布的平台" />
 
         <template v-else>
           <div class="platform-heading">
@@ -113,9 +149,9 @@ function submit() {
           </div>
 
           <el-alert
-            v-if="wechatMissing.length"
+            v-if="commonMissing.length"
             class="form-alert"
-            :title="`缺失项：${wechatMissing.join('、')}`"
+            :title="`缺失项：${commonMissing.join('、')}`"
             type="warning"
             show-icon
             :closable="false"
@@ -129,19 +165,17 @@ function submit() {
 
           <el-form label-position="top">
             <!-- 通用字段 -->
-            <el-form-item label="标题（公众号 + B站）">
+            <el-form-item label="全局标题">
               <el-input
-                :model-value="publishForms.wechat.title"
-                @update:model-value="publishForms.wechat.title = $event; publishForms.bilibili.title = $event"
+                v-model="globalTitle"
                 maxlength="64"
                 show-word-limit
                 placeholder="发布时显示的文章标题"
               />
             </el-form-item>
-            <el-form-item label="摘要 / 简介（公众号摘要 + B站简介）">
+            <el-form-item label="全局摘要 / 简介">
               <el-input
-                v-model="publishForms.wechat.summary"
-                @update:model-value="publishForms.bilibili.description = $event"
+                v-model="globalSummary"
                 type="textarea"
                 :rows="3"
                 resize="none"
@@ -151,22 +185,23 @@ function submit() {
               />
             </el-form-item>
 
-            <!-- B站专属 -->
-            <el-form-item v-if="selectedPlatforms.includes('bilibili')" label="B站标签（逗号分隔）">
-              <el-input v-model="publishForms.bilibili.tags" placeholder="例如：科技,AI,编程" />
-            </el-form-item>
-            <el-form-item v-if="selectedPlatforms.includes('bilibili')" label="B站分类">
-              <el-input v-model="publishForms.bilibili.category" placeholder="例如：科技" />
+            <!-- 发布方式（任一可发布平台选中时显示） -->
+            <el-form-item v-if="hasPublishablePlatform" label="发布方式">
+              <el-radio-group v-model="selectedMode" class="mode-group">
+                <el-radio-button value="simulate">模拟</el-radio-button>
+                <el-radio-button value="draft">保存草稿</el-radio-button>
+                <el-radio-button value="publish">真实发布</el-radio-button>
+              </el-radio-group>
             </el-form-item>
 
             <!-- 公众号专属 -->
-            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="作者">
+            <el-form-item v-if="selectedConfirmPlatforms.includes('wechat')" label="作者">
               <el-input v-model="publishForms.wechat.author" placeholder="文章作者名称，可留空" />
             </el-form-item>
-            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="原文链接">
+            <el-form-item v-if="selectedConfirmPlatforms.includes('wechat')" label="原文链接">
               <el-input v-model="publishForms.wechat.contentSourceUrl" placeholder="可选，填写原文或参考来源链接" />
             </el-form-item>
-            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="评论设置">
+            <el-form-item v-if="selectedConfirmPlatforms.includes('wechat')" label="评论设置">
               <div class="radio-row">
                 <el-radio-group v-model="publishForms.wechat.needOpenComment" class="inline-radio-group">
                   <el-radio-button :value="true">开启评论</el-radio-button>
@@ -182,17 +217,18 @@ function submit() {
                 </el-radio-group>
               </div>
             </el-form-item>
-            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="发布方式">
-              <el-radio-group v-model="selectedMode" class="mode-group">
-                <el-radio-button value="simulate">模拟</el-radio-button>
-                <el-radio-button value="draft">保存草稿</el-radio-button>
-                <el-radio-button value="publish">真实发布</el-radio-button>
-              </el-radio-group>
+
+            <!-- B站专属 -->
+            <el-form-item v-if="selectedConfirmPlatforms.includes('bilibili')" label="B站标签（逗号分隔）">
+              <el-input v-model="publishForms.bilibili.tags" placeholder="例如：科技,AI,编程" />
+            </el-form-item>
+            <el-form-item v-if="selectedConfirmPlatforms.includes('bilibili')" label="B站分类">
+              <el-input v-model="publishForms.bilibili.category" placeholder="例如：科技" />
             </el-form-item>
 
             <div class="asset-status">
               <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
-              <span v-if="selectedPlatforms.includes('bilibili')">视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
+              <span v-if="selectedConfirmPlatforms.includes('bilibili')">视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
               <span>正文图片：{{ assets.images.length }} 张</span>
             </div>
           </el-form>
@@ -204,24 +240,15 @@ function submit() {
         </div>
       </div>
 
-      <!-- 独立设置（原分平台Tab） -->
+      <!-- 独立设置（仅显示勾选的平台） -->
       <PublishFormView
         v-else
         v-model:forms="publishForms"
-        :selected-platforms="selectedPlatforms"
+        :selected-platforms="selectedConfirmPlatforms"
         :validation-report="validationReport"
         :assets="assets"
       />
     </section>
-
-    <div class="platform-select-section">
-      <label class="platform-select-label">发布平台</label>
-      <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
-        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </el-checkbox-button>
-      </el-checkbox-group>
-    </div>
 
     <el-alert
       v-if="hasRealPublish"
@@ -233,9 +260,9 @@ function submit() {
     />
 
     <el-alert
-      v-if="hasRealPublish && selectedPlatforms.some((platform) => !publishablePlatforms.includes(platform))"
+      v-if="hasRealPublish && selectedConfirmPlatforms.some((platform) => !publishablePlatforms.includes(platform))"
       class="confirm-alert"
-      title="知乎和小红书当前只能查看模拟结果，暂不能直接发布。"
+      title="知乎当前只能查看模拟结果，暂不能直接发布。"
       type="info"
       show-icon
       :closable="false"

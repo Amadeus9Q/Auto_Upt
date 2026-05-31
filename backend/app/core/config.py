@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     bilibili_video_status_path: str = "/x/vu/client/archive/status"
     bilibili_video_delete_path: str = "/x/vu/client/archive/delete"
 
+    xiaohongshu_api_base_url: str = "https://www.myaibot.vip"
+    xiaohongshu_api_key: str = ""
+
     cors_origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:5173",

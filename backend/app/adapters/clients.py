@@ -712,3 +712,102 @@ class BilibiliWebClient:
         if isinstance(value, list):
             return [cls._redact_sensitive(item) for item in value]
         return value
+
+
+class XiaohongshuMyaibotClient:
+    """小红书发布 API 客户端（通过 myaibot.vip 代理）。
+
+    通过 myaibot.vip 的 RESTful API 将笔记内容提交到小红书平台。
+    系统生成二维码后，用户扫码即可在手机端完成发布。
+
+    API 文档：https://www.myaibot.vip/docs/api
+    """
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self.base_url = self.settings.xiaohongshu_api_base_url.rstrip("/")
+
+    @property
+    def api_key(self) -> str:
+        return self.settings.xiaohongshu_api_key
+
+    async def publish_note(
+        self,
+        *,
+        title: str,
+        content: str,
+        images: list[str] | None = None,
+        video_url: str | None = None,
+        cover_url: str | None = None,
+    ) -> dict[str, Any]:
+        """提交笔记到小红书（使用 publish-with-upload 接口自动转存资源）。
+
+        推荐使用此接口：自动将图片/视频链接转存为公开 URL，无需自行对接 OSS。
+        """
+        note_type = "video" if video_url else "normal"
+        payload: dict[str, Any] = {
+            "api_key": self.api_key,
+            "type": note_type,
+        }
+        if title:
+            payload["title"] = title
+        if content:
+            payload["content"] = content
+        if note_type == "normal" and images:
+            payload["images"] = images
+        if note_type == "video" and video_url:
+            payload["video"] = video_url
+        if cover_url:
+            payload["cover"] = cover_url
+
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=120) as client:
+            response = await client.post(
+                "/api/rednote/publish-with-upload",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            )
+        return self._ensure_ok(response)
+
+    async def get_note_status(self, note_id: str) -> dict[str, Any]:
+        """查询笔记发布状态。
+
+        状态：uploading → pending → submitted
+        """
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=30) as client:
+            response = await client.post(
+                f"/api/rednote/{note_id}/status",
+                headers={"Content-Type": "application/json"},
+                json={"api_key": self.api_key},
+            )
+        return self._ensure_ok(response)
+
+    @staticmethod
+    def _ensure_ok(response: httpx.Response) -> dict[str, Any]:
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise PlatformClientError(
+                "小红书 API 返回了非 JSON 响应。",
+                platform_code=str(response.status_code),
+                retryable=response.status_code >= 500,
+            ) from exc
+
+        if not data.get("success"):
+            error = data.get("error") or {}
+            code = error.get("code") or "UNKNOWN_ERROR"
+            message = error.get("message") or "小红书 API 请求失败。"
+            retryable = code in {"RATE_LIMIT_EXCEEDED", "INTERNAL_ERROR"}
+            raise PlatformClientError(
+                message,
+                platform_code=code,
+                platform_message=message,
+                retryable=retryable,
+                next_action={
+                    "INVALID_API_KEY": "请检查 .env 中 XIAOHONGSHU_API_KEY 是否正确。",
+                    "INSUFFICIENT_BALANCE": "请在 myaibot.vip 用户中心充值调用次数。",
+                    "VALIDATION_ERROR": "请检查笔记参数是否符合小红书平台要求。",
+                    "RATE_LIMIT_EXCEEDED": "请求频率超限，请稍后重试。",
+                }.get(code, "请查看小红书 API 返回详情。"),
+                details=data,
+            )
+        return data

@@ -10,6 +10,7 @@ export interface LocalAsset {
   kind: MediaKind;
   file: File;
   folderId?: string;
+  aliasPaths?: string[];
   backendAssetId?: string;
   backendUrl?: string;
   uploadPurpose?: string;

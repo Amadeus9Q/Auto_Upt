@@ -25,6 +25,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   insert: [asset: LocalAsset];
   rename: [payload: { asset: LocalAsset; oldName: string; newName: string }];
+  delete: [asset: LocalAsset];
 }>();
 
 const assets = defineModel<EditorAssets>("assets", { required: true });
@@ -83,22 +84,39 @@ function createAsset(file: File, tab: MediaTab): LocalAsset {
   };
 }
 
+function overwriteAsset(target: LocalAsset, source: LocalAsset) {
+  target.size = source.size;
+  target.mimeType = source.mimeType;
+  target.previewUrl = source.previewUrl;
+  target.file = source.file;
+  target.backendAssetId = undefined;
+  target.backendUrl = undefined;
+  target.uploadPurpose = undefined;
+}
+
+function findSameNameAsset(tab: MediaTab, name: string) {
+  return assets.value[tab].find((item) => item.name === name);
+}
+
 function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
   return (file: UploadFile) => {
     if (!file.raw) return;
     const asset = createAsset(file.raw, tab);
-    const list = assets.value[tab];
-    const existing = list.find((item) => item.name === asset.name && item.size === asset.size && item.mimeType === asset.mimeType);
+    const existing = findSameNameAsset(tab, asset.name);
     if (existing) {
-      existing.folderId = activeFolderId.value ?? undefined;
+      const confirmed = window.confirm(`已存在名为「${asset.name}」的素材，是否覆盖原文件？`);
+      if (confirmed) {
+        rememberAssetPath(existing);
+        overwriteAsset(existing, asset);
+      }
       return;
     }
-    list.push(asset);
+    assets.value[tab].push(asset);
   };
 }
 
 function visibleAssets(tab: MediaTab) {
-  if (!activeFolderId.value) return assets.value[tab];
+  if (!activeFolderId.value) return assets.value[tab].filter((asset) => !asset.folderId);
   return assets.value[tab].filter((asset) => asset.folderId === activeFolderId.value);
 }
 
@@ -108,13 +126,31 @@ function assetMarker(asset: LocalAsset) {
     video: "视频",
     audio: "音频"
   };
-  return `【${kindLabel[asset.kind]}：${asset.name}】`;
+  return `【${kindLabel[asset.kind]}：${assetFolderPath(asset)}】`;
+}
+
+function assetFolderPath(asset: LocalAsset) {
+  const names: string[] = [];
+  let cursor = asset.folderId;
+  while (cursor) {
+    const folder = folders.value.find((item) => item.id === cursor);
+    if (!folder) break;
+    names.unshift(folder.name);
+    cursor = folder.parentId ?? undefined;
+  }
+  return [...names, asset.name].join("/");
+}
+
+function rememberAssetPath(asset: LocalAsset) {
+  const path = assetFolderPath(asset);
+  asset.aliasPaths = Array.from(new Set([...(asset.aliasPaths ?? []), path]));
 }
 
 function removeAsset(asset: LocalAsset) {
   const tab = tabFromKind(asset.kind);
   const index = assets.value[tab].findIndex((item) => item.id === asset.id);
   if (index < 0) return;
+  emit("delete", asset);
   assets.value[tab].splice(index, 1);
   if (tab === "images" && asset.id === assets.value.coverImageId) {
     assets.value.coverImageId = null;
@@ -159,6 +195,7 @@ function removeFolder(folder: MediaFolder) {
   for (const tab of ["images", "videos", "audios"] as MediaTab[]) {
     assets.value[tab] = assets.value[tab].filter((asset) => {
       if (asset.folderId && childFolderIds.includes(asset.folderId)) {
+        emit("delete", asset);
         // Also clear coverImageId if the deleted asset was cover
         if (tab === "images" && asset.id === assets.value.coverImageId) {
           assets.value.coverImageId = null;
@@ -187,7 +224,7 @@ function onDragStart(tab: MediaTab, asset: LocalAsset, event: DragEvent) {
   event.dataTransfer?.setData("text/plain", assetMarker(asset));
   event.dataTransfer?.setData("application/x-auto-upt-asset", JSON.stringify({ tab, index, id: asset.id }));
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "copyMove";
+    event.dataTransfer.effectAllowed = "move";
   }
 }
 
@@ -268,6 +305,14 @@ function onFolderDrop(folder: MediaFolder, event: DragEvent) {
       const data = JSON.parse(folderPayload) as { id: string };
       const target = folders.value.find((f) => f.id === data.id);
       if (target && target.id !== folder.id && !collectFolderIds(target.id).includes(folder.id)) {
+        const movingFolderIds = collectFolderIds(target.id);
+        for (const t of ["images", "videos", "audios"] as MediaTab[]) {
+          for (const asset of assets.value[t]) {
+            if (asset.folderId && movingFolderIds.includes(asset.folderId)) {
+              rememberAssetPath(asset);
+            }
+          }
+        }
         target.parentId = folder.id;
       }
     } catch { /* ignore */ }
@@ -284,13 +329,17 @@ function onFolderDrop(folder: MediaFolder, event: DragEvent) {
         for (const t of ["images", "videos", "audios"] as MediaTab[]) {
           const found = assets.value[t].find((a) => a.id === data.id);
           if (found) {
+            rememberAssetPath(found);
             found.folderId = folder.id;
             break;
           }
         }
       } else if (data.tab && typeof data.index === "number") {
         const found = assets.value[data.tab]?.[data.index];
-        if (found) found.folderId = folder.id;
+        if (found) {
+          rememberAssetPath(found);
+          found.folderId = folder.id;
+        }
       }
     } catch { /* ignore */ }
     dragState.value = null;
@@ -312,6 +361,12 @@ function enableDragHandle(event: MouseEvent) {
   const handle = event.currentTarget as HTMLElement;
   const article = handle.closest("article") as HTMLElement | null;
   if (article) article.draggable = true;
+}
+
+function resetDragHandle(event: MouseEvent) {
+  const handle = event.currentTarget as HTMLElement;
+  const article = handle.closest("article") as HTMLElement | null;
+  if (article) article.draggable = false;
 }
 
 function disableDragHandle(event: DragEvent) {
@@ -346,7 +401,14 @@ function finishRename(asset: LocalAsset) {
     renamingAssetId.value = null;
     return;
   }
+  const tab = tabFromKind(asset.kind);
+  const duplicate = assets.value[tab].find((item) => item.id !== asset.id && item.name === newName);
+  if (duplicate) {
+    window.alert(`已存在名为「${newName}」的素材，请先处理原文件后再重命名。`);
+    return;
+  }
   const oldName = asset.name;
+  rememberAssetPath(asset);
   asset.name = newName;
   renamingAssetId.value = null;
   emit("rename", { asset, oldName, newName });
@@ -418,7 +480,7 @@ function cancelRename() {
             @drop.prevent="onFolderDrop(folder, $event)"
             @dragend="disableDragHandle($event); folderDragTargetId = null"
           >
-            <span class="drag-handle" @mousedown="enableDragHandle" />
+            <span class="drag-handle" @mousedown="enableDragHandle" @mouseup="resetDragHandle" />
             <button type="button" class="folder-open-button" @click="activeFolderId = folder.id">
               <el-icon><FolderOpened /></el-icon>
               <strong>{{ folder.name }}</strong>
@@ -438,7 +500,7 @@ function cancelRename() {
             @drop.prevent="onDrop(tab.key)"
             @dragend="disableDragHandle($event); dragState = null"
           >
-            <span class="drag-handle" :class="`drag-handle-${asset.kind}`" @mousedown="enableDragHandle" />
+            <span class="drag-handle" :class="`drag-handle-${asset.kind}`" @mousedown="enableDragHandle" @mouseup="resetDragHandle" />
             <div class="media-preview">
               <img v-if="asset.kind === 'image'" :src="asset.previewUrl" :alt="asset.name" />
               <video v-else-if="asset.kind === 'video'" :src="asset.previewUrl" controls />
