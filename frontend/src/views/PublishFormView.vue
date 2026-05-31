@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { DocumentChecked, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
-import type { EditorAssets } from "@/views/EditorView.vue";
+import type { EditorAssets } from "@/types/media";
 
 export interface BilibiliPublishForm {
   title: string;
