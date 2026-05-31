@@ -1,19 +1,24 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { CircleCheck, Promotion, WarningFilled } from "@element-plus/icons-vue";
+import { CircleCheck, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
 
 import type { PlatformKey, PublishMode, ValidationIssue } from "@/api/client";
+import type { EditorAssets } from "@/types/media";
+import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 
 const props = defineProps<{
   selectedPlatforms: PlatformKey[];
   loading: boolean;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
+  assets: EditorAssets;
 }>();
 
 const emit = defineEmits<{
   back: [];
   submit: [payload: { platforms: PlatformKey[]; mode: PublishMode }];
 }>();
+
+const publishForms = defineModel<PublishForms>("publishForms", { required: true });
 
 const platformLabels: Record<PlatformKey, string> = {
   wechat: "公众号",
@@ -25,6 +30,23 @@ const platformLabels: Record<PlatformKey, string> = {
 const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili"];
 const selectedMode = ref<PublishMode>("simulate");
 const selectedConfirmPlatforms = ref<PlatformKey[]>([...props.selectedPlatforms]);
+const useUnifiedSettings = ref(true);
+
+const coverImage = computed(
+  () => props.assets.coverImage ?? props.assets.images.find((image) => image.id === props.assets.coverImageId) ?? props.assets.images[0] ?? null
+);
+const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
+const wechatIssues = computed(() => props.validationReport.wechat ?? []);
+const wechatMissing = computed(() => [
+  ...(!publishForms.value.wechat.title.trim() ? ["标题"] : []),
+  ...(!publishForms.value.wechat.summary.trim() ? ["摘要"] : []),
+  ...(!publishForms.value.wechat.author.trim() ? ["作者"] : []),
+  ...(!coverImage.value ? ["封面图片"] : [])
+]);
+
+function issueType(issue: ValidationIssue) {
+  return issue.level === "error" ? "danger" : issue.level === "warning" ? "warning" : "info";
+}
 
 const platformOptions = computed(() => {
   const allowed = selectedMode.value === "simulate" ? props.selectedPlatforms : props.selectedPlatforms.filter((platform) => publishablePlatforms.includes(platform));
@@ -48,7 +70,9 @@ watch(selectedMode, () => {
   if (!selectedConfirmPlatforms.value.length) {
     selectedConfirmPlatforms.value = [...allowed];
   }
-});
+  // 同步发布模式到公众号发布方式：草稿→草稿箱，发布→直接提交
+  publishForms.value.wechat.directPublish = selectedMode.value === "publish";
+}, { immediate: true });
 
 function submit() {
   if (!selectedConfirmPlatforms.value.length) {
@@ -64,31 +88,140 @@ function submit() {
 
 <template>
   <section class="publish-confirm-view">
-    <div class="section-title">
-      <div>
-        <p>发布确认</p>
-        <h2>选择发布方式并确认提交</h2>
-      </div>
-      <el-icon :size="24"><Promotion /></el-icon>
-    </div>
 
-    <el-form label-position="top">
-      <el-form-item label="发布模式">
-        <el-radio-group v-model="selectedMode" class="mode-group">
-          <el-radio-button value="simulate">模拟</el-radio-button>
-          <el-radio-button value="draft">保存草稿</el-radio-button>
-          <el-radio-button value="publish">真实发布</el-radio-button>
+    <!-- 统一发布设置 -->
+    <section class="unified-publish-section">
+      <div class="section-title">
+        <div>
+          <p>发布设置</p>
+          <h2>确认发布前需要填写的内容</h2>
+        </div>
+        <el-radio-group v-model="useUnifiedSettings" class="settings-mode-toggle">
+          <el-radio-button :value="true">统一配置</el-radio-button>
+          <el-radio-button :value="false">独立配置</el-radio-button>
         </el-radio-group>
-      </el-form-item>
+      </div>
 
-      <el-form-item label="发布平台">
-        <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
-          <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </el-checkbox-button>
-        </el-checkbox-group>
-      </el-form-item>
-    </el-form>
+      <!-- 统一设置表单 -->
+      <div v-if="useUnifiedSettings" class="unified-form">
+        <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看需要确认的发布内容" />
+
+        <template v-else>
+          <div class="platform-heading">
+            <el-icon><InfoFilled /></el-icon>
+            <strong>统一发布内容（应用于所有选定平台）</strong>
+          </div>
+
+          <el-alert
+            v-if="wechatMissing.length"
+            class="form-alert"
+            :title="`缺失项：${wechatMissing.join('、')}`"
+            type="warning"
+            show-icon
+            :closable="false"
+          />
+
+          <div v-if="wechatIssues.length" class="issue-list">
+            <el-tag v-for="issue in wechatIssues" :key="`${issue.code}-${issue.field}`" :type="issueType(issue)">
+              {{ issue.field }}：{{ issue.message }}
+            </el-tag>
+          </div>
+
+          <el-form label-position="top">
+            <!-- 通用字段 -->
+            <el-form-item label="标题（公众号 + B站）">
+              <el-input
+                :model-value="publishForms.wechat.title"
+                @update:model-value="publishForms.wechat.title = $event; publishForms.bilibili.title = $event"
+                maxlength="64"
+                show-word-limit
+                placeholder="发布时显示的文章标题"
+              />
+            </el-form-item>
+            <el-form-item label="摘要 / 简介（公众号摘要 + B站简介）">
+              <el-input
+                v-model="publishForms.wechat.summary"
+                @update:model-value="publishForms.bilibili.description = $event"
+                type="textarea"
+                :rows="3"
+                resize="none"
+                maxlength="120"
+                show-word-limit
+                placeholder="发布时显示的文章摘要或视频简介"
+              />
+            </el-form-item>
+
+            <!-- B站专属 -->
+            <el-form-item v-if="selectedPlatforms.includes('bilibili')" label="B站标签（逗号分隔）">
+              <el-input v-model="publishForms.bilibili.tags" placeholder="例如：科技,AI,编程" />
+            </el-form-item>
+            <el-form-item v-if="selectedPlatforms.includes('bilibili')" label="B站分类">
+              <el-input v-model="publishForms.bilibili.category" placeholder="例如：科技" />
+            </el-form-item>
+
+            <!-- 公众号专属 -->
+            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="作者">
+              <el-input v-model="publishForms.wechat.author" placeholder="文章作者名称，可留空" />
+            </el-form-item>
+            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="原文链接">
+              <el-input v-model="publishForms.wechat.contentSourceUrl" placeholder="可选，填写原文或参考来源链接" />
+            </el-form-item>
+            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="评论设置">
+              <div class="radio-row">
+                <el-radio-group v-model="publishForms.wechat.needOpenComment" class="inline-radio-group">
+                  <el-radio-button :value="true">开启评论</el-radio-button>
+                  <el-radio-button :value="false">关闭评论</el-radio-button>
+                </el-radio-group>
+                <el-radio-group
+                  v-model="publishForms.wechat.onlyFansCanComment"
+                  :disabled="!publishForms.wechat.needOpenComment"
+                  class="inline-radio-group"
+                >
+                  <el-radio-button :value="false">所有人可评论</el-radio-button>
+                  <el-radio-button :value="true">仅粉丝可评论</el-radio-button>
+                </el-radio-group>
+              </div>
+            </el-form-item>
+            <el-form-item v-if="selectedPlatforms.includes('wechat')" label="发布方式">
+              <el-radio-group v-model="selectedMode" class="mode-group">
+                <el-radio-button value="simulate">模拟</el-radio-button>
+                <el-radio-button value="draft">保存草稿</el-radio-button>
+                <el-radio-button value="publish">真实发布</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+
+            <div class="asset-status">
+              <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
+              <span v-if="selectedPlatforms.includes('bilibili')">视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
+              <span>正文图片：{{ assets.images.length }} 张</span>
+            </div>
+          </el-form>
+        </template>
+
+        <div class="risk-note">
+          <el-icon><WarningFilled /></el-icon>
+          <span>这里只展示发布前需要你确认的内容；没有额外设置的平台会使用系统默认值，并在下一步再次确认。</span>
+        </div>
+      </div>
+
+      <!-- 独立设置（原分平台Tab） -->
+      <PublishFormView
+        v-else
+        v-model:forms="publishForms"
+        :selected-platforms="selectedPlatforms"
+        :validation-report="validationReport"
+        :assets="assets"
+      />
+    </section>
+
+    <div class="platform-select-section">
+      <label class="platform-select-label">发布平台</label>
+      <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
+        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
+          {{ option.label }}
+        </el-checkbox-button>
+      </el-checkbox-group>
+    </div>
 
     <el-alert
       v-if="hasRealPublish"
@@ -126,6 +259,7 @@ function submit() {
 
     <footer class="confirm-actions">
       <el-button @click="$emit('back')">返回预览</el-button>
+      <div class="footer-spacer"></div>
       <el-button type="primary" :icon="CircleCheck" :loading="loading" :disabled="!selectedConfirmPlatforms.length" @click="submit">
         确认发布
       </el-button>
@@ -164,11 +298,113 @@ function submit() {
   font-size: 20px;
 }
 
+/* 统一发布设置区域 */
+.unified-publish-section {
+  margin-bottom: 18px;
+  padding: 22px;
+  background: #ffffff;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+}
+
+.settings-mode-toggle {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.settings-mode-toggle :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.settings-mode-toggle :deep(.el-radio-button:first-child .el-radio-button__inner) {
+  border-left: 1px solid var(--el-border-color);
+}
+
+.footer-spacer {
+  flex: 1;
+}
+
+.unified-form {
+  min-width: 0;
+}
+
+.platform-heading,
+.asset-status,
+.risk-note,
+.issue-list,
+.radio-row {
+  display: flex;
+  align-items: center;
+}
+
+.platform-heading {
+  gap: 8px;
+  margin-bottom: 14px;
+  color: #253247;
+}
+
+.form-alert {
+  margin-bottom: 14px;
+}
+
+.issue-list,
+.radio-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.radio-row {
+  gap: 16px;
+}
+
+.inline-radio-group :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+}
+
+.asset-status {
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #607086;
+  font-size: 13px;
+}
+
+.asset-status span {
+  padding: 8px 10px;
+  background: #f7f9fc;
+  border: 1px solid #e6edf5;
+  border-radius: 8px;
+}
+
+.risk-note {
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  color: #4f6279;
+  background: #eef3f8;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
 .mode-group,
 .platforms {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.platform-select-section {
+  margin-bottom: 18px;
+}
+
+.platform-select-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #253247;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .mode-group :deep(.el-radio-button__inner),

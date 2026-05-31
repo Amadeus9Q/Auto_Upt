@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { DocumentChecked, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
+import { InfoFilled, WarningFilled } from "@element-plus/icons-vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
@@ -56,13 +56,6 @@ function issueType(issue: ValidationIssue) {
 
 <template>
   <section class="publish-form-view">
-    <div class="section-title">
-      <div>
-        <p>发布设置</p>
-        <h2>确认各平台发布前需要填写的内容</h2>
-      </div>
-      <el-icon :size="24"><DocumentChecked /></el-icon>
-    </div>
 
     <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看需要确认的发布内容" />
 
@@ -110,18 +103,26 @@ function issueType(issue: ValidationIssue) {
             <el-input v-model="forms.wechat.contentSourceUrl" placeholder="可选，填写原文或参考来源链接" />
           </el-form-item>
           <el-form-item label="评论设置">
-            <div class="switch-row">
-              <el-switch v-model="forms.wechat.needOpenComment" active-text="开启评论" inactive-text="关闭评论" />
-              <el-switch
+            <div class="radio-row">
+              <el-radio-group v-model="forms.wechat.needOpenComment" class="inline-radio-group">
+                <el-radio-button :value="true">开启评论</el-radio-button>
+                <el-radio-button :value="false">关闭评论</el-radio-button>
+              </el-radio-group>
+              <el-radio-group
                 v-model="forms.wechat.onlyFansCanComment"
                 :disabled="!forms.wechat.needOpenComment"
-                active-text="仅粉丝可评论"
-                inactive-text="所有人可评论"
-              />
+                class="inline-radio-group"
+              >
+                <el-radio-button :value="false">所有人可评论</el-radio-button>
+                <el-radio-button :value="true">仅粉丝可评论</el-radio-button>
+              </el-radio-group>
             </div>
           </el-form-item>
           <el-form-item label="发布方式">
-            <el-switch v-model="forms.wechat.directPublish" active-text="直接提交发布" inactive-text="先保存到草稿箱" />
+            <el-radio-group v-model="forms.wechat.directPublish" class="mode-group">
+              <el-radio-button :value="false">先保存到草稿箱</el-radio-button>
+              <el-radio-button :value="true">直接提交发布</el-radio-button>
+            </el-radio-group>
           </el-form-item>
           <div class="asset-status">
             <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
@@ -174,33 +175,11 @@ function issueType(issue: ValidationIssue) {
   border-radius: 8px;
 }
 
-.section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-}
-
-.section-title p,
-.section-title h2 {
-  margin: 0;
-}
-
-.section-title p {
-  color: #607086;
-  font-size: 13px;
-}
-
-.section-title h2 {
-  margin-top: 5px;
-  font-size: 20px;
-}
-
 .platform-heading,
 .asset-status,
 .risk-note,
 .issue-list,
-.switch-row {
+.radio-row {
   display: flex;
   align-items: center;
 }
@@ -216,14 +195,29 @@ function issueType(issue: ValidationIssue) {
 }
 
 .issue-list,
-.switch-row {
+.radio-row {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
 }
 
-.switch-row {
+.radio-row {
   gap: 16px;
+}
+
+.inline-radio-group :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+}
+
+.mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mode-group :deep(.el-radio-button__inner) {
+  border-left: 1px solid var(--el-border-color);
+  border-radius: 8px;
 }
 
 .asset-status {

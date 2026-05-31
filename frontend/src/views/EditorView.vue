@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import type { UploadFile, UploadProps } from "element-plus";
 import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
 
-import { importDocument, type DraftPayload, type PlatformKey } from "@/api/client";
+import { importDocument, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
 import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
@@ -20,8 +20,10 @@ const props = defineProps<{
   wordCount: number;
   previewLoading: boolean;
   agentLoading: boolean;
+  publishLoading: boolean;
   hasPreview: boolean;
   platformDrafts: Partial<Record<PlatformKey, DraftPayload>>;
+  validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
 }>();
 
 const emit = defineEmits<{
@@ -56,12 +58,45 @@ const mediaFolders = defineModel<MediaFolder[]>("mediaFolders", { required: true
 const dragState = ref<DragState | null>(null);
 const isContentDragOver = ref(false);
 const contentDropIndex = ref<number | null>(null);
+const contentDropCaretStyle = ref<{ left: string; top: string } | null>(null);
 const importLoading = ref(false);
 const importInputRef = ref<HTMLInputElement | null>(null);
 const isPlatformDragOver = ref(false);
 const platformDropIndex = ref<number | null>(null);
 const activePreviewPlatform = ref<PlatformKey>("wechat");
 const mediaPanelCollapsed = ref(false);
+const mediaPanelWidth = ref(340);
+const isResizing = ref(false);
+
+function onGutterMouseDown(event: MouseEvent) {
+  event.preventDefault();
+  isResizing.value = true;
+  const startX = event.clientX;
+  const startWidth = mediaPanelWidth.value;
+
+  const onMove = (moveEvent: MouseEvent) => {
+    const delta = startX - moveEvent.clientX;
+    mediaPanelWidth.value = Math.max(200, Math.min(600, startWidth + delta));
+  };
+
+  const onUp = () => {
+    isResizing.value = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+const editorShellStyle = computed(() => {
+  if (mediaPanelCollapsed.value) return {};
+  return { gridTemplateColumns: `minmax(0, 1fr) 18px ${mediaPanelWidth.value}px` };
+});
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
@@ -232,13 +267,49 @@ function clearCoverImage() {
   assets.value.coverImage = null;
 }
 
+const kindLabel: Record<MediaKind, string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频"
+};
+
+function makeMarker(kind: MediaKind, name: string) {
+  return `【${kindLabel[kind]}：${name}】`;
+}
+
 function assetMarker(asset: LocalAsset) {
-  const kindLabel: Record<MediaKind, string> = {
-    image: "图片",
-    video: "视频",
-    audio: "音频"
-  };
-  return `【${kindLabel[asset.kind]}：${asset.name}】`;
+  return makeMarker(asset.kind, asset.name);
+}
+
+function handleMediaRename(payload: { asset: LocalAsset; oldName: string; newName: string }) {
+  const oldMarker = makeMarker(payload.asset.kind, payload.oldName);
+  const newMarker = makeMarker(payload.asset.kind, payload.newName);
+  if (oldMarker === newMarker) return;
+
+  // Replace markers in all text fields that reference this asset
+  const replaceIn = (text: string): string =>
+    text.includes(oldMarker) ? text.replaceAll(oldMarker, newMarker) : text;
+
+  const newContent = replaceIn(content.value);
+  if (newContent !== content.value) {
+    content.value = newContent;
+  }
+
+  const activeDraft = activePreviewDraft.value;
+  if (activeDraft?.body && activeDraft.body.includes(oldMarker)) {
+    // Update through the activePreviewText setter to ensure two-way sync
+    activePreviewText.value = activeDraft.body.replaceAll(oldMarker, newMarker);
+  }
+
+  // Also update other non-active platform drafts that contain the old marker
+  for (const [platform, draft] of Object.entries(props.platformDrafts)) {
+    if (platform === activePreviewPlatform.value) continue; // already handled above
+    if (draft?.body?.includes(oldMarker)) {
+      emit("updatePlatformDraft", platform as PlatformKey, {
+        body: draft.body.replaceAll(oldMarker, newMarker)
+      });
+    }
+  }
 }
 
 function insertTextAtCursor(text: string, textarea?: HTMLTextAreaElement | null, target?: { value: string } | null) {
@@ -378,6 +449,7 @@ function previewContentDropPosition(event: DragEvent) {
   const textarea = textareaFromDropEvent(event);
   if (!textarea) {
     contentDropIndex.value = null;
+    contentDropCaretStyle.value = null;
     return null;
   }
 
@@ -385,6 +457,20 @@ function previewContentDropPosition(event: DragEvent) {
   contentDropIndex.value = index;
   textarea.focus({ preventScroll: true });
   textarea.setSelectionRange(index, index);
+
+  // Compute pixel position for a visual drop-caret
+  const { mirror, marker } = buildTextareaMirror(textarea);
+  try {
+    const pos = measureTextareaCaret(textarea, index, mirror, marker);
+    const rect = textarea.getBoundingClientRect();
+    contentDropCaretStyle.value = {
+      left: `${pos.left + rect.left - textarea.scrollLeft}px`,
+      top: `${pos.top + rect.top - textarea.scrollTop}px`
+    };
+  } finally {
+    mirror.remove();
+  }
+
   return textarea;
 }
 
@@ -450,6 +536,7 @@ function onContentDrop(event: DragEvent) {
     insertAssetReference(asset, textarea);
   }
   contentDropIndex.value = null;
+  contentDropCaretStyle.value = null;
   dragState.value = null;
 }
 
@@ -459,6 +546,7 @@ function onContentDragLeave(event: DragEvent) {
   if (!related || !current.contains(related)) {
     isContentDragOver.value = false;
     contentDropIndex.value = null;
+    contentDropCaretStyle.value = null;
   }
 }
 
@@ -634,7 +722,7 @@ function dropClass(tab: MediaTab, index: number) {
       @change="handleImportFileChange"
     />
 
-    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed }">
+    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed }" :style="editorShellStyle">
       <div class="editor-main">
     <el-form label-position="top">
       <section class="editor-panel editor-panel-meta">
@@ -702,6 +790,7 @@ function dropClass(tab: MediaTab, index: number) {
             resize="none"
             placeholder="输入正文，支持 Markdown、图文要点、视频简介；也可从文件夹直接拖入图片/视频/音频。"
           />
+          <div v-if="isContentDragOver && contentDropCaretStyle" class="content-drop-caret" :style="contentDropCaretStyle" />
           <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
         </div>
       </el-form-item>
@@ -806,6 +895,15 @@ function dropClass(tab: MediaTab, index: number) {
     </el-form>
       </div>
 
+      <div
+        v-if="!mediaPanelCollapsed"
+        class="editor-gutter"
+        :class="{ 'is-resizing': isResizing }"
+        @mousedown="onGutterMouseDown"
+      >
+        <span class="editor-gutter-handle" />
+      </div>
+
       <aside class="editor-media-side">
         <el-button class="media-collapse-button" :icon="mediaPanelCollapsed ? ArrowLeft : ArrowRight" @click="mediaPanelCollapsed = !mediaPanelCollapsed">
           {{ mediaPanelCollapsed ? "展开多媒体库" : "收起多媒体库" }}
@@ -817,6 +915,7 @@ function dropClass(tab: MediaTab, index: number) {
           compact
           title="多媒体库"
           @insert="insertAssetReference"
+          @rename="handleMediaRename"
         />
       </aside>
     </div>
@@ -831,7 +930,7 @@ function dropClass(tab: MediaTab, index: number) {
       <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
         多平台预览
       </el-button>
-      <el-button type="primary" :icon="Promotion" :disabled="!hasPreview" @click="$emit('confirmPublish')">
+      <el-button type="primary" :icon="Promotion" @click="$emit('confirmPublish')">
         发布
       </el-button>
     </div>
@@ -872,13 +971,55 @@ function dropClass(tab: MediaTab, index: number) {
 
 .editor-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-columns: minmax(0, 1fr) 18px 340px;
   align-items: start;
-  gap: 18px;
+  gap: 0;
 }
 
 .editor-shell.is-media-collapsed {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.editor-gutter {
+  position: relative;
+  align-self: stretch;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 1;
+}
+
+.editor-gutter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.2s;
+}
+
+.editor-gutter:hover::before,
+.editor-gutter.is-resizing::before {
+  background: #1f6feb;
+}
+
+.editor-gutter-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 32px;
+  border-radius: 999px;
+  background: #ccd5e0;
+  transition: background 0.2s;
+}
+
+.editor-gutter:hover .editor-gutter-handle {
+  background: #1f6feb;
 }
 
 .editor-main {
@@ -1089,6 +1230,22 @@ function dropClass(tab: MediaTab, index: number) {
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(23, 32, 51, 0.12);
   font-size: 12px;
+}
+
+.content-drop-caret {
+  position: fixed;
+  pointer-events: none;
+  width: 2px;
+  height: 18px;
+  background: #1f6feb;
+  box-shadow: 0 0 6px rgba(31, 111, 235, 0.5);
+  animation: caret-blink 0.8s step-end infinite;
+  z-index: 100;
+  transform: translateY(1px);
+}
+
+@keyframes caret-blink {
+  50% { opacity: 0; }
 }
 
 .platform-preview-box {
@@ -1444,4 +1601,5 @@ function dropClass(tab: MediaTab, index: number) {
     grid-template-columns: 1fr;
   }
 }
+
 </style>
