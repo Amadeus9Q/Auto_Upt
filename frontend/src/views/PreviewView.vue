@@ -14,8 +14,9 @@ interface DraftAsset {
 }
 
 export interface BodySegment {
-  type: "text" | "image" | "video" | "audio";
+  type: "summary" | "heading" | "text" | "image" | "video" | "audio";
   text?: string;
+  level?: 1 | 2 | 3;
   src?: string;
   name?: string;
 }
@@ -71,7 +72,7 @@ const bilibiliHighlights = computed(() => {
 
 const zhihuTextSegments = computed(() => {
   if (activeDraft.value?.key !== "zhihu") return [];
-  return activeBodySegments.value.filter((s) => s.type === "text");
+  return activeBodySegments.value.filter((s) => s.type === "summary" || s.type === "heading" || s.type === "text");
 });
 const zhihuImageSegments = computed(() => {
   if (activeDraft.value?.key !== "zhihu") return [];
@@ -112,6 +113,8 @@ const xiaohongshuImages = computed(() => {
 const xiaohongshuUnsupportedMedia = computed(() =>
   activeDraft.value?.key === "xiaohongshu" ? [...slotAssetList(activeDraft.value, "body_videos"), ...slotAssetList(activeDraft.value, "body_audios")] : []
 );
+const activeTextSections = computed(() => activeBodySegments.value.filter((segment) => segment.type === "summary" || segment.type === "heading" || segment.type === "text"));
+const xiaohongshuTextSections = computed(() => activeTextSections.value.filter((segment) => segment.type !== "summary"));
 
 watch(
   () => props.drafts,
@@ -170,12 +173,22 @@ function parseBodySegments(draft: PlatformDraft | null): BodySegment[] {
   if (!draft) return [];
 
   const allAssets = collectDraftAssets(draft);
+  const structuredSegments = parseStructuredBodySegments(draft, allAssets);
+  if (structuredSegments.length) {
+    return structuredSegments;
+  }
+
   const lines = draft.body.split("\n");
   const segments: BodySegment[] = [];
+  const summary = draft.summary?.trim();
+  if (summary) {
+    segments.push({ type: "summary", text: summary });
+  }
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (summary && normalizeText(trimmed) === normalizeText(summary)) continue;
 
     const match = trimmed.match(ASSET_MARKER_RE);
     if (match) {
@@ -183,8 +196,54 @@ function parseBodySegments(draft: PlatformDraft | null): BodySegment[] {
       const name = match[2].trim();
       const found = findAssetByName(allAssets, name, kind);
       segments.push({ type: kind, src: found?.url || found?.preview_url || "", name });
+    } else if (isLikelyHeading(trimmed)) {
+      segments.push(parseHeadingSegment(trimmed));
     } else {
       segments.push({ type: "text", text: trimmed });
+    }
+  }
+
+  return segments;
+}
+
+function parseStructuredBodySegments(draft: PlatformDraft, allAssets: DraftAsset[]): BodySegment[] {
+  const blocks = Array.isArray(draft.rich_body) && draft.rich_body.length ? draft.rich_body : draft.body_blocks;
+  if (!Array.isArray(blocks) || !blocks.length) return [];
+
+  const segments: BodySegment[] = [];
+  const summary = draft.summary?.trim();
+  if (summary) {
+    segments.push({ type: "summary", text: summary });
+  }
+
+  for (const rawBlock of blocks) {
+    if (!rawBlock || typeof rawBlock !== "object") continue;
+    const block = rawBlock as Record<string, unknown>;
+    const type = String(block.type ?? "");
+    const text = String(block.text ?? block.title ?? block.alt ?? "").trim();
+
+    if ((type === "heading" || type === "heading-1" || type === "heading-2" || type === "heading-3") && text) {
+      const rawLevel = Number(block.level ?? type.match(/\d$/)?.[0] ?? 1);
+      const level = Math.min(Math.max(rawLevel || 1, 1), 3) as 1 | 2 | 3;
+      segments.push({ type: "heading", level, text: normalizeText(text) });
+      continue;
+    }
+
+    if ((type === "paragraph" || type === "text" || type === "quote" || type === "conclusion") && text) {
+      if (summary && normalizeText(text) === normalizeText(summary)) continue;
+      if (isLikelyHeading(text)) {
+        segments.push(parseHeadingSegment(text));
+      } else {
+        segments.push({ type: "text", text });
+      }
+      continue;
+    }
+
+    if (type === "image" || type === "video" || type === "audio") {
+      const src = String(block.src ?? block.url ?? block.preview_url ?? "");
+      const name = text || String(block.name ?? "");
+      const found = name ? findAssetByName(allAssets, name, type) : undefined;
+      segments.push({ type, src: src || found?.url || found?.preview_url || "", name });
     }
   }
 
@@ -211,6 +270,35 @@ function findAssetByName(assets: DraftAsset[], name: string, kind: string): Draf
       (a.name && a.name === name) ||
       (allowedTypes.includes(a.type ?? "") && name.includes(a.name ?? ""))
   );
+}
+
+function normalizeText(text: string) {
+  return text.replace(/^#+\s*/, "").replace(/[*_`>：:]+/g, "").trim();
+}
+
+function parseHeadingSegment(text: string): BodySegment {
+  const markdown = text.match(/^(#{1,3})\s+(.+)$/);
+  if (markdown) {
+    return {
+      type: "heading",
+      level: Math.min(markdown[1].length, 3) as 1 | 2 | 3,
+      text: markdown[2].trim()
+    };
+  }
+
+  return {
+    type: "heading",
+    level: /^([（(]?\d+[）).．、])/.test(text) ? 2 : 1,
+    text: normalizeText(text).replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, "")
+  };
+}
+
+function isLikelyHeading(text: string) {
+  if (/^#{1,3}\s+\S+/.test(text)) return true;
+  if (/^[-*+]\s+/.test(text)) return false;
+  if (/[。！？!?；;]$/.test(text)) return false;
+  if (text.length > 36) return false;
+  return /^([一二三四五六七八九十]+[、.．]|第[一二三四五六七八九十\d]+[章节篇]|[（(]?\d+[）).．、]\s*)/.test(text);
 }
 
 /** 从 body 中提取纯文本亮点（非媒体标记、非标题行） */
@@ -321,19 +409,27 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
           </section>
           <section class="bilibili-description">
             <span>视频简介</span>
-            <pre>{{ activeDraft.body }}</pre>
+            <div class="bilibili-description-body">
+              <template v-for="(segment, index) in activeTextSections" :key="`${segment.type}-${index}-${segment.text}`">
+                <strong v-if="segment.type === 'heading'" :class="`bilibili-section-title bilibili-section-title-${segment.level ?? 1}`">
+                  {{ segment.text }}
+                </strong>
+                <p v-else-if="segment.type === 'summary'" class="bilibili-summary">{{ segment.text }}</p>
+                <p v-else>{{ segment.text }}</p>
+              </template>
+            </div>
           </section>
         </aside>
 
         <section v-if="bilibiliHighlights.length" class="bilibili-highlights">
           <strong>内容要点</strong>
           <ol>
-            <li v-for="item in bilibiliHighlights" :key="item">{{ item }}</li>
+            <li v-for="item in bilibiliHighlights" :key="item" :class="{ 'is-section-point': isLikelyHeading(item) }">{{ normalizeText(item) }}</li>
           </ol>
         </section>
 
         <el-collapse v-if="activeDraft.issues.length" class="issues-collapse">
-          <el-collapse-item :title="`校验报告（${activeDraft.issues.length} 项）`" name="issues">
+          <el-collapse-item :title="`需要留意的提示（${activeDraft.issues.length} 项）`" name="issues">
             <div class="issue-list">
               <div
                 v-for="issue in activeDraft.issues"
@@ -357,7 +453,7 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
               <span class="zhihu-avatar">知</span>
               <div>
                 <strong>{{ activeDraft.author || "Auto_Upt" }}</strong>
-                <span>内容创作 · 平台适配 · 发布流程</span>
+                <span>内容创作 · 多平台预览 · 发布准备</span>
               </div>
             </div>
           </header>
@@ -371,7 +467,9 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
           <section class="zhihu-answer-shell">
             <div class="zhihu-answer">
               <template v-for="(segment, idx) in zhihuTextSegments" :key="'t-' + idx">
-                <p>{{ segment.text }}</p>
+                <p v-if="segment.type === 'summary'" class="zhihu-summary">{{ segment.text }}</p>
+                <h3 v-else-if="segment.type === 'heading'" :class="`zhihu-heading-${segment.level ?? 1}`">{{ segment.text }}</h3>
+                <p v-else>{{ segment.text }}</p>
               </template>
               <template v-for="(segment, idx) in zhihuImageSegments" :key="'i-' + idx">
                 <figure class="zhihu-inline-figure">
@@ -399,17 +497,17 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
             <strong>{{ activeDraft.tags.length }}/5 个</strong>
           </section>
           <section>
-            <span>建议形态</span>
-            <strong>回答 / 专栏草稿</strong>
+            <span>推荐发布形式</span>
+            <strong>回答 / 专栏文章</strong>
           </section>
           <section v-if="zhihuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅供展示，暂不参与发布</strong>
+            <strong>当前只做预览，暂不会随内容一起发布</strong>
           </section>
         </aside>
 
         <el-collapse v-if="activeDraft.issues.length" class="issues-collapse">
-          <el-collapse-item :title="`校验报告（${activeDraft.issues.length} 项）`" name="issues">
+          <el-collapse-item :title="`需要留意的提示（${activeDraft.issues.length} 项）`" name="issues">
             <div class="issue-list">
               <div
                 v-for="issue in activeDraft.issues"
@@ -459,8 +557,17 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
 
             <div class="xhs-note-body">
               <h2>{{ activeDraft.title }}</h2>
-              <p>{{ activeDraft.summary }}</p>
-              <ul v-if="xiaohongshuHighlights.length">
+              <p class="xhs-summary">{{ activeDraft.summary }}</p>
+              <ul v-if="xiaohongshuTextSections.length">
+                <li
+                  v-for="(segment, index) in xiaohongshuTextSections"
+                  :key="`${segment.type}-${index}-${segment.text}`"
+                  :class="{ 'xhs-section-heading': segment.type === 'heading', 'xhs-summary-item': segment.type === 'summary' }"
+                >
+                  {{ segment.text }}
+                </li>
+              </ul>
+              <ul v-else-if="xiaohongshuHighlights.length">
                 <li v-for="item in xiaohongshuHighlights" :key="item">{{ item }}</li>
               </ul>
               <div v-if="activeDraft.tags.length" class="xhs-tags">
@@ -491,7 +598,7 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
           </section>
           <section v-if="xiaohongshuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅供展示，暂不参与发布</strong>
+            <strong>当前只做预览，暂不会随内容一起发布</strong>
           </section>
           <section class="xhs-body-preview">
             <span>笔记正文</span>
@@ -500,7 +607,7 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
         </aside>
 
         <el-collapse v-if="activeDraft.issues.length" class="issues-collapse">
-          <el-collapse-item :title="`校验报告（${activeDraft.issues.length} 项）`" name="issues">
+          <el-collapse-item :title="`需要留意的提示（${activeDraft.issues.length} 项）`" name="issues">
             <div class="issue-list">
               <div
                 v-for="issue in activeDraft.issues"
@@ -766,6 +873,38 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
   line-height: 1.65;
 }
 
+.bilibili-description-body {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 8px;
+  color: #253247;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.bilibili-description-body p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bilibili-summary {
+  color: #5d6b82;
+}
+
+.bilibili-section-title {
+  display: block;
+  margin: 12px 0 6px;
+  color: #1f6feb;
+  font-weight: 650;
+}
+
+.bilibili-section-title-2,
+.bilibili-section-title-3 {
+  color: #253247;
+  font-size: 12px;
+}
+
 .bilibili-highlights {
   grid-column: 1 / -1;
   padding: 14px 16px;
@@ -776,6 +915,12 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
   padding-left: 20px;
   color: #253247;
   line-height: 1.65;
+}
+
+.bilibili-highlights li.is-section-point {
+  margin-top: 8px;
+  color: #1f6feb;
+  font-weight: 650;
 }
 
 .zhihu-article {
@@ -845,6 +990,34 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
   font-size: 15px;
   line-height: 1.85;
   word-break: break-word;
+}
+
+.zhihu-summary {
+  padding: 12px 14px;
+  background: #f7f9fb;
+  border-left: 3px solid #1f6feb;
+  border-radius: 0 6px 6px 0;
+  color: #172033 !important;
+}
+
+.zhihu-heading-1,
+.zhihu-heading-2,
+.zhihu-heading-3 {
+  margin: 22px 0 12px;
+  color: #172033;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.zhihu-heading-1 {
+  padding-left: 12px;
+  border-left: 3px solid #1f6feb;
+  font-size: 18px;
+}
+
+.zhihu-heading-2,
+.zhihu-heading-3 {
+  font-size: 16px;
 }
 
 .zhihu-inline-figure {
@@ -1013,11 +1186,27 @@ function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
   margin: 10px 0 0;
 }
 
+.xhs-summary {
+  color: #4f6279;
+}
+
 .xhs-note-body ul {
   display: grid;
   gap: 8px;
   margin: 12px 0 0;
   padding-left: 18px;
+}
+
+.xhs-note-body li.xhs-section-heading {
+  margin-top: 4px;
+  color: #172033;
+  font-weight: 700;
+  list-style: none;
+}
+
+.xhs-note-body li.xhs-summary-item {
+  color: #4f6279;
+  list-style: none;
 }
 
 .xhs-tags {
