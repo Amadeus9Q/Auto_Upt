@@ -113,6 +113,8 @@ export interface AgentAdaptPreviewPayload extends ContentPayload {
   style_goal?: AgentStyleGoal;
   rewrite_strength?: AgentRewriteStrength;
   overwrite_existing_metadata?: boolean;
+  update_title?: boolean;
+  update_tags?: boolean;
   use_llm?: AgentLlmMode;
   persist_preview?: boolean;
 }

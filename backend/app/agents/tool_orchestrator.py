@@ -155,7 +155,13 @@ class ToolDrivenAgentOrchestrator:
         drafts = call_tool(
             "platform.render",
             "改写后的统一内容 IR 和目标平台列表。",
-            lambda: self._render_platform_drafts(adapted_content_ir, adapters, platform_copies, llm_platform_results),
+            lambda: self._render_platform_drafts(
+                adapted_content_ir,
+                adapters,
+                platform_copies,
+                llm_platform_results,
+                request,
+            ),
         )
         validation_report = call_tool(
             "platform.validate",
@@ -221,6 +227,10 @@ class ToolDrivenAgentOrchestrator:
         rule_metadata = self._rule_metadata(request, analysis)
 
         # 尝试 LLM 生成更精准的标题/关键词/摘要
+        existing_title = self._clean_title(request.title)
+        existing_tags = self._clean_tags(request.tags)
+        can_update_title = self._should_update_title(request) or not existing_title
+        can_update_tags = self._should_update_tags(request) or not existing_tags
         if request.use_llm != "disabled" and self.settings.openai_api_key:
             llm_payload = self._try_llm_json(
                 request,
@@ -231,9 +241,9 @@ class ToolDrivenAgentOrchestrator:
                 llm_title = self._clean_title(llm_payload.get("title"))
                 llm_tags = self._clean_tags(llm_payload.get("tags"))
                 llm_summary = self._clean_summary(llm_payload.get("summary"))
-                if llm_title:
+                if llm_title and can_update_title:
                     rule_metadata["title"] = llm_title
-                if llm_tags:
+                if llm_tags and can_update_tags:
                     rule_metadata["tags"] = llm_tags
                 if llm_summary:
                     rule_metadata["summary"] = llm_summary
@@ -258,11 +268,15 @@ class ToolDrivenAgentOrchestrator:
             llm_title = self._clean_title(llm_payload.get("title"))
             llm_summary = self._clean_summary(llm_payload.get("summary"))
             llm_tags = self._clean_tags(llm_payload.get("tags"))
-            if llm_title:
+            existing_title = self._clean_title(request.title)
+            existing_tags = self._clean_tags(request.tags)
+            can_update_title = self._should_update_title(request) or not existing_title
+            can_update_tags = self._should_update_tags(request) or not existing_tags
+            if llm_title and can_update_title:
                 metadata.title = llm_title
             if llm_summary:
                 metadata.summary = llm_summary
-            if llm_tags:
+            if llm_tags and can_update_tags:
                 metadata.tags = llm_tags
             if isinstance(llm_payload.get("body"), str):
                 rule_body = llm_payload["body"].strip() or rule_body
@@ -285,8 +299,19 @@ class ToolDrivenAgentOrchestrator:
         adapters: dict[str, Any],
         platform_copies: dict[str, Any],
         llm_platform_results: dict[str, dict[str, Any] | None] | None = None,
+        request: AgentAdaptPreviewRequest | None = None,
     ) -> dict[str, dict[str, Any]]:
         drafts: dict[str, dict[str, Any]] = {}
+        can_update_title = (
+            True
+            if request is None
+            else ToolDrivenAgentOrchestrator._should_update_title(request)
+        )
+        can_update_tags = (
+            True
+            if request is None
+            else ToolDrivenAgentOrchestrator._should_update_tags(request)
+        )
         for platform, adapter in adapters.items():
             copy = platform_copies.get(platform)
             platform_content_ir = dict(content_ir)
@@ -300,13 +325,19 @@ class ToolDrivenAgentOrchestrator:
                 platform_title = ToolDrivenAgentOrchestrator._clean_title(llm_result.get("title"))
                 platform_summary = ToolDrivenAgentOrchestrator._clean_summary(llm_result.get("summary"))
                 platform_tags = ToolDrivenAgentOrchestrator._clean_tags(llm_result.get("tags"))
-                if platform_title:
+                if platform_title and (
+                    can_update_title
+                    or not ToolDrivenAgentOrchestrator._clean_title(platform_content_ir.get("title"))
+                ):
                     platform_content_ir["title"] = platform_title
                 if platform_body:
                     platform_content_ir["body"] = platform_body
                 if platform_summary:
                     platform_content_ir["summary"] = platform_summary
-                if platform_tags:
+                if platform_tags and (
+                    can_update_tags
+                    or not ToolDrivenAgentOrchestrator._clean_tags(platform_content_ir.get("tags", []))
+                ):
                     platform_content_ir["tags"] = platform_tags
             elif copy is not None:
                 platform_body = ToolDrivenAgentOrchestrator._postprocess_rewritten_body(copy.plain_body)
@@ -315,14 +346,18 @@ class ToolDrivenAgentOrchestrator:
                     copy.subtitle or content_ir.get("summary", "")
                 )
                 platform_tags = ToolDrivenAgentOrchestrator._clean_tags(copy.tags or content_ir.get("tags", []))
-                platform_content_ir.update(
-                    {
-                        "title": platform_title,
-                        "body": platform_body,
-                        "summary": platform_summary,
-                        "tags": platform_tags,
-                    }
-                )
+                platform_content_ir["body"] = platform_body
+                platform_content_ir["summary"] = platform_summary
+                if platform_title and (
+                    can_update_title
+                    or not ToolDrivenAgentOrchestrator._clean_title(platform_content_ir.get("title"))
+                ):
+                    platform_content_ir["title"] = platform_title
+                if platform_tags and (
+                    can_update_tags
+                    or not ToolDrivenAgentOrchestrator._clean_tags(platform_content_ir.get("tags", []))
+                ):
+                    platform_content_ir["tags"] = platform_tags
             draft = adapter.render(platform_content_ir)
             # 无论是 LLM 还是规则生成的文案，都用最终结果覆盖 adapter 的输出
             draft["title"] = platform_content_ir["title"]
@@ -355,8 +390,8 @@ class ToolDrivenAgentOrchestrator:
     def _rule_metadata(self, request: AgentAdaptPreviewRequest, analysis) -> dict[str, Any]:
         existing_title = self._clean_title(request.title)
         existing_tags = self._clean_tags(request.tags)
-        should_keep_title = existing_title and not request.overwrite_existing_metadata
-        should_keep_tags = existing_tags and not request.overwrite_existing_metadata
+        should_keep_title = existing_title and not self._should_update_title(request)
+        should_keep_tags = existing_tags and not self._should_update_tags(request)
         title = existing_title if should_keep_title else self._build_title(analysis)
         tags = existing_tags if should_keep_tags else self._build_tags(analysis)
         return {
@@ -365,6 +400,14 @@ class ToolDrivenAgentOrchestrator:
             "summary": self._clean_summary(analysis.summary),
             "source": "rule",
         }
+
+    @staticmethod
+    def _should_update_title(request: AgentAdaptPreviewRequest) -> bool:
+        return request.update_title or request.overwrite_existing_metadata
+
+    @staticmethod
+    def _should_update_tags(request: AgentAdaptPreviewRequest) -> bool:
+        return request.update_tags or request.overwrite_existing_metadata
 
     @staticmethod
     def _build_title(analysis) -> str:
@@ -377,16 +420,16 @@ class ToolDrivenAgentOrchestrator:
         for candidate in candidates:
             value = ToolDrivenAgentOrchestrator._clean_title(candidate)
             if value and value.lower() != "untitled content":
-                return value[:36]
+                return value
         return "内容发布草稿"
 
     def _build_tags(self, analysis) -> list[str]:
         candidates: list[str] = []
         candidates.extend(analysis.tags or [])
-        candidates.extend(ch.title for ch in analysis.flat_chapters[:6])
+        candidates.extend(ch.title for ch in analysis.flat_chapters)
         candidates.extend(self._keyword_candidates(analysis.summary))
         candidates.extend(self._keyword_candidates(" ".join(ch.content[:80] for ch in analysis.flat_chapters[:4])))
-        return self._clean_tags(candidates)[:8] or ["内容运营", "创作发布"]
+        return self._clean_tags(candidates) or ["内容运营", "创作发布"]
 
     @staticmethod
     def _keyword_candidates(text: str) -> list[str]:
@@ -425,7 +468,7 @@ class ToolDrivenAgentOrchestrator:
             raw_items = [tags]
         for raw in raw_items:
             tag = ToolDrivenAgentOrchestrator._strip_label_prefix(str(raw)).strip().lstrip("#")
-            tag = re.sub(r"^[#＃]+", "", tag).strip()[:20]
+            tag = re.sub(r"^[#＃]+", "", tag).strip()
             key = tag.casefold()
             if tag and key not in seen and tag not in {"题目", "标题", "标签", "关键词", "内容", "正文"}:
                 cleaned.append(tag)
@@ -447,7 +490,9 @@ class ToolDrivenAgentOrchestrator:
                 points = "\n".join(f"- {p[:80]}" for p in paragraphs[:6])
             return f"{paragraphs[0] if paragraphs else body}\n\n内容要点\n{points}\n\n欢迎在评论区交流你的看法。"
         if style_goal == "social":
-            short_parts = "\n\n".join(f"✨ {p[:90]}{'...' if len(p) > 90 else ''}" for p in paragraphs[:6])
+            if not paragraphs:
+                return body
+            short_parts = "\n\n".join(f"✨ {p}" for p in paragraphs)
             return f"{short_parts}\n\n觉得有用欢迎收藏，也可以留言聊聊你的经验。"
         if style_goal == "knowledge":
             heading_blocks = ToolDrivenAgentOrchestrator._extract_heading_blocks(paragraphs)
@@ -543,7 +588,10 @@ class ToolDrivenAgentOrchestrator:
             "6. 不得重复任何段落、标题或结尾话术；不得连续出现相同小标题。\n"
             "7. 保留原文事实、专有名词、Markdown 标题层级、列表结构和素材占位符。\n"
             "8. 若原文已经较完整，只做润色、去重、结构整理，不要重新包裹一层模板。\n"
-            "9. summary 用一句话概括正文，不要复述标题字段。\n"            "10. 绝对不能偏离原文的主题和核心内容，不要添加原文没有的事实或观点。\n"            f"建议标题：{metadata.title}\n"
+            "9. summary 用一句话概括正文，不要复述标题字段。\n"
+            "10. 绝对不能偏离原文的主题和核心内容，不要添加原文没有的事实或观点。\n"
+            "11. 不得用 ... 或 … 表示硬截断，标题、关键词和正文必须保留完整可读内容。\n"
+            f"建议标题：{metadata.title}\n"
             f"建议关键词：{', '.join(metadata.tags)}"
         )
 
@@ -553,8 +601,8 @@ class ToolDrivenAgentOrchestrator:
             "你是一个专业的中文内容编辑。请根据用户内容，生成精准的标题、关键词和摘要。\n"
             "硬性要求：\n"
             "1. 只返回 JSON：{\"title\": string, \"summary\": string, \"tags\": string[]}，不要返回 Markdown 代码块。\n"
-            "2. title 必须是纯标题，不得包含\"题目：\"\"标题：\"等前缀。\n"
-            "3. tags 返回 3-8 个关键词，不得包含\"标签：\"\"关键词：\"等前缀。\n"
+            "2. title 必须是纯标题，不得包含\"题目：\"\"标题：\"等包装字段。\n"
+            "3. tags 返回 3-5 个关键词，不得包含\"标签：\"\"关键词：\"等包装字段。\n"
             "4. summary 用 1-2 句话概括正文核心观点。\n"
             "5. 保留原文的专有名词、技术术语，不要编造不存在的信息。\n"
             "6. 标题和摘要必须忠实于原文内容，不要偏离主题。\n"
@@ -597,12 +645,13 @@ class ToolDrivenAgentOrchestrator:
                 "- 用第一人称写作，拉近与读者的距离。\n"
                 "- 语言轻松自然，可以适当使用表情符号和网络用语。\n"
                 "- 突出内容的实用价值和亮点，让读者觉得「学到了」。\n"
+                "- 不要为了短标题或短笔记硬截断内容；不得用 ... 或 … 表示省略。\n"
                 "- 结尾可引导点赞、收藏、评论等互动。"
             ),
             "bilibili": (
                 "B站平台风格指导：\n"
                 "- 采用轻松活泼、年轻化的表达方式，有网感但不低俗。\n"
-                "- 适合视频简介或专栏文章，语言简洁有趣。\n"
+                "- 适合视频简介，语言简洁有趣。\n"
                 "- 可使用年轻人常用的表达方式，适当玩梗。\n"
                 "- 内容要点用分点列出，清晰易懂。\n"
                 "- 结尾可引导一键三连、弹幕互动等。"
