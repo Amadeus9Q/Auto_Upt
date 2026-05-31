@@ -218,13 +218,24 @@ export interface ImportedMediaPayload {
   description?: string | null;
 }
 
+export interface ImportChapterPayload {
+  level: number;
+  title: string;
+  content: string;
+  start_index: number;
+  word_count: number;
+  sub_chapters?: ImportChapterPayload[];
+}
+
 export interface ImportDocumentResponse {
   title: string;
+  subtitle?: string;
   body: string;
   tags: string[];
   content_type: ContentType;
   summary: string;
   media: ImportedMediaPayload[];
+  chapters?: ImportChapterPayload[];
   raw_text: string;
 }
 
