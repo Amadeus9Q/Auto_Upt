@@ -3,7 +3,7 @@ from typing import Any
 
 from backend.app.adapters.xiaohongshu.renderer import render_draft as render_xiaohongshu_draft
 from backend.app.agents.tool_orchestrator import ToolDrivenAgentOrchestrator
-from backend.app.schemas.agent import AgentAdaptPreviewRequest
+from backend.app.schemas.agent import AgentAdaptPreviewRequest, AgentGeneratedMetadata
 
 
 class FakeAdapter:
@@ -124,6 +124,60 @@ def test_agent_rule_social_rewrite_and_metadata_do_not_hard_truncate() -> None:
     assert "前九十个字符而丢失" in rewritten
     assert "..." not in rewritten
     assert "…" not in rewritten
+
+
+def test_agent_prompt_uses_default_platform_writing_style() -> None:
+    prompt = ToolDrivenAgentOrchestrator._platform_rewrite_prompt(
+        "xiaohongshu",
+        {"display_name": "小红书"},
+        {"title": "标题", "tags": ["AI"]},
+        _request(),
+    )
+
+    assert "小红书平台风格指导" in prompt
+    assert "采用谈心式、亲切真诚的表达方式" in prompt
+    assert "发布风格依据：使用上述对应平台默认风格" in prompt
+    assert "优先级高于平台默认文字风格" not in prompt
+
+
+def test_agent_prompt_prioritizes_selected_preset_writing_style() -> None:
+    request = _request(writing_style="concise")
+    platform_prompt = ToolDrivenAgentOrchestrator._platform_rewrite_prompt(
+        "wechat",
+        {"display_name": "公众号"},
+        {"title": "标题", "tags": ["AI"]},
+        request,
+    )
+    rewrite_prompt = ToolDrivenAgentOrchestrator._rewrite_prompt(
+        AgentGeneratedMetadata(title="标题", tags=["AI"], summary="摘要"),
+        request,
+    )
+
+    assert "微信公众号平台风格指导" in platform_prompt
+    assert "优先级高于平台默认文字风格" in platform_prompt
+    assert "短句优先" in platform_prompt
+    assert "短句优先" in rewrite_prompt
+
+
+def test_agent_prompt_uses_custom_writing_style_and_falls_back_when_empty() -> None:
+    custom_style = "像产品负责人写给真实用户的一封说明信，真诚、具体、有现场感"
+    custom_prompt = ToolDrivenAgentOrchestrator._platform_rewrite_prompt(
+        "zhihu",
+        {"display_name": "知乎"},
+        {"title": "标题", "tags": ["AI"]},
+        _request(writing_style="custom", custom_writing_style=custom_style),
+    )
+    fallback_prompt = ToolDrivenAgentOrchestrator._platform_rewrite_prompt(
+        "wechat",
+        {"display_name": "公众号"},
+        {"title": "标题", "tags": ["AI"]},
+        _request(writing_style="custom", custom_writing_style="   "),
+    )
+
+    assert custom_style in custom_prompt
+    assert "优先级高于平台默认文字风格" in custom_prompt
+    assert "微信公众号平台风格指导" in fallback_prompt
+    assert "优先级高于平台默认文字风格" not in fallback_prompt
 
 
 def test_xiaohongshu_renderer_preserves_all_paragraphs_and_tags() -> None:

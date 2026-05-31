@@ -98,7 +98,13 @@ def build_default_tool_registry() -> AgentToolRegistry:
         AgentTool(
             name="style.rewrite",
             description="按目标风格和改写强度生成建议正文。",
-            input_schema={"body": "str", "style_goal": "str", "rewrite_strength": "str"},
+            input_schema={
+                "body": "str",
+                "style_goal": "str",
+                "rewrite_strength": "str",
+                "writing_style": "str",
+                "custom_writing_style": "str | null",
+            },
             output_schema={"title": "str", "body": "str", "tags": "list[str]"},
             supports_llm=True,
         ),
