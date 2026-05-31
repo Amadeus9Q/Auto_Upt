@@ -150,8 +150,8 @@ const drafts = computed<PlatformDraft[]>(() => {
 });
 
 const taskSteps = computed<TaskStep[]>(() => {
-  const middleStep = task.value?.mode === "draft" ? "创建草稿" : task.value?.mode === "simulate" ? "模拟校验" : "平台处理";
-  const finalStep = task.value?.mode === "draft" ? "草稿已创建" : task.value?.mode === "simulate" ? "模拟完成" : "已发布";
+  const middleStep = task.value?.mode === "draft" ? "保存到平台草稿箱" : task.value?.mode === "simulate" ? "检查发布准备" : "提交到平台";
+  const finalStep = task.value?.mode === "draft" ? "已保存为草稿" : task.value?.mode === "simulate" ? "检查完成" : "已发布";
 
   if (!task.value && taskLoading.value) {
     return [
@@ -315,7 +315,7 @@ function scheduleDraftSync(platform: PlatformKey) {
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "同步草稿失败，请检查网络连接。";
+      const message = error instanceof Error ? error.message : "同步平台内容失败，请检查网络连接。";
       errorMessage.value = message;
       ElMessage.error(message);
     } finally {
@@ -474,10 +474,10 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
   if (!platforms.length) {
-    throw new Error("当前版本草稿及真实发布仅支持公众号与 B 站。");
+    throw new Error("当前版本只有公众号与 B 站支持保存草稿或真实发布。");
   }
   if (platforms.length !== payload.platforms.length) {
-    throw new Error("知乎和小红书当前版本不支持草稿及真实发布，请使用模拟发布。");
+    throw new Error("知乎和小红书当前只能查看模拟结果，暂不能直接发布。");
   }
 
   const accountIds = await resolveConnectedAccountIds(platforms);
@@ -574,7 +574,7 @@ async function refreshTaskStatus(taskId: string) {
 
 async function publishDraftFromTask(publicationId: string) {
   try {
-    await ElMessageBox.confirm("确认提交该草稿至平台发布？提交后将调用平台官方接口进行发布。", "确认发布草稿", {
+    await ElMessageBox.confirm("确认把这份内容提交到平台？提交后系统会开始执行发布流程。", "确认发布", {
       confirmButtonText: "确认",
       cancelButtonText: "取消",
       type: "warning"
@@ -587,7 +587,7 @@ async function publishDraftFromTask(publicationId: string) {
   try {
     await publishDraftPublication(publicationId);
     await loadPublishTasks(false);
-    ElMessage.success("草稿已提交至发布队列。");
+    ElMessage.success("内容已加入发布队列。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "提交发布请求失败。";
     errorMessage.value = message;
@@ -656,9 +656,9 @@ async function optimizeAllWithAgent() {
         }
       };
     }
-    ElMessage.success("四个平台 Agent 优化结果已生成。");
+    ElMessage.success("四个平台的智能优化结果已生成。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    const message = error instanceof Error ? error.message : "智能优化失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -696,7 +696,7 @@ async function optimizeWithAgent(platform: PlatformKey) {
     });
     const optimizedDraft = run.drafts[platform];
     if (!optimizedDraft) {
-      throw new Error(`${platformLabels[platform]}没有返回可用的优化草稿。`);
+      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
     }
     preview.value = {
       ...preview.value,
@@ -711,7 +711,7 @@ async function optimizeWithAgent(platform: PlatformKey) {
     };
     ElMessage.success(`${platformLabels[platform]}内容已优化。`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    const message = error instanceof Error ? error.message : "智能优化失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -739,8 +739,8 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
       await ElMessageBox.confirm(
         payload.mode === "publish"
           ? "确认后会调用真实平台接口提交发布。请确认账号、素材和平台规则已经检查无误。"
-          : "确认后会调用真实平台接口创建草稿。请确认账号和素材已经检查无误。",
-        "真实平台操作确认",
+          : "确认后会把内容保存到平台草稿箱。请确认账号和素材已经检查无误。",
+        "提交前确认",
         {
           confirmButtonText: "确认调用",
           cancelButtonText: "取消",
@@ -914,7 +914,7 @@ onMounted(() => {
                   <ArrowDown v-if="publishFormExpanded.includes('publish-params')" />
                   <ArrowRight v-else />
                 </el-icon>
-                <span>平台 API 参数</span>
+                <span>发布前设置</span>
               </span>
             </template>
             <PublishFormView
@@ -932,7 +932,7 @@ onMounted(() => {
         <div class="preview-dialog-footer">
           <div class="dialog-notice">
             <el-icon><WarningFilled /></el-icon>
-            <span>预览编号：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
+            <span>预览记录：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
           </div>
 
           <el-button
