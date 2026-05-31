@@ -18,9 +18,11 @@ import {
   type AssetPayload,
   type ContentPayload,
   type ContentBlockPayload,
+  type DraftPayload,
   type PlatformKey,
   type PreviewDraftUpdatePayload,
   type PreviewResponse,
+  type ValidationIssue,
   type PublishMode,
   type PublishTaskCreatePayload,
   type PublishTaskResponse
@@ -811,13 +813,45 @@ async function generatePreview() {
     return;
   }
 
-  // 调用后端生成预览，填充平台预览文本框
+  // 获取已有的平台草稿和校验报告
+  const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
+  const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
+
+  // 筛选需要生成新草稿的平台：已勾选 且 平台预览区无文本
+  const platformsNeedingDrafts = selectedPlatforms.value.filter(
+    p => !(previousDrafts[p]?.body?.trim())
+  );
+
+  // 如果所有已勾选平台都已有预览文本，无需调用后端
+  if (platformsNeedingDrafts.length === 0) {
+    if (preview.value) {
+      ElMessage.info("所有已勾选平台均已有预览内容，无需重新生成。");
+    }
+    return;
+  }
+
   previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
   try {
-    preview.value = await createPreview(buildContentPayload());
+    // 仅请求需要生成草稿的平台，避免覆盖已有内容
+    const payload = buildContentPayload();
+    payload.platforms = platformsNeedingDrafts;
+    const response = await createPreview(payload);
+
+    // 合并草稿：保留已有文本的平台草稿（含未勾选平台），叠加新生成的草稿
+    const mergedDrafts: Partial<Record<PlatformKey, DraftPayload>> = { ...previousDrafts, ...response.drafts };
+
+    // 合并校验报告：已有 + 新生成（新覆盖旧）
+    const mergedValidation: Partial<Record<PlatformKey, ValidationIssue[]>> = { ...previousValidation, ...response.validation_report };
+
+    preview.value = {
+      ...response,
+      drafts: mergedDrafts,
+      validation_report: mergedValidation,
+    };
+
     ElMessage.success("预览已生成。");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
