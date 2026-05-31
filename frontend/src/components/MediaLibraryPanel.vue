@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { UploadFile, UploadProps } from "element-plus";
-import { Back, Delete, FolderAdd, FolderOpened, Plus, UploadFilled } from "@element-plus/icons-vue";
+import { Back, Delete, EditPen, FolderAdd, FolderOpened, UploadFilled } from "@element-plus/icons-vue";
 
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
@@ -24,6 +24,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   insert: [asset: LocalAsset];
+  rename: [payload: { asset: LocalAsset; oldName: string; newName: string }];
 }>();
 
 const assets = defineModel<EditorAssets>("assets", { required: true });
@@ -38,6 +39,9 @@ const mediaTabs: Array<{ key: MediaTab; label: string; accept: string; addText: 
 const activeTab = ref<MediaTab>("images");
 const activeFolderId = ref<string | null>(null);
 const dragState = ref<DragState | null>(null);
+const folderDragTargetId = ref<string | null>(null);
+const renamingAssetId = ref<string | null>(null);
+const renameValue = ref("");
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 const activeFolderName = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value)?.name ?? "全部素材");
@@ -129,17 +133,42 @@ function createFolder(parentId = activeFolderId.value) {
 }
 
 function removeFolder(folder: MediaFolder) {
-  const childIds = collectFolderIds(folder.id);
-  const confirmed = window.confirm(`删除「${folder.name}」文件夹？其中的素材会移回上一级。`);
-  if (!confirmed) return;
-  folders.value = folders.value.filter((item) => !childIds.includes(item.id));
+  const childFolderIds = collectFolderIds(folder.id);
+  // Count assets that will be deleted
+  let assetDeleteCount = 0;
   for (const tab of ["images", "videos", "audios"] as MediaTab[]) {
     for (const asset of assets.value[tab]) {
-      if (asset.folderId && childIds.includes(asset.folderId)) {
-        asset.folderId = folder.parentId ?? undefined;
+      if (asset.folderId && childFolderIds.includes(asset.folderId)) {
+        assetDeleteCount += 1;
       }
     }
   }
+
+  const childFolderCount = childFolderIds.length - 1; // excluding self
+  const detailParts = [`将永久删除文件夹「${folder.name}」`];
+  if (childFolderCount > 0) detailParts.push(`${childFolderCount} 个子文件夹`);
+  if (assetDeleteCount > 0) detailParts.push(`${assetDeleteCount} 个素材`);
+  detailParts.push("此操作不可撤销。");
+  const confirmed = window.confirm(detailParts.join("、") + "\n\n确定继续？");
+  if (!confirmed) return;
+
+  // Delete all child folders
+  folders.value = folders.value.filter((item) => !childFolderIds.includes(item.id));
+
+  // Delete all assets in deleted folders
+  for (const tab of ["images", "videos", "audios"] as MediaTab[]) {
+    assets.value[tab] = assets.value[tab].filter((asset) => {
+      if (asset.folderId && childFolderIds.includes(asset.folderId)) {
+        // Also clear coverImageId if the deleted asset was cover
+        if (tab === "images" && asset.id === assets.value.coverImageId) {
+          assets.value.coverImageId = null;
+        }
+        return false;
+      }
+      return true;
+    });
+  }
+
   activeFolderId.value = folder.parentId;
 }
 
@@ -149,10 +178,6 @@ function collectFolderIds(folderId: string): string[] {
     result.push(...collectFolderIds(child.id));
   }
   return result;
-}
-
-function moveAssetToCurrentFolder(asset: LocalAsset) {
-  asset.folderId = activeFolderId.value ?? undefined;
 }
 
 function onDragStart(tab: MediaTab, asset: LocalAsset, event: DragEvent) {
@@ -202,12 +227,134 @@ function onDrop(tab: MediaTab) {
   dragState.value = null;
 }
 
+// --- Folder drag-and-drop reorganization ---
+
+function onFolderDragStart(folder: MediaFolder, event: DragEvent) {
+  event.dataTransfer?.setData("text/plain", folder.name);
+  event.dataTransfer?.setData("application/x-auto-upt-folder", JSON.stringify({ id: folder.id, name: folder.name }));
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function onFolderDragOver(folder: MediaFolder, event: DragEvent) {
+  // Accept assets and other folders
+  const hasAsset = event.dataTransfer?.types.includes("application/x-auto-upt-asset");
+  const hasFolder = event.dataTransfer?.types.includes("application/x-auto-upt-folder");
+  if (!hasAsset && !hasFolder) return;
+  // Prevent dropping a folder onto itself or its descendants
+  if (hasFolder) {
+    try {
+      const data = JSON.parse(event.dataTransfer!.getData("application/x-auto-upt-folder"));
+      if (data.id === folder.id) return;
+      if (collectFolderIds(data.id).includes(folder.id)) return;
+    } catch { return; }
+  }
+  event.preventDefault();
+  folderDragTargetId.value = folder.id;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+}
+
+function onFolderDrop(folder: MediaFolder, event: DragEvent) {
+  event.preventDefault();
+  folderDragTargetId.value = null;
+
+  // Handle folder drop (reparent)
+  const folderPayload = event.dataTransfer?.getData("application/x-auto-upt-folder");
+  if (folderPayload) {
+    try {
+      const data = JSON.parse(folderPayload) as { id: string };
+      const target = folders.value.find((f) => f.id === data.id);
+      if (target && target.id !== folder.id && !collectFolderIds(target.id).includes(folder.id)) {
+        target.parentId = folder.id;
+      }
+    } catch { /* ignore */ }
+    dragState.value = null;
+    return;
+  }
+
+  // Handle asset drop (move to folder)
+  const assetPayload = event.dataTransfer?.getData("application/x-auto-upt-asset");
+  if (assetPayload) {
+    try {
+      const data = JSON.parse(assetPayload) as { tab?: MediaTab; index?: number; id?: string };
+      if (data.id) {
+        for (const t of ["images", "videos", "audios"] as MediaTab[]) {
+          const found = assets.value[t].find((a) => a.id === data.id);
+          if (found) {
+            found.folderId = folder.id;
+            break;
+          }
+        }
+      } else if (data.tab && typeof data.index === "number") {
+        const found = assets.value[data.tab]?.[data.index];
+        if (found) found.folderId = folder.id;
+      }
+    } catch { /* ignore */ }
+    dragState.value = null;
+    return;
+  }
+
+  dragState.value = null;
+}
+
+function onFolderDragLeave(folder: MediaFolder, event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) {
+    folderDragTargetId.value = null;
+  }
+}
+
+function enableDragHandle(event: MouseEvent) {
+  const handle = event.currentTarget as HTMLElement;
+  const article = handle.closest("article") as HTMLElement | null;
+  if (article) article.draggable = true;
+}
+
+function disableDragHandle(event: DragEvent) {
+  const article = event.currentTarget as HTMLElement;
+  article.draggable = false;
+}
+
 function dropClass(tab: MediaTab, asset: LocalAsset) {
   const index = assets.value[tab].findIndex((item) => item.id === asset.id);
   if (!dragState.value || dragState.value.tab !== tab || dragState.value.overIndex !== index || dragState.value.fromIndex === index) {
     return "";
   }
   return dragState.value.position === "before" ? "is-drop-before" : "is-drop-after";
+}
+
+// --- Rename ---
+function findAssetById(id: string): LocalAsset | undefined {
+  for (const tab of ["images", "videos", "audios"] as MediaTab[]) {
+    const found = assets.value[tab].find((a) => a.id === id);
+    if (found) return found;
+  }
+}
+
+function startRename(asset: LocalAsset) {
+  renamingAssetId.value = asset.id;
+  renameValue.value = asset.name;
+}
+
+function finishRename(asset: LocalAsset) {
+  const newName = renameValue.value.trim();
+  if (!newName || newName === asset.name) {
+    renamingAssetId.value = null;
+    return;
+  }
+  const oldName = asset.name;
+  asset.name = newName;
+  renamingAssetId.value = null;
+  emit("rename", { asset, oldName, newName });
+}
+
+function cancelRename() {
+  renamingAssetId.value = null;
+  renameValue.value = "";
 }
 </script>
 
@@ -259,7 +406,19 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
             <small>回到上层文件夹</small>
           </button>
 
-          <article v-for="folder in childFolders" :key="`${tab.key}-${folder.id}`" class="media-unit folder-unit">
+          <article
+            v-for="folder in childFolders"
+            :key="`${tab.key}-${folder.id}`"
+            class="media-unit folder-unit"
+            :class="{ 'is-folder-drag-target': folderDragTargetId === folder.id }"
+            draggable="false"
+            @dragstart="onFolderDragStart(folder, $event)"
+            @dragover.prevent="onFolderDragOver(folder, $event)"
+            @dragleave="onFolderDragLeave(folder, $event)"
+            @drop.prevent="onFolderDrop(folder, $event)"
+            @dragend="disableDragHandle($event); folderDragTargetId = null"
+          >
+            <span class="drag-handle" @mousedown="enableDragHandle" />
             <button type="button" class="folder-open-button" @click="activeFolderId = folder.id">
               <el-icon><FolderOpened /></el-icon>
               <strong>{{ folder.name }}</strong>
@@ -273,12 +432,13 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
             :key="asset.id"
             class="media-card"
             :class="[`media-card-${asset.kind}`, dropClass(tab.key, asset)]"
-            draggable="true"
+            draggable="false"
             @dragstart="onDragStart(tab.key, asset, $event)"
             @dragover.prevent="onDragOver(tab.key, asset, $event)"
             @drop.prevent="onDrop(tab.key)"
-            @dragend="dragState = null"
+            @dragend="disableDragHandle($event); dragState = null"
           >
+            <span class="drag-handle" :class="`drag-handle-${asset.kind}`" @mousedown="enableDragHandle" />
             <div class="media-preview">
               <img v-if="asset.kind === 'image'" :src="asset.previewUrl" :alt="asset.name" />
               <video v-else-if="asset.kind === 'video'" :src="asset.previewUrl" controls />
@@ -286,14 +446,23 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
             </div>
 
             <div class="media-info">
-              <strong>{{ asset.name }}</strong>
+              <template v-if="renamingAssetId === asset.id">
+                <el-input
+                  v-model="renameValue"
+                  size="small"
+                  class="rename-input"
+                  @keyup.enter="finishRename(asset)"
+                  @keyup.esc="cancelRename()"
+                  @blur="finishRename(asset)"
+                />
+              </template>
+              <strong v-else>{{ asset.name }}</strong>
               <small>{{ (asset.size / 1024 / 1024).toFixed(2) }} MB</small>
             </div>
 
             <div class="media-actions">
-              <el-button v-if="insertEnabled" text type="primary" :icon="Plus" @click="emit('insert', asset)">插入正文</el-button>
-              <el-button v-if="(asset.folderId ?? null) !== activeFolderId" text @click="moveAssetToCurrentFolder(asset)">移入此处</el-button>
-              <el-button text type="danger" :icon="Delete" @click="removeAsset(asset)" />
+              <el-button class="media-rename-btn" text :icon="EditPen" @click.stop="startRename(asset)" title="重命名" />
+              <el-button class="media-delete-btn" text type="danger" :icon="Delete" @click="removeAsset(asset)" />
             </div>
           </article>
 
@@ -404,8 +573,7 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
 .media-add,
 .media-unit,
 .media-card-image,
-.media-card-video,
-.media-card-audio {
+.media-card-video {
   width: 144px;
   min-height: 170px;
 }
@@ -438,53 +606,57 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
 
 .media-unit {
   position: relative;
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px;
   color: #253247;
   text-align: center;
   background: #f8fafc;
   border: 1px solid #e2eaf3;
   border-radius: 8px;
+  box-shadow: 0 1px 0 rgba(23, 32, 51, 0.03);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .folder-unit {
+  min-width: 0;
   cursor: pointer;
+}
+
+.folder-unit.is-folder-drag-target {
+  outline: 2px dashed #1f6feb;
+  outline-offset: 4px;
+  background: rgba(31, 111, 235, 0.06);
+  transform: scale(1.02);
+  transition: outline 0.15s, background 0.15s, transform 0.15s;
 }
 
 .folder-unit > .el-icon,
 .folder-open-button .el-icon {
   color: #1f6feb;
-  font-size: 30px;
+  font-size: 22px;
 }
 
-.folder-unit strong,
-.folder-unit small {
-  display: block;
-  max-width: 100%;
+.folder-unit strong {
   overflow: hidden;
+  max-width: 100%;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.3;
 }
 
 .folder-unit small {
   color: #607086;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .folder-open-button {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-  color: inherit;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-  font: inherit;
+  display: contents;
 }
 
 .folder-delete-button {
@@ -493,13 +665,61 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
   right: 6px;
 }
 
+/* ---- Drag handle (grip) ---- */
+
+.drag-handle {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 16px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.15s;
+  /* 6-dot grip via repeating gradients */
+  background:
+    radial-gradient(circle at 4px 4px, #8799b0 1.5px, transparent 1.5px),
+    radial-gradient(circle at 12px 4px, #8799b0 1.5px, transparent 1.5px),
+    radial-gradient(circle at 4px 11px, #8799b0 1.5px, transparent 1.5px),
+    radial-gradient(circle at 12px 11px, #8799b0 1.5px, transparent 1.5px),
+    radial-gradient(circle at 4px 18px, #8799b0 1.5px, transparent 1.5px),
+    radial-gradient(circle at 12px 18px, #8799b0 1.5px, transparent 1.5px);
+  background-repeat: no-repeat;
+}
+
+.media-card:hover .drag-handle,
+.media-unit:hover .drag-handle {
+  opacity: 0.7;
+}
+
+.drag-handle:hover {
+  opacity: 1 !important;
+  background-color: rgba(31, 111, 235, 0.08);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Audio tab: handle adapts to flat row layout */
+.media-list-audios .drag-handle {
+  position: relative;
+  top: auto;
+  left: auto;
+  bottom: auto;
+  flex-shrink: 0;
+  margin-right: 2px;
+  opacity: 0.6;
+}
+
 .media-card {
   position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
   padding: 10px;
-  cursor: grab;
   background: #f8fafc;
   border: 1px solid #e2eaf3;
   border-radius: 8px;
@@ -508,10 +728,6 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
     border-color 0.15s ease,
     box-shadow 0.15s ease,
     transform 0.15s ease;
-}
-
-.media-card:active {
-  cursor: grabbing;
 }
 
 .media-card.is-drop-before,
@@ -532,32 +748,140 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
 
 .media-card-image.is-drop-before::before,
 .media-card-video.is-drop-before::before,
-.media-card-audio.is-drop-before::before,
 .media-card-image.is-drop-after::after,
-.media-card-video.is-drop-after::after,
-.media-card-audio.is-drop-after::after {
+.media-card-video.is-drop-after::after {
   top: 10px;
   bottom: 10px;
   width: 3px;
 }
 
 .media-card-image.is-drop-before::before,
-.media-card-video.is-drop-before::before,
-.media-card-audio.is-drop-before::before {
+.media-card-video.is-drop-before::before {
   left: -8px;
 }
 
 .media-card-image.is-drop-after::after,
-.media-card-video.is-drop-after::after,
-.media-card-audio.is-drop-after::after {
+.media-card-video.is-drop-after::after {
   right: -8px;
+}
+
+/* Audio drop indicators: horizontal bars (column layout) */
+.media-card-audio.is-drop-before::before,
+.media-card-audio.is-drop-after::after {
+  left: 10px;
+  right: 10px;
+  height: 3px;
+  width: auto;
+  top: auto;
+  bottom: auto;
+}
+
+.media-card-audio.is-drop-before::before {
+  top: -8px;
+}
+
+.media-card-audio.is-drop-after::after {
+  bottom: -8px;
+}
+
+/* ---- Audio tab: all units full-width, flat, audio player at 70% ---- */
+
+.media-list-audios {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.media-list-audios .media-add {
+  width: 100%;
+  min-height: 58px;
+}
+
+.media-list-audios .media-add :deep(.el-upload-dragger) {
+  min-height: 58px;
+}
+
+.media-list-audios .media-add .add-tile {
+  flex-direction: row;
+  gap: 10px;
+}
+
+.media-list-audios .media-unit {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.media-list-audios .media-unit.folder-unit {
+  justify-content: flex-start;
+}
+
+.media-list-audios .folder-unit > .el-icon,
+.media-list-audios .folder-open-button .el-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.media-list-audios .folder-unit strong {
+  flex-shrink: 0;
+}
+
+.media-list-audios .folder-unit small {
+  flex-shrink: 0;
+}
+
+.media-list-audios .folder-delete-button {
+  margin-left: auto;
+  position: static;
 }
 
 .media-card-audio {
   display: flex;
-  align-items: stretch;
-  gap: 0;
-  padding: 10px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 12px;
+}
+
+.media-card-audio .media-preview {
+  flex: 0 0 70%;
+  height: 54px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  display: flex;
+  align-items: center;
+}
+
+.media-card-audio .media-preview audio {
+  width: 100%;
+  height: 48px;
+}
+
+.media-card-audio .media-info {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.media-card-audio .media-info strong,
+.media-card-audio .media-info small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-card-audio .media-actions {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
 }
 
 .media-preview {
@@ -580,14 +904,6 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
 
 .media-preview audio {
   width: 100%;
-}
-
-.media-card-audio .media-preview {
-  height: 92px;
-  padding: 8px;
-  background: #eef3f8;
-  border: 1px solid #e6edf5;
-  border-radius: 8px;
 }
 
 .media-info {
@@ -619,6 +935,26 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
   gap: 4px;
   margin-top: auto;
   flex-wrap: wrap;
+}
+
+/* Delete & rename buttons at bottom for image/video cards */
+.media-card-image .media-delete-btn,
+.media-card-video .media-delete-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+}
+
+.media-card-image .media-rename-btn,
+.media-card-video .media-rename-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 40px;
+}
+
+/* Inline rename input */
+.rename-input {
+  width: 100%;
 }
 
 .media-empty {

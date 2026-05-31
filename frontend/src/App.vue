@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ArrowDown, ArrowRight, Check, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
+import { Check, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -29,7 +29,7 @@ import EditorView from "@/views/EditorView.vue";
 import MediaLibraryView from "@/views/MediaLibraryView.vue";
 import PreviewView, { type PlatformDraft } from "@/views/PreviewView.vue";
 import PublishConfirmView from "@/views/PublishConfirmView.vue";
-import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
+import { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView from "@/views/TaskView.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaTab } from "@/types/media";
 
@@ -70,6 +70,7 @@ const editorAssets = ref<EditorAssets>({
   coverImageId: null
 });
 const mediaFolders = ref<MediaFolder[]>([]);
+const allAssets = computed(() => [...editorAssets.value.images, ...editorAssets.value.videos, ...editorAssets.value.audios]);
 const publishForms = ref<PublishForms>({
   bilibili: {
     title: "",
@@ -98,7 +99,6 @@ const taskActionLoading = ref<string | null>(null);
 const errorMessage = ref("");
 const previewDialogVisible = ref(false);
 const previewDialogPlatform = ref<PlatformKey>("wechat");
-const publishFormExpanded = ref<string[]>([]);
 const draftSyncTimers = new Map<PlatformKey, number>();
 
 const wordCount = computed(() => content.value.replace(/\s/g, "").length);
@@ -340,13 +340,34 @@ function assetToPayload(asset: LocalAsset, type: AssetPayload["type"], usage: st
 }
 
 function collectAssetPayloads(): AssetPayload[] {
+  // Collect asset IDs referenced in the body via markers like 【图片：name】 or {{asset:image:id}}
+  const referencedIds = new Set<string>();
+  const markerPattern = /\{\{asset:(?:image|video|audio):([^}]+)\}\}|【(?:图片|视频|音频)：([^】]+)】/g;
+  let match: RegExpExecArray | null;
+  while ((match = markerPattern.exec(content.value)) !== null) {
+    const idOrName = match[1] || match[2];
+    // Try to match by ID first, then by name
+    const byId = allAssets.value.find((a) => a.id === idOrName);
+    if (byId) { referencedIds.add(byId.id); continue; }
+    const byName = allAssets.value.find((a) => a.name === idOrName);
+    if (byName) referencedIds.add(byName.id);
+  }
+
   const coverImageId = editorAssets.value.coverImageId ?? editorAssets.value.images[0]?.id;
+  // Always include cover image
+  if (editorAssets.value.coverImage) referencedIds.add(editorAssets.value.coverImage.id);
 
   return [
     ...(editorAssets.value.coverImage ? [assetToPayload(editorAssets.value.coverImage, "cover", "default_cover")] : []),
-    ...editorAssets.value.images.map((asset) => assetToPayload(asset, "image", asset.id === coverImageId ? "default_cover" : "body_image")),
-    ...editorAssets.value.videos.map((asset, index) => assetToPayload(asset, "video", index === 0 ? "bilibili_video" : "reference_video")),
-    ...editorAssets.value.audios.map((asset) => assetToPayload(asset, "audio", "reference_audio"))
+    ...editorAssets.value.images
+      .filter((asset) => referencedIds.has(asset.id))
+      .map((asset) => assetToPayload(asset, "image", asset.id === coverImageId ? "default_cover" : "body_image")),
+    ...editorAssets.value.videos
+      .filter((asset) => referencedIds.has(asset.id))
+      .map((asset, index) => assetToPayload(asset, "video", index === 0 ? "bilibili_video" : "reference_video")),
+    ...editorAssets.value.audios
+      .filter((asset) => referencedIds.has(asset.id))
+      .map((asset) => assetToPayload(asset, "audio", "reference_audio"))
   ];
 }
 
@@ -1047,9 +1068,11 @@ onMounted(async () => {
 
       <el-main v-else-if="activeTab === 'confirm'" class="confirm-workspace">
         <PublishConfirmView
+          v-model:publish-forms="publishForms"
           :selected-platforms="selectedPlatforms"
           :loading="taskLoading"
           :validation-report="validationReport"
+          :assets="editorAssets"
           @back="activeTab = 'preview'"
           @submit="submitPublish"
         />
@@ -1078,8 +1101,10 @@ onMounted(async () => {
           :word-count="wordCount"
           :preview-loading="previewLoading"
           :agent-loading="agentLoading"
+          :publish-loading="taskLoading"
           :has-preview="Boolean(preview)"
           :platform-drafts="preview?.drafts ?? {}"
+          :validation-report="validationReport"
           @generate-preview="generatePreview"
           @optimize-all-with-agent="optimizeAllWithAgent"
           @optimize-with-agent="optimizeWithAgent"
@@ -1115,26 +1140,6 @@ onMounted(async () => {
           :created-at="preview?.created_at ?? ''"
           @confirm-publish="enterPublishConfirm"
         />
-
-        <el-collapse v-model="publishFormExpanded" class="publish-form-collapse">
-          <el-collapse-item name="publish-params">
-            <template #title>
-              <span class="collapse-title-row">
-                <el-icon class="collapse-arrow">
-                  <ArrowDown v-if="publishFormExpanded.includes('publish-params')" />
-                  <ArrowRight v-else />
-                </el-icon>
-                <span>发布前设置</span>
-              </span>
-            </template>
-            <PublishFormView
-              v-model:forms="publishForms"
-              :selected-platforms="selectedPlatforms"
-              :validation-report="validationReport"
-              :assets="editorAssets"
-            />
-          </el-collapse-item>
-        </el-collapse>
 
       </div>
 
