@@ -132,14 +132,14 @@ function stepIcon(step: TaskStep) {
   <section class="task-view" v-loading="loading">
     <div class="section-title">
       <div>
-        <p>任务看板</p>
-        <h2>从数据库恢复草稿与发布任务</h2>
+        <p>任务状态</p>
+        <h2>草稿与发布任务管理</h2>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="emit('refreshTasks')">刷新列表</el-button>
     </div>
 
     <el-alert v-if="errorMessage" class="task-alert" :title="errorMessage" type="error" show-icon :closable="false" />
-    <el-empty v-if="!tasks.length && !loading && !errorMessage" description="还没有发布任务" />
+    <el-empty v-if="!tasks.length && !loading && !errorMessage" description="暂无发布任务" />
 
     <div v-if="taskItems.length" class="task-list">
       <article v-for="taskItem in taskItems" :key="taskItem.task.task_id" class="task-card">
@@ -187,7 +187,7 @@ function stepIcon(step: TaskStep) {
             <div class="platform-result">
               <el-icon><DocumentChecked /></el-icon>
               <div>
-                <span>{{ item.result?.message || "任务已提交，等待平台返回状态。" }}</span>
+                <span>{{ item.result?.message || "任务已提交，等待平台处理结果。" }}</span>
                 <small v-if="item.result?.external_status">平台状态：{{ item.result.external_status }}</small>
                 <small v-if="item.result?.external_url">{{ item.result.external_url }}</small>
                 <small v-if="item.result?.preview_url">{{ item.result.preview_url }}</small>

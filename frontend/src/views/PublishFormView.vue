@@ -46,8 +46,7 @@ const wechatMissing = computed(() => [
   ...(!forms.value.wechat.title.trim() ? ["标题"] : []),
   ...(!forms.value.wechat.summary.trim() ? ["摘要"] : []),
   ...(!forms.value.wechat.author.trim() ? ["作者"] : []),
-  ...(!coverImage.value ? ["封面图片"] : []),
-  ...(props.assets.images.length === 0 ? ["正文图片"] : [])
+  ...(!coverImage.value ? ["封面图片"] : [])
 ]);
 
 function issueType(issue: ValidationIssue) {
@@ -65,10 +64,7 @@ function issueType(issue: ValidationIssue) {
       <el-icon :size="24"><DocumentChecked /></el-icon>
     </div>
 
-    <el-empty
-      v-if="!selectedPlatforms.length"
-      description="选择平台后查看发布参数"
-    />
+    <el-empty v-if="!selectedPlatforms.length" description="选择平台后查看发布参数" />
 
     <el-tabs v-else :model-value="defaultTab" class="publish-tabs">
       <el-tab-pane v-if="selectedPlatforms.includes('wechat')" label="公众号" name="wechat">
@@ -104,7 +100,7 @@ function issueType(issue: ValidationIssue) {
               resize="none"
               maxlength="120"
               show-word-limit
-              placeholder="对应公众号草稿 digest 字段，可作为图文摘要"
+              placeholder="对应公众号草稿 digest 字段"
             />
           </el-form-item>
           <el-form-item label="作者">
@@ -153,21 +149,11 @@ function issueType(issue: ValidationIssue) {
       </el-tab-pane>
 
       <el-tab-pane v-if="selectedPlatforms.includes('zhihu')" label="知乎" name="zhihu">
-        <el-alert
-          title="未找到稳定公开的发布 API 文档，发布参数暂缺省。"
-          type="info"
-          show-icon
-          :closable="false"
-        />
+        <el-alert title="未找到稳定公开的发布 API 文档，发布参数暂缺省。" type="info" show-icon :closable="false" />
       </el-tab-pane>
 
       <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">
-        <el-alert
-          title="未找到稳定公开的发布 API 文档，发布参数暂缺省。"
-          type="info"
-          show-icon
-          :closable="false"
-        />
+        <el-alert title="未找到稳定公开的发布 API 文档，发布参数暂缺省。" type="info" show-icon :closable="false" />
       </el-tab-pane>
     </el-tabs>
 
@@ -213,7 +199,8 @@ function issueType(issue: ValidationIssue) {
 .platform-heading,
 .asset-status,
 .risk-note,
-.issue-list {
+.issue-list,
+.switch-row {
   display: flex;
   align-items: center;
 }
@@ -228,10 +215,15 @@ function issueType(issue: ValidationIssue) {
   margin-bottom: 14px;
 }
 
-.issue-list {
+.issue-list,
+.switch-row {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
+}
+
+.switch-row {
+  gap: 16px;
 }
 
 .asset-status {
@@ -246,12 +238,6 @@ function issueType(issue: ValidationIssue) {
   background: #f7f9fc;
   border: 1px solid #e6edf5;
   border-radius: 8px;
-}
-
-.switch-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
 }
 
 .risk-note {

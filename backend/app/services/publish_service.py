@@ -31,23 +31,34 @@ class PublishService:
         self.session = session
 
     async def create_task(self, request: PublishTaskCreateRequest) -> PublishTaskRecord | None:
-        preview = await self.session.get(PreviewRecord, request.preview_id)
-        if preview is None:
-            return None
+        # 优先使用内联预览数据，其次查数据库
+        if request.inline_drafts is not None:
+            drafts = request.inline_drafts or {}
+            content_ir = request.inline_content_ir or {}
+            preview_id = request.preview_id
+        else:
+            preview = await self.session.get(PreviewRecord, request.preview_id)
+            if preview is None:
+                return None
+            drafts = preview.drafts or {}
+            content_ir = preview.content_ir or {}
+            preview_id = preview.id
 
-        platforms = request.platforms or list(preview.drafts.keys())
+        platforms = request.platforms or list(drafts.keys())
         if request.mode == PublishMode.SIMULATE:
-            return await self._create_simulation_task(preview, request, platforms)
+            return await self._create_simulation_task(drafts, content_ir, request, platforms)
 
         self._validate_real_publish_request(request, platforms)
         task = PublishTaskRecord(
-            preview_id=preview.id,
+            preview_id=preview_id,
             mode=request.mode,
             status=PublishTaskStatus.PENDING,
             platforms=platforms,
             account_ids=dict(request.account_ids),
             asset_ids={platform: ids for platform, ids in request.asset_ids.items()},
             platform_options={platform: options for platform, options in request.platform_options.items()},
+            drafts=drafts,
+            content_ir=content_ir,
             results={
                 platform: {
                     "platform": platform,
@@ -84,12 +95,17 @@ class PublishService:
         if task is None:
             return None
 
-        preview = await self.session.get(PreviewRecord, task.preview_id)
-        if preview is None:
-            task.status = PublishTaskStatus.FAILED
-            task.error_message = "Preview not found."
-            await self.session.commit()
-            return task
+        # 优先使用任务中保存的内联草稿
+        drafts = task.drafts or {}
+        if not drafts:
+            # 回退：尝试从数据库预览记录读取
+            preview = await self.session.get(PreviewRecord, task.preview_id)
+            if preview is None:
+                task.status = PublishTaskStatus.FAILED
+                task.error_message = "Preview data not found."
+                await self.session.commit()
+                return task
+            drafts = preview.drafts or {}
 
         task.status = PublishTaskStatus.RUNNING
         await self.session.commit()
@@ -97,7 +113,7 @@ class PublishService:
         failed = False
 
         for platform in task.platforms:
-            draft = preview.drafts.get(platform)
+            draft = drafts.get(platform)
             if draft is None:
                 failed = True
                 results[platform] = {
@@ -111,7 +127,7 @@ class PublishService:
 
             publication = PublicationRecord(
                 task_id=task.id,
-                preview_id=preview.id,
+                preview_id=task.preview_id,
                 account_id=task.account_ids.get(platform),
                 platform=platform,
                 mode=task.mode,
@@ -168,6 +184,33 @@ class PublishService:
         task.status = PublishTaskStatus.FAILED if failed else PublishTaskStatus.SUCCEEDED
         task.results = results
         task.error_message = "One or more platforms failed." if failed else None
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
+    async def mark_task_failed(self, task_id: str, message: str) -> PublishTaskRecord | None:
+        task = await self.get_task(task_id)
+        if task is None:
+            return None
+
+        results = dict(task.results or {})
+        for platform in task.platforms or []:
+            previous = dict(results.get(platform, {}))
+            if previous.get("status") == "succeeded":
+                results[platform] = previous
+                continue
+            results[platform] = {
+                **previous,
+                "platform": platform,
+                "status": "failed",
+                "message": message,
+                "retryable": True,
+                "next_action": "请查看 Celery worker 日志，修复后重新创建任务。",
+            }
+
+        task.status = PublishTaskStatus.FAILED
+        task.results = results
+        task.error_message = message
         await self.session.commit()
         await self.session.refresh(task)
         return task
@@ -373,7 +416,8 @@ class PublishService:
 
     async def _create_simulation_task(
         self,
-        preview: PreviewRecord,
+        drafts: dict[str, dict[str, Any]],
+        content_ir: dict[str, Any],
         request: PublishTaskCreateRequest,
         platforms: list[str],
     ) -> PublishTaskRecord:
@@ -382,7 +426,7 @@ class PublishService:
         error_message: str | None = None
 
         for platform in platforms:
-            draft = preview.drafts.get(platform)
+            draft = drafts.get(platform)
             if draft is None:
                 status = PublishTaskStatus.FAILED
                 results[platform] = {
@@ -411,13 +455,15 @@ class PublishService:
                 error_message = str(exc)
 
         task = PublishTaskRecord(
-            preview_id=preview.id,
+            preview_id=request.preview_id,
             mode=request.mode,
             status=status,
             platforms=platforms,
             account_ids=dict(request.account_ids),
             asset_ids={platform: ids for platform, ids in request.asset_ids.items()},
             platform_options={platform: options for platform, options in request.platform_options.items()},
+            drafts=drafts,
+            content_ir=content_ir,
             results=results,
             error_message=error_message,
         )

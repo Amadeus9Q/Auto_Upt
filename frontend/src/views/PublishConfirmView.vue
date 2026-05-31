@@ -93,7 +93,7 @@ function submit() {
     <el-alert
       v-if="hasRealPublish"
       class="confirm-alert"
-      title="真实发布或创建草稿会调用真实平台接口。提交前请确认账号、素材、标题、封面和平台规则均已检查。"
+      title="真实发布或创建草稿将调用平台官方接口，请在提交前仔细确认账号、素材、标题、封面及平台合规性。"
       type="warning"
       show-icon
       :closable="false"
@@ -102,7 +102,7 @@ function submit() {
     <el-alert
       v-if="hasRealPublish && selectedPlatforms.some((platform) => !publishablePlatforms.includes(platform))"
       class="confirm-alert"
-      title="知乎和小红书本阶段不支持真实发布，已从草稿/真实发布平台选择中排除。"
+      title="知乎和小红书当前阶段暂不支持真实发布，仅可选择模拟模式。"
       type="info"
       show-icon
       :closable="false"
@@ -113,7 +113,7 @@ function submit() {
         <el-icon><WarningFilled /></el-icon>
         <strong>校验风险</strong>
       </header>
-      <el-empty v-if="!selectedIssues.length" description="当前选择的平台暂无校验风险" />
+      <el-empty v-if="!selectedIssues.length" description="当前选择的平台未发现校验问题" />
       <ul v-else>
         <li v-for="issue in selectedIssues" :key="`${issue.platform}-${issue.code}-${issue.field}`">
           <el-tag :type="issue.level === 'error' ? 'danger' : issue.level === 'warning' ? 'warning' : 'info'" size="small">

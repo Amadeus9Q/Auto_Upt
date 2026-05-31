@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import type { UploadFile, UploadFiles, UploadProps } from "element-plus";
-import { Connection, Delete, EditPen, MagicStick, Plus, Upload } from "@element-plus/icons-vue";
+import type { UploadFile, UploadProps } from "element-plus";
+import { Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
 
-import type { PlatformKey } from "@/api/client";
-import { importDocument } from "@/api/client";
+import { importDocument, type DraftPayload, type PlatformKey } from "@/api/client";
+
+type DraftAssetEntry = { type?: string; name?: string; preview_url?: string; url?: string };
 
 export type MediaKind = "image" | "video" | "audio";
 
@@ -38,16 +39,21 @@ interface DragState {
   position: "before" | "after";
 }
 
-defineProps<{
+const props = defineProps<{
   wordCount: number;
   previewLoading: boolean;
-  taskLoading: boolean;
+  agentLoading: boolean;
   hasPreview: boolean;
+  platformDrafts: Partial<Record<PlatformKey, DraftPayload>>;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   generatePreview: [];
-  simulatePublish: [];
+  openPreview: [platform?: PlatformKey];
+  confirmPublish: [];
+  optimizeAllWithAgent: [];
+  optimizeWithAgent: [platform: PlatformKey];
+  updatePlatformDraft: [platform: PlatformKey, patch: Partial<Pick<DraftPayload, "title" | "body" | "tags">>];
 }>();
 
 const platformOptions: Array<{ label: string; value: PlatformKey }> = [
@@ -74,8 +80,24 @@ const isContentDragOver = ref(false);
 const contentDropIndex = ref<number | null>(null);
 const importLoading = ref(false);
 const importInputRef = ref<HTMLInputElement | null>(null);
+const isPlatformDragOver = ref(false);
+const platformDropIndex = ref<number | null>(null);
+const activePreviewPlatform = ref<PlatformKey>("wechat");
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
+const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
+const activePreviewTitle = computed({
+  get: () => activePreviewDraft.value?.title ?? "",
+  set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { title: value })
+});
+const activePreviewText = computed({
+  get: () => activePreviewDraft.value?.body ?? "",
+  set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { body: value })
+});
+const activePreviewTags = computed({
+  get: () => activePreviewDraft.value?.tags?.join(", ") ?? "",
+  set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { tags: parseTagText(value) })
+});
 
 async function handleImportClick() {
   importInputRef.value?.click();
@@ -84,37 +106,40 @@ async function handleImportClick() {
 async function handleImportFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
-  if (!file) return;
+  if (!file) {
+    return;
+  }
 
   importLoading.value = true;
   try {
     const result = await importDocument(file);
-    // Auto-fill title
     if (result.title) {
       title.value = result.title;
     }
-    // Auto-fill tags
     if (result.tags?.length) {
-      tags.value = result.tags.join("、");
+      tags.value = result.tags.join(", ");
     }
-    // Auto-fill body
     if (result.body) {
       content.value = result.body;
     }
-    // Show import summary in console / we'll add toast later
-    console.log("[ImportDoc]", result);
-  } catch (err: any) {
-    console.error("[ImportDoc] Error:", err);
-    alert(`导入失败：${err?.message ?? "未知错误"}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "导入文件失败。";
+    window.alert(message);
   } finally {
     importLoading.value = false;
-    // Reset input to allow re-import of same file
-    if (input) input.value = "";
+    input.value = "";
   }
 }
 
 function kindFromTab(tab: MediaTab): MediaKind {
   return tab === "images" ? "image" : tab === "videos" ? "video" : "audio";
+}
+
+function parseTagText(value: string): string[] {
+  return value
+    .split(/[,，\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 }
 
 function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
@@ -221,29 +246,30 @@ function assetMarker(asset: LocalAsset) {
   return `【${kindLabel[asset.kind]}：${asset.name}】`;
 }
 
-function insertTextAtCursor(text: string, textarea?: HTMLTextAreaElement | null) {
+function insertTextAtCursor(text: string, textarea?: HTMLTextAreaElement | null, target?: { value: string } | null) {
+  const ref = target ?? content;
   const marker = `\n\n${text}\n\n`;
   if (!textarea) {
-    const prefix = content.value.trimEnd();
-    content.value = `${prefix}${prefix ? "\n\n" : ""}${text}\n\n`;
+    const prefix = ref.value.trimEnd();
+    ref.value = `${prefix}${prefix ? "\n\n" : ""}${text}\n\n`;
     return;
   }
 
-  const start = textarea.selectionStart ?? content.value.length;
+  const start = textarea.selectionStart ?? ref.value.length;
   const end = textarea.selectionEnd ?? start;
-  const before = content.value.slice(0, start).replace(/\s*$/, "");
-  const after = content.value.slice(end).replace(/^\s*/, "");
+  const before = ref.value.slice(0, start).replace(/\s*$/, "");
+  const after = ref.value.slice(end).replace(/^\s*/, "");
   const inserted = `${before}${before ? marker : `${text}\n\n`}${after}`;
   const nextCursor = before.length + (before ? marker.length : text.length + 2);
-  content.value = inserted;
+  ref.value = inserted;
   nextTick(() => {
     textarea.focus();
     textarea.setSelectionRange(nextCursor, nextCursor);
   });
 }
 
-function insertAssetReference(asset: LocalAsset, textarea?: HTMLTextAreaElement | null) {
-  insertTextAtCursor(assetMarker(asset), textarea);
+function insertAssetReference(asset: LocalAsset, textarea?: HTMLTextAreaElement | null, target?: { value: string } | null) {
+  insertTextAtCursor(assetMarker(asset), textarea, target);
 }
 
 function textareaFromDropEvent(event: DragEvent): HTMLTextAreaElement | null {
@@ -435,6 +461,54 @@ function onContentDragLeave(event: DragEvent) {
   }
 }
 
+function previewPlatformDropPosition(event: DragEvent) {
+  const textarea = textareaFromDropEvent(event);
+  if (!textarea) {
+    platformDropIndex.value = null;
+    return null;
+  }
+  const index = caretIndexFromPoint(textarea, event);
+  platformDropIndex.value = index;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(index, index);
+  return textarea;
+}
+
+function onPlatformDragOver(event: DragEvent) {
+  if (!findDraggedAsset(event)) {
+    return;
+  }
+  isPlatformDragOver.value = true;
+  previewPlatformDropPosition(event);
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+function onPlatformDrop(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  isPlatformDragOver.value = false;
+  if (!asset) {
+    return;
+  }
+  const textarea = previewPlatformDropPosition(event);
+  if (textarea && platformDropIndex.value !== null) {
+    textarea.setSelectionRange(platformDropIndex.value, platformDropIndex.value);
+  }
+  insertAssetReference(asset, textarea, activePreviewText);
+  platformDropIndex.value = null;
+  dragState.value = null;
+}
+
+function onPlatformDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) {
+    isPlatformDragOver.value = false;
+    platformDropIndex.value = null;
+  }
+}
+
 function onDragStart(tab: MediaTab, index: number, event: DragEvent) {
   dragState.value = { tab, fromIndex: index, overIndex: index, position: "before" };
   const asset = assets.value[tab][index];
@@ -542,7 +616,7 @@ function dropClass(tab: MediaTab, index: number) {
     <div class="section-title">
       <div>
         <p>内容编辑</p>
-        <h2>生成多平台预览的源内容</h2>
+        <h2>统一内容编辑区</h2>
       </div>
       <el-tag type="info">{{ wordCount }} 字</el-tag>
     </div>
@@ -551,17 +625,11 @@ function dropClass(tab: MediaTab, index: number) {
       <div class="title-cover-row">
         <div class="title-tag-fields">
           <el-form-item label="标题">
-            <el-input
-              v-model="title"
-              :prefix-icon="EditPen"
-              maxlength="64"
-              show-word-limit
-              placeholder="填写本次投放内容的标题"
-            />
+            <el-input v-model="title" :prefix-icon="EditPen" maxlength="64" show-word-limit placeholder="请输入标题，留空时将自动生成" />
           </el-form-item>
 
-          <el-form-item label="标签">
-            <el-input v-model="tags" placeholder="输入话题标签，用逗号或空格分隔" />
+          <el-form-item label="关键词">
+            <el-input v-model="tags" placeholder="多个关键词，逗号分隔" />
           </el-form-item>
         </div>
 
@@ -673,6 +741,93 @@ function dropClass(tab: MediaTab, index: number) {
         </el-tabs>
       </el-form-item>
 
+      <div class="asset-strip">
+        <el-icon><MagicStick /></el-icon>
+        <span>已选择 {{ assetCount }} 个素材。可拖拽调整顺序，封面图将在发布时优先使用。</span>
+      </div>
+
+      <el-form-item label="平台预览">
+        <section class="platform-preview-box">
+          <div class="platform-preview-tabs">
+            <el-radio-group v-model="activePreviewPlatform" size="default">
+              <el-radio-button v-for="option in platformOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
+
+          <div
+            class="content-drop-zone"
+            :class="{ 'is-content-drag-over': isPlatformDragOver }"
+            @dragenter.prevent="onPlatformDragOver"
+            @dragover.prevent="onPlatformDragOver"
+            @dragleave="onPlatformDragLeave"
+            @drop.prevent="onPlatformDrop"
+          >
+            <el-input
+              v-model="activePreviewTitle"
+              class="platform-title-box"
+              placeholder="平台适配标题"
+            />
+            <el-input
+              v-model="activePreviewTags"
+              class="platform-keyword-box"
+              placeholder="多个关键词，逗号分隔"
+            />
+            <el-input
+              v-model="activePreviewText"
+              type="textarea"
+              :rows="12"
+              resize="none"
+              placeholder="点击「生成预览」后，此处将显示当前平台的适配内容，支持直接编辑和拖放素材。"
+            />
+            <div v-if="isPlatformDragOver" class="content-drop-hint">释放鼠标，将素材插入到光标位置</div>
+          </div>
+
+          <div v-if="activePreviewDraft?.assets?.length" class="platform-media-strip">
+            <span class="platform-media-label">已关联素材</span>
+            <div
+              v-for="(rawAsset, index) in activePreviewDraft.assets"
+              :key="index"
+              class="platform-media-thumb"
+            >
+              <template v-if="(rawAsset as DraftAssetEntry).type === 'image' || (rawAsset as DraftAssetEntry).type === 'cover'">
+                <img
+                  :src="(rawAsset as DraftAssetEntry).preview_url || (rawAsset as DraftAssetEntry).url"
+                  :alt="(rawAsset as DraftAssetEntry).name"
+                />
+              </template>
+              <video
+                v-else-if="(rawAsset as DraftAssetEntry).type === 'video'"
+                :src="(rawAsset as DraftAssetEntry).preview_url || (rawAsset as DraftAssetEntry).url"
+              />
+              <span v-else class="platform-media-icon">{{ (rawAsset as DraftAssetEntry).name }}</span>
+            </div>
+          </div>
+
+          <div class="platform-preview-actions">
+            <span>{{ activePreviewDraft ? "当前平台草稿已生成，可直接编辑或拖放素材。" : "当前平台暂无预览内容。" }}</span>
+            <div class="platform-preview-btns">
+              <el-button
+                :disabled="!hasPreview"
+                @click="$emit('openPreview', activePreviewPlatform)"
+              >
+                查看当前预览
+              </el-button>
+              <el-button
+                type="success"
+                :icon="MagicStick"
+                :loading="agentLoading"
+                :disabled="!hasPreview || !content.trim()"
+                @click="$emit('optimizeWithAgent', activePreviewPlatform)"
+              >
+                Agent 优化
+              </el-button>
+            </div>
+          </div>
+        </section>
+      </el-form-item>
+
       <el-form-item label="平台" class="platform-before-actions">
         <el-checkbox-group v-model="platforms" class="platforms">
           <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
@@ -696,14 +851,15 @@ function dropClass(tab: MediaTab, index: number) {
       <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
         生成平台预览
       </el-button>
-      <el-button :icon="Upload" :disabled="!hasPreview" :loading="taskLoading" @click="$emit('simulatePublish')">
-        创建模拟发布任务
+      <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="$emit('optimizeAllWithAgent')">
+        一键 Agent 优化
       </el-button>
-    </div>
-
-    <div class="lint-strip">
-      <el-icon><MagicStick /></el-icon>
-      <span>已选择 {{ assetCount }} 个多媒体文件。拖拽文件卡片可调整顺序，也可从文件夹拖入正文并自动归入素材库。</span>
+      <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
+        多平台预览
+      </el-button>
+      <el-button type="primary" :icon="Promotion" :disabled="!hasPreview" @click="$emit('confirmPublish')">
+        发布
+      </el-button>
     </div>
   </section>
 </template>
@@ -818,7 +974,7 @@ function dropClass(tab: MediaTab, index: number) {
 .media-list,
 .media-actions,
 .action-row,
-.lint-strip {
+.asset-strip {
   display: flex;
   align-items: center;
 }
@@ -842,6 +998,11 @@ function dropClass(tab: MediaTab, index: number) {
   position: relative;
   width: 100%;
   border-radius: 8px;
+}
+
+.content-drop-zone .platform-title-box,
+.content-drop-zone .platform-keyword-box {
+  margin-bottom: 8px;
 }
 
 .content-drop-zone :deep(.el-textarea__inner) {
@@ -869,6 +1030,53 @@ function dropClass(tab: MediaTab, index: number) {
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(23, 32, 51, 0.12);
   font-size: 12px;
+}
+
+.platform-preview-box {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.platform-preview-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.platform-preview-tabs :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+  border-left: 1px solid var(--el-border-color);
+}
+
+.platform-preview-box :deep(.el-textarea__inner),
+.platform-keyword-box :deep(.el-input__inner),
+.platform-title-box :deep(.el-input__inner) {
+  background: #ffffff;
+  color: #253247;
+}
+
+.platform-preview-box :deep(.el-textarea__inner::placeholder),
+.platform-keyword-box :deep(.el-input__inner::placeholder),
+.platform-title-box :deep(.el-input__inner::placeholder) {
+  color: #9aa9bb;
+}
+
+.platform-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.platform-preview-actions span {
+  color: #607086;
+  font-size: 13px;
 }
 
 .media-tabs {
@@ -1089,7 +1297,52 @@ function dropClass(tab: MediaTab, index: number) {
   margin-bottom: 14px;
 }
 
-.lint-strip {
+.platform-media-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.platform-media-label {
+  color: #607086;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.platform-media-thumb {
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid #e2eaf3;
+  background: #f7f9fc;
+  display: grid;
+  place-items: center;
+}
+
+.platform-media-thumb img,
+.platform-media-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.platform-media-icon {
+  color: #607086;
+  font-size: 10px;
+  text-align: center;
+  word-break: break-all;
+  padding: 2px;
+}
+
+.platform-preview-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.asset-strip {
   gap: 8px;
   padding: 12px 14px;
   color: #4f6279;

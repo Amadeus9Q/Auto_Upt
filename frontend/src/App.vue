@@ -10,10 +10,15 @@ import {
   listPublishTasks,
   publishDraftPublication,
   refreshPublishTask,
+  runAgentAdaptPreview,
+  updatePreviewDraft,
   uploadAsset,
+  type AgentStyleGoal,
   type AssetPayload,
+  type ContentPayload,
   type ContentBlockPayload,
   type PlatformKey,
+  type PreviewDraftUpdatePayload,
   type PreviewResponse,
   type PublishMode,
   type PublishTaskCreatePayload,
@@ -40,6 +45,12 @@ const platformLabels: Record<PlatformKey, string> = {
 };
 
 const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili"];
+const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
+  wechat: "professional",
+  bilibili: "video",
+  zhihu: "knowledge",
+  xiaohongshu: "social"
+};
 const activeTab = ref<WorkspaceTab>("preview");
 const title = ref("");
 const content = ref("");
@@ -73,12 +84,15 @@ const preview = ref<PreviewResponse | null>(null);
 const task = ref<PublishTaskResponse | null>(null);
 const tasks = ref<PublishTaskResponse[]>([]);
 const previewLoading = ref(false);
+const agentLoading = ref(false);
 const taskLoading = ref(false);
 const taskHistoryLoading = ref(false);
 const taskActionLoading = ref<string | null>(null);
 const errorMessage = ref("");
 const previewDialogVisible = ref(false);
+const previewDialogPlatform = ref<PlatformKey>("wechat");
 const publishFormExpanded = ref<string[]>([]);
+const draftSyncTimers = new Map<PlatformKey, number>();
 
 const wordCount = computed(() => content.value.replace(/\s/g, "").length);
 
@@ -88,6 +102,16 @@ const tagList = computed(() =>
     .map((tag) => tag.trim())
     .filter(Boolean)
 );
+
+const tabSubtitle = computed(() => {
+  const subtitles: Record<WorkspaceTab, string> = {
+    preview: "内容预览",
+    confirm: "发布确认",
+    task: "任务看板",
+    account: "账号管理"
+  };
+  return subtitles[activeTab.value] ?? "内容预览";
+});
 
 const validationReport = computed(() => preview.value?.validation_report ?? {});
 
@@ -105,7 +129,7 @@ const drafts = computed<PlatformDraft[]>(() => {
       key: platform,
       label: platformLabels[platform],
       title: draft?.title ?? platformLabels[platform],
-      summary: draft?.summary || draft?.body || "后端未返回摘要。",
+      summary: draft?.summary || draft?.body || "暂无摘要。",
       body: draft?.body ?? "",
       tags: draft?.tags ?? [],
       status: warnings > 0 ? "warning" : "ready",
@@ -114,11 +138,8 @@ const drafts = computed<PlatformDraft[]>(() => {
       cover_image: draft?.cover_image ?? null,
       body_blocks: draft?.body_blocks ?? [],
       media_slots: draft?.media_slots ?? {},
-      author: draft?.author,
+      author: draft?.author || "Auto_Upt",
       metadata: draft?.metadata,
-      content_points: draft?.content_points ?? [],
-      highlights: draft?.highlights ?? [],
-      zhihu_blocks: draft?.zhihu_blocks ?? [],
       metrics: [
         { label: "标题", value: `${draft?.title?.length ?? 0} 字` },
         { label: "正文", value: `${draft?.body?.length ?? 0} 字` },
@@ -236,6 +257,95 @@ function collectContentBlocks(): ContentBlockPayload[] {
   return blocks;
 }
 
+function buildContentPayload(): ContentPayload {
+  return {
+    title: title.value.trim() || undefined,
+    body: content.value,
+    content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads().length ? "mixed" : "article",
+    tags: tagList.value,
+    assets: collectAssetPayloads(),
+    content_blocks: collectContentBlocks(),
+    cover_asset_id: editorAssets.value.coverImage?.id ?? editorAssets.value.coverImageId ?? null,
+    platforms: selectedPlatforms.value
+  };
+}
+
+function previewFromAgentRun(run: Awaited<ReturnType<typeof runAgentAdaptPreview>>): PreviewResponse {
+  return {
+    preview_id: run.preview_id ?? "",
+    content_ir: run.content_ir,
+    drafts: run.drafts,
+    validation_report: run.validation_report,
+    created_at: run.created_at
+  };
+}
+
+function scheduleDraftSync(platform: PlatformKey) {
+  if (!preview.value?.preview_id) {
+    return;
+  }
+  const draft = preview.value.drafts[platform];
+  if (!draft) {
+    return;
+  }
+
+  const existingTimer = draftSyncTimers.get(platform);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+  }
+
+  const previewId = preview.value.preview_id;
+  const payload: PreviewDraftUpdatePayload = {
+    title: draft.title,
+    body: draft.body,
+    summary: draft.summary,
+    tags: draft.tags
+  };
+  const timer = window.setTimeout(async () => {
+    try {
+      const updated = await updatePreviewDraft(previewId, platform, payload);
+      // 只更新 validation_report，不覆盖用户正在编辑的草稿内容
+      if (preview.value) {
+        preview.value = {
+          ...preview.value,
+          validation_report: {
+            ...preview.value.validation_report,
+            ...updated.validation_report
+          }
+        };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "同步草稿失败，请检查网络连接。";
+      errorMessage.value = message;
+      ElMessage.error(message);
+    } finally {
+      draftSyncTimers.delete(platform);
+    }
+  }, 600);
+  draftSyncTimers.set(platform, timer);
+}
+
+function updatePlatformDraft(platform: PlatformKey, patch: PreviewDraftUpdatePayload) {
+  if (!preview.value) {
+    return;
+  }
+  const currentDraft = preview.value.drafts[platform];
+  if (!currentDraft) {
+    return;
+  }
+  preview.value = {
+    ...preview.value,
+    drafts: {
+      ...preview.value.drafts,
+      [platform]: {
+        ...currentDraft,
+        ...patch
+      }
+    }
+  };
+  scheduleDraftSync(platform);
+}
+
 function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode: PublishMode, message: string): PublishTaskResponse {
   return {
     task_id: `local-failed-${Date.now()}`,
@@ -301,7 +411,7 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   for (const platform of platforms) {
     const account = accounts.find((item) => item.platform === platform && item.status === "connected" && item.account_id);
     if (!account?.account_id) {
-      throw new Error(`请先在账号管理中连接${platformLabels[platform]}账号，再执行草稿或真实发布。`);
+      throw new Error(`请先在「账号管理」中连接${platformLabels[platform]}账号，再执行发布操作。`);
     }
     accountIds[platform] = account.account_id;
   }
@@ -313,10 +423,11 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
+    const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
-      title: publishForms.value.wechat.title.trim() || title.value.trim(),
+      title: publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
       author: publishForms.value.wechat.author.trim(),
-      digest: publishForms.value.wechat.summary.trim(),
+      digest: publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
       content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
       need_open_comment: publishForms.value.wechat.needOpenComment,
       only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
@@ -325,10 +436,13 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
   }
 
   if (platforms.includes("bilibili")) {
+    const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
-      title: publishForms.value.bilibili.title.trim() || title.value.trim(),
-      description: publishForms.value.bilibili.description.trim() || content.value,
-      tags: parseTagText(publishForms.value.bilibili.tags),
+      title: publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
+      description: publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      tags: parseTagText(publishForms.value.bilibili.tags).length
+        ? parseTagText(publishForms.value.bilibili.tags)
+        : bilibiliDraft?.tags ?? [],
       tid: 201,
       copyright: 1,
       source: "",
@@ -342,7 +456,7 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
 
 async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
-    throw new Error("请先生成预览。");
+    throw new Error("请先生成内容预览。");
   }
 
   const selectedPlatformOptions = buildPlatformOptions(payload.platforms);
@@ -352,16 +466,18 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
       preview_id: preview.value.preview_id,
       mode: payload.mode,
       platforms: payload.platforms,
-      platform_options: selectedPlatformOptions
+      platform_options: selectedPlatformOptions,
+      inline_drafts: preview.value.drafts,
+      inline_content_ir: preview.value.content_ir
     };
   }
 
   const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
   if (!platforms.length) {
-    throw new Error("本阶段草稿和真实发布仅支持公众号与 B站。");
+    throw new Error("当前版本草稿及真实发布仅支持公众号与 B 站。");
   }
   if (platforms.length !== payload.platforms.length) {
-    throw new Error("知乎和小红书本阶段不支持草稿或真实发布，请改用模拟发布。");
+    throw new Error("知乎和小红书当前版本不支持草稿及真实发布，请使用模拟发布。");
   }
 
   const accountIds = await resolveConnectedAccountIds(platforms);
@@ -371,7 +487,7 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
   if (platforms.includes("wechat")) {
     const cover = getCoverImage();
     if (!cover) {
-      throw new Error("公众号草稿或真实发布需要先上传封面图。");
+      throw new Error("公众号发布需要先上传封面图。");
     }
 
     const coverAssetId = await ensureBackendAsset(cover, "wechat_cover");
@@ -390,7 +506,7 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
   if (platforms.includes("bilibili")) {
     const video = editorAssets.value.videos[0] ?? null;
     if (!video) {
-      throw new Error("B站草稿或真实发布需要先上传视频文件。");
+      throw new Error("B 站发布需要先上传视频文件。");
     }
 
     const cover = getCoverImage();
@@ -401,7 +517,7 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     platformOptions.bilibili = {
       ...(platformOptions.bilibili ?? {}),
       video_asset_id: videoAssetId,
-      cover_asset_id: coverAssetId
+      cover_asset_id: coverAssetId,
     };
   }
 
@@ -411,7 +527,9 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     platforms,
     account_ids: accountIds,
     asset_ids: assetIds,
-    platform_options: platformOptions
+    platform_options: platformOptions,
+    inline_drafts: preview.value.drafts,
+    inline_content_ir: preview.value.content_ir
   };
 }
 
@@ -426,10 +544,10 @@ async function loadPublishTasks(showToast = false) {
     tasks.value = await listPublishTasks({ limit: 20 });
     task.value = tasks.value[0] ?? null;
     if (showToast) {
-      ElMessage.success("发布任务列表已刷新。");
+      ElMessage.success("任务列表已刷新。");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "加载发布任务失败。";
+    const message = error instanceof Error ? error.message : "加载任务列表失败。";
     errorMessage.value = message;
     if (showToast) {
       ElMessage.error(message);
@@ -444,9 +562,9 @@ async function refreshTaskStatus(taskId: string) {
   try {
     const nextTask = await refreshPublishTask(taskId);
     upsertTask(nextTask);
-    ElMessage.success("任务状态已刷新。");
+    ElMessage.success("任务状态已更新。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "刷新任务状态失败。";
+    const message = error instanceof Error ? error.message : "更新任务状态失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -456,8 +574,8 @@ async function refreshTaskStatus(taskId: string) {
 
 async function publishDraftFromTask(publicationId: string) {
   try {
-    await ElMessageBox.confirm("确认将该平台草稿提交发布？提交后会调用真实平台发布接口。", "发布草稿确认", {
-      confirmButtonText: "确认发布",
+    await ElMessageBox.confirm("确认提交该草稿至平台发布？提交后将调用平台官方接口进行发布。", "确认发布草稿", {
+      confirmButtonText: "确认",
       cancelButtonText: "取消",
       type: "warning"
     });
@@ -469,9 +587,9 @@ async function publishDraftFromTask(publicationId: string) {
   try {
     await publishDraftPublication(publicationId);
     await loadPublishTasks(false);
-    ElMessage.success("草稿已提交发布。");
+    ElMessage.success("草稿已提交至发布队列。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "草稿提交发布失败。";
+    const message = error instanceof Error ? error.message : "提交发布请求失败。";
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -480,45 +598,124 @@ async function publishDraftFromTask(publicationId: string) {
 }
 
 async function generatePreview() {
+  // 输入文本框为空，不做处理
   if (!content.value.trim()) {
-    ElMessage.warning("请先输入正文内容。");
     return;
   }
 
+  // 调用后端生成预览，填充平台预览文本框
   previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
   try {
-    preview.value = await createPreview({
-      title: title.value.trim() || undefined,
-      body: content.value,
-      content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads().length ? "mixed" : "article",
-      tags: tagList.value,
-      assets: collectAssetPayloads(),
-      content_blocks: collectContentBlocks(),
-      cover_asset_id: editorAssets.value.coverImage?.id ?? editorAssets.value.coverImageId ?? null,
-      platforms: selectedPlatforms.value
-    });
-    previewDialogVisible.value = true;
-    ElMessage.success("预览已由后端生成并保存。");
+    preview.value = await createPreview(buildContentPayload());
+    ElMessage.success("预览已生成。");
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "生成预览失败。";
-    ElMessage.error("生成预览失败。");
+    errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
+    ElMessage.error("预览生成失败，请稍后重试。");
   } finally {
     previewLoading.value = false;
   }
 }
 
-function handleDraftUpdate(updatedDrafts: PlatformDraft[]) {
-  if (!preview.value) return;
-  // 将编辑后的标题/正文/标签同步回 preview.drafts，保障发布流使用最新数据
-  for (const ud of updatedDrafts) {
-    const existing = preview.value.drafts[ud.key];
-    if (!existing) continue;
-    existing.title = ud.title;
-    existing.body = ud.body;
-    existing.tags = ud.tags;
+async function optimizeAllWithAgent() {
+  if (!content.value.trim()) {
+    ElMessage.warning("请先输入正文内容。");
+    return;
+  }
+
+  agentLoading.value = true;
+  errorMessage.value = "";
+
+  try {
+    const basePayload = buildContentPayload();
+    const run = await runAgentAdaptPreview({
+      ...basePayload,
+      preview_id: preview.value?.preview_id ?? null,
+      platforms: selectedPlatforms.value,
+      style_goal: editorAssets.value.videos.length ? "video" : "professional",
+      rewrite_strength: "medium",
+      overwrite_existing_metadata: false,
+      use_llm: "auto",
+      persist_preview: !preview.value
+    });
+
+    if (!preview.value) {
+      preview.value = previewFromAgentRun(run);
+    } else {
+      preview.value = {
+        ...preview.value,
+        drafts: {
+          ...preview.value.drafts,
+          ...run.drafts
+        },
+        validation_report: {
+          ...preview.value.validation_report,
+          ...run.validation_report
+        }
+      };
+    }
+    ElMessage.success("四个平台 Agent 优化结果已生成。");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    errorMessage.value = message;
+    ElMessage.error(message);
+  } finally {
+    agentLoading.value = false;
+  }
+}
+
+async function optimizeWithAgent(platform: PlatformKey) {
+  if (!content.value.trim()) {
+    ElMessage.warning("请先输入正文内容。");
+    return;
+  }
+  if (!preview.value) {
+    ElMessage.warning("请先生成预览，再优化当前平台内容。");
+    return;
+  }
+
+  agentLoading.value = true;
+  errorMessage.value = "";
+
+  try {
+    const basePayload = buildContentPayload();
+    const run = await runAgentAdaptPreview({
+      ...basePayload,
+      preview_id: preview.value.preview_id,
+      title: basePayload.title,
+      body: basePayload.body,
+      tags: basePayload.tags,
+      platforms: [platform],
+      style_goal: platformAgentStyleGoal[platform],
+      rewrite_strength: "medium",
+      overwrite_existing_metadata: false,
+      use_llm: "auto",
+      persist_preview: false
+    });
+    const optimizedDraft = run.drafts[platform];
+    if (!optimizedDraft) {
+      throw new Error(`${platformLabels[platform]}没有返回可用的优化草稿。`);
+    }
+    preview.value = {
+      ...preview.value,
+      drafts: {
+        ...preview.value.drafts,
+        [platform]: optimizedDraft
+      },
+      validation_report: {
+        ...preview.value.validation_report,
+        [platform]: run.validation_report[platform] ?? []
+      }
+    };
+    ElMessage.success(`${platformLabels[platform]}内容已优化。`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Agent 优化失败。";
+    errorMessage.value = message;
+    ElMessage.error(message);
+  } finally {
+    agentLoading.value = false;
   }
 }
 
@@ -574,12 +771,13 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
   }
 }
 
-async function simulatePublish() {
-  await submitPublish({ platforms: selectedPlatforms.value, mode: "simulate" });
-}
-
 function selectTab(key: string) {
   activeTab.value = key as WorkspaceTab;
+}
+
+function openPreviewDialog(platform?: PlatformKey) {
+  previewDialogPlatform.value = platform ?? "wechat";
+  previewDialogVisible.value = true;
 }
 
 onMounted(() => {
@@ -594,14 +792,14 @@ onMounted(() => {
         <el-icon :size="28"><VideoPlay /></el-icon>
         <div>
           <strong>Auto_Upt</strong>
-          <span>多平台内容投放助手</span>
+          <span>内容发布助手</span>
         </div>
       </div>
 
       <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
         <el-menu-item index="preview">
           <el-icon><Monitor /></el-icon>
-          <span>平台预览</span>
+          <span>内容预览</span>
         </el-menu-item>
         <el-menu-item index="confirm" :disabled="!preview">
           <el-icon><Check /></el-icon>
@@ -628,10 +826,10 @@ onMounted(() => {
     <el-container class="main-area">
       <el-header class="topbar">
         <div>
-          <p>内容投放工作台</p>
-          <h1>编辑内容、生成预览并确认发布</h1>
+          <p>工作台</p>
+          <h1>{{ tabSubtitle }}</h1>
         </div>
-        <el-tag effect="dark" type="success">Backend Connected</el-tag>
+        <el-tag effect="dark" type="success">系统就绪</el-tag>
       </el-header>
 
       <el-main v-if="activeTab === 'account'" class="account-workspace">
@@ -669,10 +867,15 @@ onMounted(() => {
           v-model:assets="editorAssets"
           :word-count="wordCount"
           :preview-loading="previewLoading"
-          :task-loading="taskLoading"
+          :agent-loading="agentLoading"
           :has-preview="Boolean(preview)"
+          :platform-drafts="preview?.drafts ?? {}"
           @generate-preview="generatePreview"
-          @simulate-publish="simulatePublish"
+          @optimize-all-with-agent="optimizeAllWithAgent"
+          @optimize-with-agent="optimizeWithAgent"
+          @update-platform-draft="updatePlatformDraft"
+          @open-preview="openPreviewDialog"
+          @confirm-publish="enterPublishConfirm"
         />
       </el-main>
     </el-container>
@@ -689,18 +892,18 @@ onMounted(() => {
       class="preview-dialog"
     >
       <template #header>
-        <span class="dialog-title">多平台投放预览</span>
+        <span class="dialog-title">多平台内容预览</span>
       </template>
 
       <div class="preview-dialog-body">
         <PreviewView
+          :initial-platform="previewDialogPlatform"
           :drafts="drafts"
           :loading="previewLoading"
           :error-message="errorMessage"
           :preview-id="preview?.preview_id ?? ''"
           :created-at="preview?.created_at ?? ''"
           @confirm-publish="enterPublishConfirm"
-          @update:drafts="handleDraftUpdate"
         />
 
         <el-collapse v-model="publishFormExpanded" class="publish-form-collapse">
@@ -722,13 +925,14 @@ onMounted(() => {
             />
           </el-collapse-item>
         </el-collapse>
+
       </div>
 
       <template #footer>
         <div class="preview-dialog-footer">
           <div class="dialog-notice">
             <el-icon><WarningFilled /></el-icon>
-            <span>Preview ID：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
+            <span>预览编号：{{ preview?.preview_id }}<template v-if="preview?.created_at">，创建时间：{{ preview.created_at }}</template></span>
           </div>
 
           <el-button
@@ -866,7 +1070,6 @@ onMounted(() => {
 }
 
 /* ---------- 预览弹窗 ---------- */
-/* 让弹窗撑满视口，内部区域正确滚动 */
 .preview-dialog :deep(.el-overlay-dialog) {
   display: flex;
   align-items: center;
@@ -898,7 +1101,6 @@ onMounted(() => {
   justify-content: space-between;
 }
 
-/* 确保关闭按钮 × 始终可见 */
 .preview-dialog :deep(.el-dialog__headerbtn) {
   position: absolute;
   top: 12px;

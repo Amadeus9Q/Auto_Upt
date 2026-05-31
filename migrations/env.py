@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from backend.app.core.config import get_settings
 from backend.app.db.session import Base
-from backend.app.models import account, asset, content, platform, publication  # noqa: F401
+from backend.app.models import account, agent, asset, content, platform, publication  # noqa: F401
 
 
 config = context.config

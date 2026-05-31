@@ -23,13 +23,10 @@ from backend.app.schemas.analysis import (
 PLATFORM_STYLES: dict[str, dict[str, Any]] = {
     "wechat": {
         "display_name": "公众号",
-        "tone": "专业、深度，适合长文阅读",
-        "title_max_length": 64,
-        "body_max_length": 20000,
-        "tags_max_count": 5,
+        "tone": "保留原始风格，专业深度长文，结构化表达",
         "supported_media": ["image"],
         "template": "article",
-        "structure_hint": "导语 + 正文（按章节展开）+ 结尾引导关注",
+        "structure_hint": "导语 + 正文（按章节展开）+ 结尾引导关注。尽量保留原文风格和结构。",
         "media_sizing": {
             "image": {
                 "cover": {"width": 900, "height": 383, "ratio": "2.35:1", "note": "公众号封面图，建议 ≤2MB。"},
@@ -51,13 +48,13 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
     },
     "zhihu": {
         "display_name": "知乎",
-        "tone": "理性、有深度，适合知识分享",
+        "tone": "专业严谨，理性深度知识分享",
         "title_max_length": 60,
         "body_max_length": 0,
         "tags_max_count": 5,
         "supported_media": ["image"],
         "template": "article",
-        "structure_hint": "引题 + 观点/结论 + 分点论证 + 总结",
+        "structure_hint": "引题 + 观点/结论 + 分点论证 + 总结。保持逻辑严密，引用数据和案例增强说服力。",
         "media_sizing": {
             "image": {
                 "cover": {"width": 690, "height": 362, "ratio": "1.9:1", "note": "知乎封面图，建议 ≤5MB。"},
@@ -79,13 +76,10 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
     },
     "xiaohongshu": {
         "display_name": "小红书",
-        "tone": "轻松、种草风，适合短平快阅读",
-        "title_max_length": 20,
-        "body_max_length": 1000,
-        "tags_max_count": 10,
+        "tone": "谈心式分享，亲切真诚，轻松种草风",
         "supported_media": ["image", "video"],
         "template": "social",
-        "structure_hint": "标题党 + 亮点展示 + 分段描述 + 标签 + 互动引导",
+        "structure_hint": "标题 + 亮点展示 + 分段描述 + 标签 + 互动引导。用第一人称，像和朋友聊天。",
         "media_sizing": {
             "image": {
                 "cover": {"width": 1080, "height": 1440, "ratio": "3:4", "note": "小红书封面图，推荐 3:4 竖版，≤20MB。"},
@@ -108,13 +102,10 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
     },
     "bilibili": {
         "display_name": "B站",
-        "tone": "活泼、年轻化，适合视频内容",
-        "title_max_length": 80,
-        "body_max_length": 2000,
-        "tags_max_count": 10,
+        "tone": "轻松活泼，年轻化表达，适合视频内容社区",
         "supported_media": ["video", "image"],
         "template": "video",
-        "structure_hint": "视频简介 + 内容要点（分点） + 标签 + 互动引导",
+        "structure_hint": "视频简介 + 内容要点（分点） + 标签 + 互动引导。语言轻松有趣，有网感。",
         "media_sizing": {
             "image": {
                 "cover": {"width": 1146, "height": 717, "ratio": "16:10", "note": "B站视频封面，建议 ≤5MB。"},
@@ -485,15 +476,14 @@ class PlatformStylistAgent:
         """构建社交媒体风格（小红书）的章节内容列表。"""
         sections: list[dict[str, Any]] = []
 
-        # 亮点提炼（前3个章节作为亮点）
-        highlights = []
-        for ch in analysis.flat_chapters[:3]:
-            # 取章节第一句
-            first_line = ch.content.split("\n")[0].strip() if ch.content else ch.title
+        # 亮点提炼保持短句，但正文部分不再硬截断原文信息。
+        highlights: list[str] = []
+        for ch in analysis.flat_chapters[:4]:
+            first_line = self._first_social_sentence(ch.content) or self._clean_social_line(ch.title)
             if first_line:
-                highlights.append(f"✨ {first_line[:60]}")
+                highlights.append(f"✨ {self._clip_social_highlight(first_line)}")
         if not highlights:
-            highlights.append(f"✨ {analysis.summary[:60]}")
+            highlights.append(f"✨ {self._clip_social_highlight(analysis.summary)}")
 
         sections.append(
             {
@@ -504,47 +494,45 @@ class PlatformStylistAgent:
             }
         )
 
-        # 详细内容（缩短版）
-        for chapter in analysis.flat_chapters[:4]:
-            # 小红书每段要短
-            short_paragraphs = []
+        # 详细内容保留完整章节，只做适合小红书阅读的短段落拆分。
+        for chapter in analysis.flat_chapters:
+            social_paragraphs: list[str] = []
             for p in chapter.content.split("\n"):
-                p = p.strip()
-                if p:
-                    # 每段限制 40 字
-                    short_paragraphs.append(p[:40] + ("…" if len(p) > 40 else ""))
+                social_paragraphs.extend(self._split_social_paragraph(p))
 
             media_hints = []
             for m in chapter.media_items:
                 sizing = self._get_media_sizing(m.kind, m.role or "inline", style)
+                action = self._media_action_for_platform(m.kind, "xiaohongshu")
                 media_hints.append(
                     {
                         "asset_id": m.asset_id,
                         "kind": m.kind,
                         "name": m.name,
                         "src": m.src,
-                        "action": "keep" if m.kind == "image" else "skip",
-                        "reason": "小红书支持图片，视频和音频需转为图片或链接。" if m.kind != "image" else "图片可直接使用，推荐 3:4 竖版。",
+                        "action": action,
+                        "reason": self._media_reason(m.kind, "xiaohongshu"),
                         "sizing": sizing,
                     }
                 )
 
-            sections.append(
-                {
-                    "heading": chapter.title[:15],
-                    "paragraphs": short_paragraphs[:3],  # 最多 3 段
-                    "media_hints": media_hints,
-                    "platform_hints": ["图片建议 3:4 竖版比例，可在正文中按段落穿插图片。"],
-                }
-            )
+            if social_paragraphs or media_hints:
+                sections.append(
+                    {
+                        "heading": self._clean_social_line(chapter.title),
+                        "paragraphs": social_paragraphs,
+                        "media_hints": media_hints,
+                        "platform_hints": ["图片建议 3:4 竖版比例，可在正文中按段落穿插图片。"],
+                    }
+                )
 
         # 互动引导
         sections.append(
             {
                 "heading": "💬 互动时间",
                 "paragraphs": [
-                    "觉得有用就点个❤️收藏⭐吧～",
-                    "有问题评论区见👇",
+                    "觉得有用可以先收藏～",
+                    "你更关注哪一部分？评论区聊聊。",
                 ],
                 "media_hints": [],
                 "platform_hints": [],
@@ -552,6 +540,52 @@ class PlatformStylistAgent:
         )
 
         return sections
+
+    @staticmethod
+    def _clean_social_line(text: str) -> str:
+        line = text.strip()
+        line = re.sub(r"^\s*(?:[#>*\-+•]+\s*)+", "", line)
+        line = re.sub(r"\s+", " ", line)
+        return line.strip()
+
+    @classmethod
+    def _first_social_sentence(cls, text: str) -> str:
+        for raw_line in text.splitlines():
+            line = cls._clean_social_line(raw_line)
+            if not line:
+                continue
+            if re.match(r"^!\[.*\]\(.*\)$", line) or line.startswith("{{asset:"):
+                continue
+            return line
+        return ""
+
+    @classmethod
+    def _clip_social_highlight(cls, text: str, max_length: int = 56) -> str:
+        line = cls._clean_social_line(text)
+        if len(line) <= max_length:
+            return line
+        return line[: max_length - 1].rstrip() + "…"
+
+    @classmethod
+    def _split_social_paragraph(cls, text: str, max_length: int = 90) -> list[str]:
+        paragraph = cls._clean_social_line(text)
+        if not paragraph:
+            return []
+
+        parts: list[str] = []
+        while len(paragraph) > max_length:
+            candidates = [paragraph.rfind(mark, 0, max_length + 1) for mark in "。！？；;，,"]
+            cut = max(candidates)
+            if cut < max_length // 2:
+                cut = max_length
+            else:
+                cut += 1
+            parts.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
+
+        if paragraph:
+            parts.append(paragraph)
+        return parts
 
     def _sections_to_plain(
         self, sections: list[dict[str, Any]], style: dict[str, Any]
@@ -579,6 +613,8 @@ class PlatformStylistAgent:
         self, analysis: ContentAnalysis, style: dict[str, Any]
     ) -> list[str]:
         """按平台规则生成标签。"""
+        import re as _re
+
         max_count = style.get("tags_max_count", 5)
         tags = list(analysis.tags[:max_count])
 
@@ -588,6 +624,9 @@ class PlatformStylistAgent:
                 if len(tags) >= max_count:
                     break
                 ch_tag = ch.title.strip()
+                # 去除序号前缀（一、二、三 / 1. 2. 等）
+                ch_tag = _re.sub(r"^[一二三四五六七八九十]+[、.．]\s*", "", ch_tag)
+                ch_tag = _re.sub(r"^\d+[、.．]\s*", "", ch_tag)
                 if ch_tag and ch_tag not in tags:
                     tags.append(ch_tag[:20])
 

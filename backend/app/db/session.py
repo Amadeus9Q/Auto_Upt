@@ -26,7 +26,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def init_db() -> None:
-    from backend.app.models import account, asset, content, platform, publication  # noqa: F401
+    from backend.app.models import account, agent, asset, content, platform, publication  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -58,8 +58,33 @@ def _add_missing_columns(conn, table_name: str, columns: dict[str, str]) -> None
         conn.execute(text(statement))
 
 
+def _drop_preview_foreign_keys(conn, table_name: str) -> None:
+    if conn.dialect.name != "postgresql":
+        return
+
+    inspector = inspect(conn)
+    if not inspector.has_table(table_name):
+        return
+
+    for foreign_key in inspector.get_foreign_keys(table_name):
+        if foreign_key.get("constrained_columns") != ["preview_id"]:
+            continue
+        if foreign_key.get("referred_table") != "previews":
+            continue
+
+        constraint_name = foreign_key.get("name")
+        if not constraint_name:
+            continue
+        safe_constraint = constraint_name.replace('"', '""')
+        safe_table = table_name.replace('"', '""')
+        conn.execute(text(f'ALTER TABLE "{safe_table}" DROP CONSTRAINT IF EXISTS "{safe_constraint}"'))
+
+
 def _ensure_publish_schema(conn) -> None:
     json_required = _json_column_sql(conn.dialect.name)
+    json_optional = _json_column_sql(conn.dialect.name, nullable=True)
+    _drop_preview_foreign_keys(conn, "publish_tasks")
+    _drop_preview_foreign_keys(conn, "publication_records")
     _add_missing_columns(
         conn,
         "publish_tasks",
@@ -67,6 +92,8 @@ def _ensure_publish_schema(conn) -> None:
             "account_ids": json_required,
             "asset_ids": json_required,
             "platform_options": json_required,
+            "drafts": json_optional,
+            "content_ir": json_optional,
         },
     )
     _add_missing_columns(

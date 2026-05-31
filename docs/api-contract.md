@@ -21,8 +21,8 @@
 
 ## 预览
 
-- `POST /api/v1/previews`：生成平台预览和校验报告，并保存到 PostgreSQL。
-- `GET /api/v1/previews/{preview_id}`：查询预览详情。
+- `POST /api/v1/previews`：生成平台预览和校验报告。当前预览默认内存计算，不写入 PostgreSQL。
+- `PATCH /api/v1/previews/{preview_id}/drafts/{platform}`：校验前端修改后的单个平台草稿，仍不落库。
 
 预览响应包含：
 
@@ -41,15 +41,18 @@
 ## 发布任务
 
 - `GET /api/v1/publish-tasks`：查询数据库中已有发布任务，默认按创建时间倒序返回；支持 `mode`、`status`、`platform`、`limit` 过滤，用于前端刷新页面后恢复任务看板。
-- `POST /api/v1/publish-tasks`：基于预览创建发布任务，支持 `simulate`、`draft`、`publish` 三种模式。
+- `POST /api/v1/publish-tasks`：基于预览创建发布任务，支持 `simulate`、`draft`、`publish` 三种模式。请求可以传入 `inline_drafts` 和 `inline_content_ir`，发布任务会保存草稿快照，后续执行不依赖 `previews` 表外键。
 - `GET /api/v1/publish-tasks/{task_id}`：查询任务状态。
 - `POST /api/v1/publish-tasks/{task_id}/refresh`：刷新真实平台发布状态。
 
-当前第二阶段中，`mode=draft` 和 `mode=publish` 仅允许 `wechat`、`bilibili`。真实发布任务会保存 `account_ids`、`asset_ids`、`platform_options`，并由 Celery worker 执行。`zhihu` 和 `xiaohongshu` 在真实发布模式下返回不支持状态，后续浏览器辅助发布阶段再接入。
+当前第二阶段中，`mode=draft` 和 `mode=publish` 仅允许 `wechat`、`bilibili`。真实发布任务会保存 `account_ids`、`asset_ids`、`platform_options`、`drafts` 和 `content_ir`，并由 Celery worker 执行。`zhihu` 和 `xiaohongshu` 在真实发布模式下返回不支持状态，后续浏览器辅助发布阶段再接入。
 
 ## Agent 编排
 
 - `POST /api/v1/agent-runs/preview`：执行第一阶段模拟 Agent 编排，不落库。
+- `GET /api/v1/agent-runs/tools`：查询当前后端白名单允许 Agent 调用的内置 MCP 风格工具。
+- `POST /api/v1/agent-runs/adapt-preview`：执行工具编排，生成标题/关键词建议、风格改写稿、多平台草稿，并默认保存为 preview。
+- `GET /api/v1/agent-runs/{run_id}`：查询已经保存的 Agent 工具编排运行详情。
 
 请求字段：
 
@@ -77,6 +80,29 @@
 - `created_at`
 
 当前 Agent 编排是规则模拟流程，不调用真实大模型、不调用真实平台、不写入数据库。
+
+`adapt-preview` 新增字段：
+
+- `style_goal`：`professional`、`knowledge`、`social`、`video` 或 `original`。
+- `rewrite_strength`：`light`、`medium` 或 `strong`。
+- `overwrite_existing_metadata`：用户已有标题或关键词时是否允许 Agent 覆盖，默认 `false`。
+- `use_llm`：`auto`、`enabled` 或 `disabled`。默认 `auto`，无 `OPENAI_API_KEY` 时自动回退到规则引擎。
+- `persist_preview`：是否保存 preview，默认 `true`。
+
+`adapt-preview` 返回：
+
+- `run_id`
+- `preview_id`
+- `tool_calls`
+- `metadata`
+- `rewritten_content`
+- `content_ir`
+- `drafts`
+- `validation_report`
+- `compliance_report`
+- `recommendations`
+
+当前工具编排使用内置工具注册表模拟 MCP 调用规范，不自动执行真实发布。真实发布仍需要用户基于 `preview_id` 进入发布确认流程。
 
 ## 账号
 

@@ -97,6 +97,68 @@ export interface PreviewResponse {
   created_at: string | null;
 }
 
+export interface PreviewDraftUpdatePayload {
+  title?: string;
+  body?: string;
+  summary?: string;
+  tags?: string[];
+}
+
+export type AgentStyleGoal = "professional" | "knowledge" | "social" | "video" | "original";
+export type AgentRewriteStrength = "light" | "medium" | "strong";
+export type AgentLlmMode = "auto" | "enabled" | "disabled";
+
+export interface AgentAdaptPreviewPayload extends ContentPayload {
+  preview_id?: string | null;
+  style_goal?: AgentStyleGoal;
+  rewrite_strength?: AgentRewriteStrength;
+  overwrite_existing_metadata?: boolean;
+  use_llm?: AgentLlmMode;
+  persist_preview?: boolean;
+}
+
+export interface AgentToolCall {
+  name: string;
+  description: string;
+  status: "succeeded" | "skipped" | "failed";
+  input_summary: string;
+  output: Record<string, unknown>;
+  started_at: string;
+  completed_at: string;
+}
+
+export interface AgentGeneratedMetadata {
+  title: string;
+  tags: string[];
+  summary: string;
+  source: string;
+}
+
+export interface AgentRewrittenContent {
+  title: string;
+  body: string;
+  tags: string[];
+  style_goal: AgentStyleGoal;
+  rewrite_strength: AgentRewriteStrength;
+  source: string;
+}
+
+export interface AgentAdaptPreviewResponse {
+  run_id: string;
+  status: "succeeded" | "skipped" | "failed";
+  preview_id: string | null;
+  tool_calls: AgentToolCall[];
+  metadata: AgentGeneratedMetadata;
+  rewritten_content: AgentRewrittenContent;
+  content_ir: Record<string, unknown>;
+  drafts: Partial<Record<PlatformKey, DraftPayload>>;
+  validation_report: Partial<Record<PlatformKey, ValidationIssue[]>>;
+  compliance_report: Record<string, ValidationIssue[]>;
+  recommendations: string[];
+  created_at: string;
+  llm_status: "available" | "degraded" | "disabled";
+}
+
 export interface PublishTaskResponse {
   task_id: string;
   preview_id: string;
@@ -193,6 +255,8 @@ export interface PublishTaskCreatePayload {
   account_ids?: Partial<Record<PlatformKey, string>>;
   asset_ids?: Partial<Record<PlatformKey, string[]>>;
   platform_options?: Partial<Record<PlatformKey, Record<string, unknown>>>;
+  inline_drafts?: Partial<Record<PlatformKey, DraftPayload>>;
+  inline_content_ir?: Record<string, unknown>;
 }
 
 export interface AccountConnection {
@@ -318,6 +382,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function createPreview(payload: ContentPayload): Promise<PreviewResponse> {
   return request<PreviewResponse>("/api/v1/previews", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updatePreviewDraft(previewId: string, platform: PlatformKey, payload: PreviewDraftUpdatePayload): Promise<PreviewResponse> {
+  return request<PreviewResponse>(`/api/v1/previews/${previewId}/drafts/${platform}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function runAgentAdaptPreview(payload: AgentAdaptPreviewPayload): Promise<AgentAdaptPreviewResponse> {
+  return request<AgentAdaptPreviewResponse>("/api/v1/agent-runs/adapt-preview", {
     method: "POST",
     body: JSON.stringify(payload)
   });

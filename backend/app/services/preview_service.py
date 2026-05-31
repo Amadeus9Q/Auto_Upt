@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
+import logging
 import re
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.adapters.registry import get_adapter, select_adapters
+from backend.app.adapters.registry import select_adapters
 from backend.app.agents.content_analyst import ContentAnalystAgent
 from backend.app.agents.platform_stylist import PlatformStylistAgent
+from backend.app.core.config import get_settings
 from backend.app.models.content import PreviewRecord
 from backend.app.schemas.content import (
     AdaptContentRequest,
     ContentInput,
     PreviewCreateRequest,
+    PreviewDraftUpdateRequest,
     PreviewResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PreviewService:
@@ -29,6 +36,35 @@ class PreviewService:
         body = request.body.strip()
         title = self._normalize_title(request.title, body)
         tags = self._normalize_tags(request.tags)
+
+        # ---- 标题或关键词缺失时，自动调用 LLM 生成 ----
+        title_missing = not title or title == "Untitled Content"
+        tags_missing = not tags
+        if body and (title_missing or tags_missing):
+            if title_missing:
+                title_prompt = (
+                    "你是一个专业的中文内容编辑。请根据正文内容生成一个精炼的标题。\n"
+                    "硬性要求：\n"
+                    "1. 只返回 JSON：{\"title\": string}，不要返回 Markdown 代码块。\n"
+                    "2. title 必须是纯标题，不得包含\"题目：\"\"标题：\"等前缀。\n"
+                    "3. 标题必须忠实于原文内容，不要偏离主题。\n"
+                    f"正文：\n{body[:3000]}"
+                )
+                llm_title, _ = self._call_llm_for_metadata(title_prompt)
+                if llm_title:
+                    title = llm_title
+            if tags_missing:
+                tags_prompt = (
+                    "你是一个专业的中文内容编辑。请根据正文内容提取5个以内的关键词。\n"
+                    "硬性要求：\n"
+                    "1. 只返回 JSON：{\"tags\": string[]}，不要返回 Markdown 代码块。\n"
+                    "2. tags 必须是纯关键词数组，每个关键词简短精炼。\n"
+                    "3. 不得包含\"标签：\"\"关键词：\"等前缀。\n"
+                    f"标题：{title}\n正文：\n{body[:3000]}"
+                )
+                _, llm_tags = self._call_llm_for_metadata(tags_prompt)
+                if llm_tags:
+                    tags = llm_tags
         summary = self._summarize(body)
         assets = [asset.model_dump() for asset in request.assets]
         body_blocks = self._normalize_blocks(body, assets, [block.model_dump() for block in request.content_blocks])
@@ -42,8 +78,6 @@ class PreviewService:
             assets=assets,
             content_type=request.content_type,
         )
-        target_platforms = getattr(request, "platforms", None)
-        platform_copies = self.platform_stylist.generate(analysis, target_platforms)
 
         return {
             "id": str(uuid4()),
@@ -66,10 +100,6 @@ class PreviewService:
                 k: [m.model_dump() for m in v]
                 for k, v in analysis.media_by_kind.items()
             },
-            "platform_copies": {
-                platform: copy.model_dump()
-                for platform, copy in platform_copies.items()
-            },
             "created_at": datetime.now(UTC).isoformat(),
         }
 
@@ -88,6 +118,17 @@ class PreviewService:
             validation_report[platform] = adapter.validate(draft) + self._validate_media_for_platform(platform, draft)
 
         return content_ir, drafts, validation_report
+
+    def create_preview_in_memory(self, request: PreviewCreateRequest) -> PreviewResponse:
+        """生成预览数据但不写入数据库，纯内存计算。"""
+        content_ir, drafts, validation_report = self.adapt_content(request)
+        return PreviewResponse(
+            preview_id=str(uuid4()),
+            content_ir=content_ir,
+            drafts=drafts,
+            validation_report=validation_report,
+            created_at=datetime.now(UTC),
+        )
 
     async def create_preview(self, request: PreviewCreateRequest) -> PreviewRecord:
         if self.session is None:
@@ -113,49 +154,69 @@ class PreviewService:
             raise RuntimeError("PreviewService.get_preview requires a database session.")
         return await self.session.get(PreviewRecord, preview_id)
 
-    async def update_platform_draft(
+    def update_preview_draft_in_memory(
+        self,
+        draft: dict[str, Any],
+        platform: str,
+        request: PreviewDraftUpdateRequest,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """对平台草稿执行校验，不写数据库。返回该平台的校验报告。"""
+        adapters = select_adapters([platform])
+        adapter = adapters[platform]
+        updated_draft = dict(draft or {})
+        payload = request.model_dump(exclude_unset=True)
+
+        if "title" in payload and payload["title"] is not None:
+            updated_draft["title"] = payload["title"].strip()
+        if "body" in payload and payload["body"] is not None:
+            updated_draft["body"] = payload["body"]
+        if "summary" in payload and payload["summary"] is not None:
+            updated_draft["summary"] = payload["summary"].strip()
+        if "tags" in payload and payload["tags"] is not None:
+            updated_draft["tags"] = self._normalize_tags(payload["tags"])
+
+        return adapter.validate(updated_draft) + self._validate_media_for_platform(platform, updated_draft)
+
+    async def update_preview_draft(
         self,
         preview_id: str,
         platform: str,
-        title: str | None,
-        body: str | None,
-        tags: list[str] | None,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
-        """更新单个平台的草稿内容并重新校验。"""
+        request: PreviewDraftUpdateRequest,
+    ) -> PreviewRecord | None:
         if self.session is None:
-            raise RuntimeError("PreviewService.update_platform_draft requires a database session.")
+            raise RuntimeError("PreviewService.update_preview_draft requires a database session.")
 
         record = await self.session.get(PreviewRecord, preview_id)
         if record is None:
             return None
 
         drafts = dict(record.drafts or {})
-        draft = dict(drafts.get(platform, {}))
-        if not draft:
-            return None
+        if platform not in drafts:
+            raise LookupError(f"Draft for platform {platform} not found.")
 
-        if title is not None:
-            draft["title"] = title
-        if body is not None:
-            draft["body"] = body
-        if tags is not None:
-            draft["tags"] = tags
+        adapters = select_adapters([platform])
+        adapter = adapters[platform]
+        draft = dict(drafts[platform] or {})
+        payload = request.model_dump(exclude_unset=True)
 
-        # 重新校验
-        adapter = get_adapter(platform)
-        validation_report = adapter.validate(draft) + self._validate_media_for_platform(platform, draft)
+        if "title" in payload and payload["title"] is not None:
+            draft["title"] = payload["title"].strip()
+        if "body" in payload and payload["body"] is not None:
+            draft["body"] = payload["body"]
+        if "summary" in payload and payload["summary"] is not None:
+            draft["summary"] = payload["summary"].strip()
+        if "tags" in payload and payload["tags"] is not None:
+            draft["tags"] = self._normalize_tags(payload["tags"])
 
         drafts[platform] = draft
+        validation_report = dict(record.validation_report or {})
+        validation_report[platform] = adapter.validate(draft) + self._validate_media_for_platform(platform, draft)
+
         record.drafts = drafts
-
-        # 合并更新 validation_report
-        vr = dict(record.validation_report or {})
-        vr[platform] = validation_report
-        record.validation_report = vr
-
+        record.validation_report = validation_report
         await self.session.commit()
         await self.session.refresh(record)
-        return draft, validation_report
+        return record
 
     @staticmethod
     def to_response(record: PreviewRecord) -> PreviewResponse:
@@ -170,11 +231,11 @@ class PreviewService:
     @staticmethod
     def _normalize_title(title: str | None, body: str) -> str:
         if title and title.strip():
-            return title.strip()
+            return PreviewService._clean_generated_title(title.strip())
         for line in body.splitlines():
             candidate = line.strip().lstrip("#").strip()
             if candidate:
-                return candidate[:80]
+                return PreviewService._clean_generated_title(candidate[:80])
         return "Untitled Content"
 
     @staticmethod
@@ -183,11 +244,87 @@ class PreviewService:
         seen: set[str] = set()
         for tag in tags:
             value = tag.strip().lstrip("#")
+            # 去除中文序号前缀（一、二、三 等）和阿拉伯数字前缀（1. 2. 等）
+            value = re.sub(r"^[一二三四五六七八九十]+[、.．]\s*", "", value)
+            value = re.sub(r"^\d+[、.．]\s*", "", value)
             key = value.casefold()
             if value and key not in seen:
                 normalized.append(value)
                 seen.add(key)
         return normalized
+
+    @staticmethod
+    def _call_llm_for_metadata(prompt: str) -> tuple[str, list[str]]:
+        """
+        调用 LLM 生成标题或关键词。返回 (title, tags)。
+        """
+        settings = get_settings()
+        if not settings.openai_api_key:
+            logger.info("LLM API key not configured, skipping metadata generation")
+            return ("", [])
+
+        try:
+            response = httpx.post(
+                url=f"{settings.openai_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.openai_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                    "max_tokens": 500,
+                },
+                timeout=httpx.Timeout(30),
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+
+            # 清理 Markdown 代码块
+            content = content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\s*", "", content)
+                content = re.sub(r"\s*```$", "", content)
+
+            result = json.loads(content)
+            title = PreviewService._clean_generated_title(result.get("title", ""))
+            tags = PreviewService._clean_generated_tags(result.get("tags", []))
+            logger.info(f"LLM generated title: {title}, tags: {tags}")
+            return (title, tags if isinstance(tags, list) else [])
+        except Exception as exc:
+            logger.warning(f"LLM metadata generation failed, using fallback: {exc}")
+            return ("", [])
+
+    @staticmethod
+    def _clean_generated_title(raw: str) -> str:
+        """去掉 LLM 可能加上的 题目：/标题：/如何看待： 等前缀"""
+        if not raw:
+            return ""
+        return re.sub(
+            r"^\s*(题目|标题|如何看待|Title)\s*[：:]\s*",
+            "",
+            raw.strip(),
+        ).strip()
+
+    @staticmethod
+    def _clean_generated_tags(raw: Any) -> list[str]:
+        """去掉 LLM 可能加上的 标签：/关键词： 等前缀"""
+        if not isinstance(raw, list):
+            return []
+        result: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            cleaned = re.sub(
+                r"^\s*(标签|关键词|Tags|Keywords)\s*[：:]\s*",
+                "",
+                item.strip(),
+            ).strip()
+            if cleaned:
+                result.append(cleaned)
+        return result
 
     @staticmethod
     def _summarize(body: str) -> str:

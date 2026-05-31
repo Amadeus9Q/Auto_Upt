@@ -16,7 +16,7 @@ limits:
   tags_max_count: 20
   assets_min_count: 0
 style:
-  tone: structured long-form
-  title_hint: keep clear and benefit-oriented
+  tone: 保留原始风格，专业长文
+  title_hint: 清晰且有获得感
 assets:
   cover_required: false

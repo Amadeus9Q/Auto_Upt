@@ -79,14 +79,22 @@ class PreviewCreateRequest(ContentInput):
 
 
 class PublishTaskCreateRequest(BaseModel):
-    preview_id: str = Field(description="预览记录 ID。必须来自 POST /api/v1/previews 的返回值。")
+    preview_id: str = Field(description="预览记录 ID。来自 POST /api/v1/previews 的返回值，或前端本地生成的 ID。")
     mode: PublishModeLiteral = Field(
         default="simulate",
         description="发布模式。simulate 为模拟发布，draft/publish 用于第二阶段公众号和 B站真实发布。",
     )
     platforms: list[PlatformLiteral] | None = Field(
         default=None,
-        description="需要发布的平台列表。为空时使用该预览记录中已有的全部平台草稿。",
+        description="需要发布的平台列表。为空时使用内联 drafts 或预览记录中已有的全部平台草稿。",
+    )
+    inline_drafts: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description="内联平台草稿数据。当预览未落库时，前端直接传入完整的平台草稿内容。",
+    )
+    inline_content_ir: dict[str, Any] | None = Field(
+        default=None,
+        description="内联统一内容 IR。当预览未落库时，前端直接传入完整的 content_ir。",
     )
     account_ids: dict[PlatformLiteral, str] = Field(
         default_factory=dict,
@@ -126,6 +134,13 @@ class PreviewResponse(BaseModel):
         description="按平台分组的格式和素材校验结果。",
     )
     created_at: datetime | None = Field(default=None, description="预览记录创建时间。")
+
+
+class PreviewDraftUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=160, description="平台草稿标题。为空表示不修改。")
+    body: str | None = Field(default=None, description="平台草稿正文。为空表示不修改。")
+    summary: str | None = Field(default=None, description="平台草稿摘要。为空表示不修改。")
+    tags: list[str] | None = Field(default=None, description="平台草稿关键词/标签。为空表示不修改。")
 
 
 class PublishTaskResponse(BaseModel):

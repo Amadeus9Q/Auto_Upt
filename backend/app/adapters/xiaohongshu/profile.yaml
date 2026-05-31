@@ -14,7 +14,7 @@ limits:
   tags_max_count: 20
   assets_min_count: 1
 style:
-  tone: concise note
-  title_hint: short and direct
+  tone: 谈心式，亲切真诚
+  title_hint: 简短直接
 assets:
   cover_required: true

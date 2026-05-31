@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     openai_api_key: str = ""
-    openai_base_url: str = ""  # 兼容接口需填写，如 https://api.deepseek.com
+    openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "deepseek-chat"
 
     browser_headless: bool = False

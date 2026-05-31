@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 import type { PlatformKey, ValidationIssue } from "@/api/client";
-import { updatePlatformDraft } from "@/api/client";
 import WechatPreview from "@/views/WechatPreview.vue";
-import type { RichBlock } from "@/views/WechatPreview.vue";
 
 interface DraftAsset {
   id?: string;
@@ -15,17 +13,9 @@ interface DraftAsset {
   mime_type?: string;
 }
 
-interface DraftBodyBlock {
-  type: "text" | "asset";
+export interface BodySegment {
+  type: "text" | "image" | "video" | "audio";
   text?: string;
-  asset_kind?: "image" | "video" | "audio";
-  asset?: DraftAsset;
-}
-
-interface ZhihuBlock {
-  type: "conclusion" | "heading-1" | "heading-2" | "text" | "separator" | "quote" | "image";
-  text?: string;
-  detail?: string;
   src?: string;
   name?: string;
 }
@@ -40,15 +30,14 @@ export interface PlatformDraft {
   status: "ready" | "warning" | "pending";
   issues: ValidationIssue[];
   metrics: Array<{ label: string; value: string }>;
-  rich_body?: RichBlock[];
+  rich_body?: unknown[];
   cover_image?: { url?: string; preview_url?: string; name?: string } | null;
-  body_blocks?: DraftBodyBlock[];
+  body_blocks?: unknown[];
   media_slots?: Record<string, unknown>;
   author?: string;
   metadata?: { estimated_read_time_minutes?: number; source_word_count?: number };
   content_points?: string[];
   highlights?: string[];
-  zhihu_blocks?: ZhihuBlock[];
 }
 
 const props = defineProps<{
@@ -57,117 +46,19 @@ const props = defineProps<{
   errorMessage: string;
   previewId: string;
   createdAt: string;
+  initialPlatform?: PlatformKey;
 }>();
-
-const emit = defineEmits<{
+defineEmits<{
   confirmPublish: [];
-  "update:drafts": [drafts: PlatformDraft[]];
 }>();
 
-/** 本地可编辑的草稿副本，初始从 props 同步 */
-const localDrafts = ref<PlatformDraft[]>([...props.drafts]);
+const currentPlatform = ref<PlatformKey>(props.initialPlatform ?? "wechat");
 
-watch(
-  () => props.drafts,
-  (drafts) => {
-    localDrafts.value = drafts.map((d) => ({ ...d, tags: [...d.tags], issues: [...d.issues], metrics: [...d.metrics] }));
-  },
-  { deep: true },
-);
+const activeDraft = computed(() => props.drafts.find((draft) => draft.key === currentPlatform.value) ?? null);
 
-const emitDraftUpdate = () => emit("update:drafts", localDrafts.value);
+// ---- body 解析：统一从 body 文本提取段落和媒体 ----
 
-// ---- 平台独立编辑状态 ----
-interface EditBuffer {
-  title: string;
-  body: string;
-  tagsText: string; // 逗号分隔的标签输入
-}
-
-const editingPlatforms = ref<Set<PlatformKey>>(new Set());
-const savingPlatforms = ref<Set<PlatformKey>>(new Set());
-const editBuffers = reactive<Partial<Record<PlatformKey, EditBuffer>>>({});
-
-function isEditing(platform: PlatformKey) {
-  return editingPlatforms.value.has(platform);
-}
-
-function isSaving(platform: PlatformKey) {
-  return savingPlatforms.value.has(platform);
-}
-
-function enterEdit(platform: PlatformKey) {
-  if (!localDrafts.value) return;
-  const draft = localDrafts.value.find((d) => d.key === platform);
-  if (!draft) return;
-
-  editBuffers[platform] = {
-    title: draft.title,
-    body: draft.body,
-    tagsText: draft.tags.join("、"),
-  };
-  editingPlatforms.value.add(platform);
-}
-
-function cancelEdit(platform: PlatformKey) {
-  editingPlatforms.value.delete(platform);
-  delete editBuffers[platform];
-}
-
-async function saveDraft(platform: PlatformKey) {
-  const buffer = editBuffers[platform];
-  if (!buffer) return;
-
-  savingPlatforms.value.add(platform);
-  try {
-    const res = await updatePlatformDraft(props.previewId, platform, {
-      title: buffer.title || null,
-      body: buffer.body || null,
-      tags: buffer.tagsText
-        ? buffer.tagsText.split(/[,，、\s]+/).filter(Boolean)
-        : [],
-    });
-
-    // 更新本地草稿
-    const idx = localDrafts.value.findIndex((d) => d.key === platform);
-    if (idx >= 0) {
-      const draft = res.draft;
-      const issues = res.validation_report ?? [];
-      const warnings = issues.filter((i) => i.level === "warning" || i.level === "error").length;
-      localDrafts.value[idx] = {
-        ...localDrafts.value[idx],
-        title: draft.title ?? localDrafts.value[idx].title,
-        body: draft.body ?? localDrafts.value[idx].body,
-        tags: draft.tags ?? localDrafts.value[idx].tags,
-        summary: draft.summary ?? localDrafts.value[idx].summary,
-        issues,
-        status: warnings > 0 ? "warning" : "ready",
-        zhihu_blocks: (draft as any).zhihu_blocks ?? localDrafts.value[idx].zhihu_blocks,
-        content_points: draft.content_points ?? localDrafts.value[idx].content_points,
-        highlights: draft.highlights ?? localDrafts.value[idx].highlights,
-        metrics: [
-          { label: "标题", value: `${draft.title?.length ?? 0} 字` },
-          { label: "正文", value: `${draft.body?.length ?? 0} 字` },
-          { label: "校验", value: `${issues.length} 项` },
-        ],
-      };
-    }
-
-    editingPlatforms.value.delete(platform);
-    delete editBuffers[platform];
-    emitDraftUpdate();
-  } catch (err: any) {
-    console.error("保存草稿失败:", err);
-  } finally {
-    savingPlatforms.value.delete(platform);
-  }
-}
-
-// ---- 现有 computed（基于 localDrafts） ----
-
-const currentPlatform = ref<PlatformKey>("wechat");
-
-const activeDraft = computed(() => localDrafts.value.find((draft) => draft.key === currentPlatform.value) ?? null);
+const activeBodySegments = computed(() => parseBodySegments(activeDraft.value));
 
 const bilibiliMainVideo = computed(() => (activeDraft.value?.key === "bilibili" ? slotAsset(activeDraft.value, "main_video") : null));
 const bilibiliCover = computed(() => (activeDraft.value?.key === "bilibili" ? activeDraft.value.cover_image ?? slotAsset(activeDraft.value, "cover") : null));
@@ -175,11 +66,17 @@ const bilibiliHighlights = computed(() => {
   if (activeDraft.value?.content_points?.length) {
     return activeDraft.value.content_points;
   }
-  return draftHighlights(activeDraft.value, 5);
+  return bodyHighlights(activeDraft.value, 5);
 });
 
-const zhihuParagraphs = computed(() => textParagraphs(activeDraft.value?.body ?? "").filter((paragraph) => !isAssetMarkerText(paragraph)));
-const zhihuImages = computed(() => (activeDraft.value?.key === "zhihu" ? slotAssetList(activeDraft.value, "body_images").slice(0, 3) : []));
+const zhihuTextSegments = computed(() => {
+  if (activeDraft.value?.key !== "zhihu") return [];
+  return activeBodySegments.value.filter((s) => s.type === "text");
+});
+const zhihuImageSegments = computed(() => {
+  if (activeDraft.value?.key !== "zhihu") return [];
+  return activeBodySegments.value.filter((s) => s.type === "image");
+});
 const zhihuUnsupportedMedia = computed(() =>
   activeDraft.value?.key === "zhihu" ? [...slotAssetList(activeDraft.value, "body_videos"), ...slotAssetList(activeDraft.value, "body_audios")] : []
 );
@@ -194,7 +91,7 @@ const xiaohongshuHighlights = computed(() => {
   if (activeDraft.value?.highlights?.length) {
     return activeDraft.value.highlights;
   }
-  return draftHighlights(activeDraft.value, 4);
+  return bodyHighlights(activeDraft.value, 4);
 });
 const xiaohongshuImages = computed(() => {
   if (activeDraft.value?.key !== "xiaohongshu") {
@@ -217,13 +114,22 @@ const xiaohongshuUnsupportedMedia = computed(() =>
 );
 
 watch(
-  () => localDrafts.value,
+  () => props.drafts,
   (drafts) => {
     if (drafts.length && !drafts.some((draft) => draft.key === currentPlatform.value)) {
       currentPlatform.value = drafts[0].key;
     }
   },
   { immediate: true }
+);
+
+watch(
+  () => props.initialPlatform,
+  (platform) => {
+    if (platform) {
+      currentPlatform.value = platform;
+    }
+  }
 );
 
 function selectPlatform(key: string) {
@@ -256,31 +162,65 @@ function slotAssetList(draft: PlatformDraft, slot: string): DraftAsset[] {
   return value.filter((item): item is DraftAsset => Boolean(item) && typeof item === "object");
 }
 
-function textParagraphs(text: string) {
-  return text
-    .split(/\n{1,}/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
+// ---- body 解析工具 ----
 
-function isAssetMarkerText(text: string) {
-  return /^\{\{asset:(image|video|audio):[^}]+}}$/.test(text) || /^【(图片|视频|音频)[:：].+】$/.test(text);
-}
+const ASSET_MARKER_RE = /^【(图片|视频|音频)[：:]\s*([^】]+)】$/;
 
-function draftHighlights(draft: PlatformDraft | null, limit: number) {
-  if (!draft) {
-    return [];
+function parseBodySegments(draft: PlatformDraft | null): BodySegment[] {
+  if (!draft) return [];
+
+  const allAssets = collectDraftAssets(draft);
+  const lines = draft.body.split("\n");
+  const segments: BodySegment[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const match = trimmed.match(ASSET_MARKER_RE);
+    if (match) {
+      const kind = match[1] === "图片" ? "image" : match[1] === "视频" ? "video" : "audio";
+      const name = match[2].trim();
+      const found = findAssetByName(allAssets, name, kind);
+      segments.push({ type: kind, src: found?.url || found?.preview_url || "", name });
+    } else {
+      segments.push({ type: "text", text: trimmed });
+    }
   }
 
-  const blocks = draft.body_blocks
-    ?.filter((block) => block.type === "text" && block.text?.trim())
-    .map((block) => block.text?.trim() ?? "");
-  if (blocks?.length) {
-    return blocks.slice(0, limit);
-  }
+  return segments;
+}
 
-  const paragraphs = textParagraphs(draft.body).filter((item) => !item.startsWith("#"));
-  return (paragraphs.length ? paragraphs : [draft.summary]).filter(Boolean).slice(0, limit);
+function collectDraftAssets(draft: PlatformDraft): DraftAsset[] {
+  const fromSlots: DraftAsset[] = Object.values(draft.media_slots ?? {})
+    .flat()
+    .filter((item): item is DraftAsset => Boolean(item) && typeof item === "object");
+  const fromAssets = (draft as unknown as Record<string, unknown>).assets as DraftAsset[] | undefined;
+  return [...fromSlots, ...(fromAssets ?? [])];
+}
+
+function findAssetByName(assets: DraftAsset[], name: string, kind: string): DraftAsset | undefined {
+  const typeMap: Record<string, string[]> = {
+    image: ["image", "cover"],
+    video: ["video"],
+    audio: ["audio"]
+  };
+  const allowedTypes = typeMap[kind] ?? [];
+  return assets.find(
+    (a) =>
+      (a.name && a.name === name) ||
+      (allowedTypes.includes(a.type ?? "") && name.includes(a.name ?? ""))
+  );
+}
+
+/** 从 body 中提取纯文本亮点（非媒体标记、非标题行） */
+function bodyHighlights(draft: PlatformDraft | null, limit: number): string[] {
+  if (!draft) return [];
+  const segments = parseBodySegments(draft);
+  const texts = segments
+    .filter((s) => s.type === "text" && s.text && !s.text.startsWith("#"))
+    .map((s) => s.text!);
+  return (texts.length ? texts : [draft.summary]).filter(Boolean).slice(0, limit);
 }
 </script>
 
@@ -294,7 +234,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           @change="selectPlatform"
         >
           <el-radio-button
-            v-for="draft in localDrafts"
+            v-for="draft in drafts"
             :key="draft.key"
             :value="draft.key"
           >
@@ -323,76 +263,24 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
     />
 
     <el-empty
-      v-if="!loading && localDrafts.length === 0 && !errorMessage"
-      description="还没有生成预览"
+      v-if="!loading && drafts.length === 0 && !errorMessage"
+      description="暂未生成预览"
     />
 
     <template v-if="activeDraft">
-      <!-- ===== 编辑工具栏（每个平台独立） ===== -->
-      <div class="edit-toolbar">
-        <template v-if="isEditing(activeDraft.key)">
-          <span class="edit-badge">✎ 编辑 {{ activeDraft.label }}</span>
-          <div class="edit-actions">
-            <el-button size="small" @click="cancelEdit(activeDraft.key)">取消</el-button>
-            <el-button
-              size="small"
-              type="primary"
-              :loading="isSaving(activeDraft.key)"
-              @click="saveDraft(activeDraft.key)"
-            >
-              保存到 {{ activeDraft.label }}
-            </el-button>
-          </div>
-        </template>
-        <template v-else>
-          <span></span>
-          <el-button size="small" text type="primary" @click="enterEdit(activeDraft.key)">
-            ✎ 编辑{{ activeDraft.label }}草稿
-          </el-button>
-        </template>
-      </div>
+      <WechatPreview
+        v-if="activeDraft.key === 'wechat'"
+        :title="activeDraft.title"
+        :summary="activeDraft.summary"
+        :body="activeDraft.body"
+        :tags="activeDraft.tags"
+        :body-segments="activeBodySegments"
+        :cover-image="activeDraft.cover_image"
+        :author="activeDraft.author"
+        :metadata="activeDraft.metadata"
+      />
 
-      <!-- ===== 编辑面板 ===== -->
-      <div v-if="isEditing(activeDraft.key)" class="edit-panel">
-        <el-form label-position="top" size="small">
-          <el-form-item label="标题">
-            <el-input
-              v-model="editBuffers[activeDraft.key]!.title"
-              maxlength="200"
-              show-word-limit
-            />
-          </el-form-item>
-          <el-form-item label="正文">
-            <el-input
-              v-model="editBuffers[activeDraft.key]!.body"
-              type="textarea"
-              :rows="10"
-              resize="vertical"
-            />
-          </el-form-item>
-          <el-form-item label="标签（逗号或顿号分隔）">
-            <el-input
-              v-model="editBuffers[activeDraft.key]!.tagsText"
-              placeholder="如：科技、AI、编程"
-            />
-          </el-form-item>
-        </el-form>
-      </div>
-
-      <div class="platform-preview-scroll">
-        <WechatPreview
-          v-if="activeDraft.key === 'wechat'"
-          :title="activeDraft.title"
-          :summary="activeDraft.summary"
-          :body="activeDraft.body"
-          :tags="activeDraft.tags"
-          :rich-body="activeDraft.rich_body"
-          :cover-image="activeDraft.cover_image"
-          :author="activeDraft.author"
-          :metadata="activeDraft.metadata"
-        />
-
-        <div v-else-if="activeDraft.key === 'bilibili'" class="bilibili-preview">
+      <div v-else-if="activeDraft.key === 'bilibili'" class="bilibili-preview">
         <div class="bilibili-main">
           <section class="bilibili-player">
             <video
@@ -401,23 +289,18 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
               :poster="assetSrc(bilibiliCover)"
               controls
             />
-            <img
-              v-else-if="assetSrc(bilibiliCover)"
-              :src="assetSrc(bilibiliCover)"
-              :alt="bilibiliCover?.name || 'B站封面'"
-            />
             <div v-else class="bilibili-player-empty">
               <strong>待选择主视频</strong>
-              <span>B站真实发布需要视频素材</span>
+              <span>{{ bilibiliCover ? "已选封面，B 站发布仍需上传视频" : "B 站发布需要视频素材" }}</span>
             </div>
           </section>
 
           <section class="bilibili-info">
             <h2>{{ activeDraft.title }}</h2>
             <div class="bilibili-meta">
-              <span>{{ activeDraft.title.length }} 字</span>
-              <span>{{ activeDraft.body.length }} 字</span>
-              <span>{{ activeDraft.tags.length }} 标签</span>
+              <span>{{ activeDraft.title.length }}/80 字</span>
+              <span>{{ activeDraft.body.length }}/2000 字</span>
+              <span>{{ activeDraft.tags.length }}/10 标签</span>
             </div>
             <div v-if="activeDraft.tags.length" class="bilibili-tags">
               <el-tag v-for="tag in activeDraft.tags" :key="tag" effect="plain">
@@ -464,17 +347,17 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
             </div>
           </el-collapse-item>
         </el-collapse>
-        </div>
+      </div>
 
-        <div v-else-if="activeDraft.key === 'zhihu'" class="zhihu-preview">
+      <div v-else-if="activeDraft.key === 'zhihu'" class="zhihu-preview">
         <article class="zhihu-article">
           <header class="zhihu-title-area">
             <h2>{{ activeDraft.title }}</h2>
             <div class="zhihu-author-row">
               <span class="zhihu-avatar">知</span>
               <div>
-                <strong>{{ activeDraft.author || "Auto_Upt 创作助手" }}</strong>
-                <span>内容创作、平台适配、发布流程</span>
+                <strong>{{ activeDraft.author || "Auto_Upt" }}</strong>
+                <span>内容创作 · 平台适配 · 发布流程</span>
               </div>
             </div>
           </header>
@@ -487,43 +370,13 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 
           <section class="zhihu-answer-shell">
             <div class="zhihu-answer">
-              <!-- 优先用结构化块渲染 -->
-              <template v-if="activeDraft.zhihu_blocks?.length">
-                <template v-for="(block, bi) in activeDraft.zhihu_blocks" :key="bi">
-                  <!-- 结论 -->
-                  <p v-if="block.type === 'conclusion'" class="zh-conclusion">
-                    <strong>先说结论：</strong>{{ block.text?.replace(/^先说结论：/, "") }}
-                  </p>
-
-                  <!-- 一级标题：▎ -->
-                  <h3 v-else-if="block.type === 'heading-1'" class="zh-h1">{{ block.text }}</h3>
-
-                  <!-- 二级标题 -->
-                  <h4 v-else-if="block.type === 'heading-2'" class="zh-h2">{{ block.text }}</h4>
-
-                  <!-- 正文 -->
-                  <p v-else-if="block.type === 'text'" class="zh-text">{{ block.text }}</p>
-
-                  <!-- 分隔线 -->
-                  <hr v-else-if="block.type === 'separator'" class="zh-sep" />
-
-                  <!-- 引用块 -->
-                  <blockquote v-else-if="block.type === 'quote'" class="zh-quote">
-                    <p v-if="block.text">{{ block.text }}</p>
-                    <p v-if="block.detail" class="zh-quote-detail">{{ block.detail }}</p>
-                  </blockquote>
-
-                  <!-- 图片占位 -->
-                  <figure v-else-if="block.type === 'image'" class="zh-image">
-                    <img v-if="block.src" :src="block.src" :alt="block.name || '插图'" />
-                    <figcaption v-else>[ 图片：{{ block.name || "插图" }} ]</figcaption>
-                  </figure>
-                </template>
+              <template v-for="(segment, idx) in zhihuTextSegments" :key="'t-' + idx">
+                <p>{{ segment.text }}</p>
               </template>
-
-              <!-- 兜底：纯文本段落 -->
-              <template v-else>
-                <p v-for="paragraph in zhihuParagraphs" :key="paragraph">{{ paragraph }}</p>
+              <template v-for="(segment, idx) in zhihuImageSegments" :key="'i-' + idx">
+                <figure class="zhihu-inline-figure">
+                  <img v-if="segment.src" :src="segment.src" :alt="segment.name || '知乎图片'" />
+                </figure>
               </template>
             </div>
           </section>
@@ -551,7 +404,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
           </section>
           <section v-if="zhihuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅提示，不参与发布适配</strong>
+            <strong>当前阶段仅供展示，暂不参与发布</strong>
           </section>
         </aside>
 
@@ -570,9 +423,9 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
             </div>
           </el-collapse-item>
         </el-collapse>
-        </div>
+      </div>
 
-        <div v-else-if="activeDraft.key === 'xiaohongshu'" class="xhs-preview">
+      <div v-else-if="activeDraft.key === 'xiaohongshu'" class="xhs-preview">
         <section class="xhs-phone">
           <div class="phone-status-bar">
             <span>12:00</span>
@@ -599,8 +452,8 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
                 </el-carousel-item>
               </el-carousel>
               <div v-else class="xhs-cover-empty">
-                <strong>封面占位</strong>
-                <span>建议上传一张竖版或 3:4 图片</span>
+                <strong>封面预览</strong>
+                <span>建议使用竖版或 3:4 尺寸图片</span>
               </div>
             </div>
 
@@ -626,19 +479,19 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
         <aside class="xhs-detail-panel">
           <section>
             <span>标题</span>
-            <strong>{{ activeDraft.title.length }} 字</strong>
+            <strong>{{ activeDraft.title.length }}/20 字</strong>
           </section>
           <section>
             <span>正文</span>
-            <strong>{{ activeDraft.body.length }} 字</strong>
+            <strong>{{ activeDraft.body.length }}/1000 字</strong>
           </section>
           <section>
             <span>话题</span>
-            <strong>{{ activeDraft.tags.length }} 个</strong>
+            <strong>{{ activeDraft.tags.length }}/10 个</strong>
           </section>
           <section v-if="xiaohongshuUnsupportedMedia.length" class="media-pending-card">
             <span>音视频素材</span>
-            <strong>当前阶段仅提示，不参与发布适配</strong>
+            <strong>当前阶段仅供展示，暂不参与发布</strong>
           </section>
           <section class="xhs-body-preview">
             <span>笔记正文</span>
@@ -661,9 +514,9 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
             </div>
           </el-collapse-item>
         </el-collapse>
-        </div>
+      </div>
 
-        <el-form v-else label-position="top" class="preview-form">
+      <el-form v-else label-position="top" class="preview-form">
         <el-form-item label="标题">
           <el-input :model-value="activeDraft.title" readonly class="readonly-field">
             <template #suffix>
@@ -684,24 +537,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
         </el-form-item>
 
         <el-form-item label="正文">
-          <div v-if="activeDraft.body_blocks?.length" class="block-preview">
-            <template v-for="(block, index) in activeDraft.body_blocks" :key="index">
-              <pre v-if="block.type === 'text'" class="text-block">{{ block.text }}</pre>
-              <figure v-else-if="block.asset_kind === 'image'" class="asset-block">
-                <img v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" :alt="block.asset?.name || '图片素材'" />
-                <figcaption>{{ block.asset?.name || "图片素材" }}</figcaption>
-              </figure>
-              <figure v-else-if="block.asset_kind === 'video'" class="asset-block">
-                <video v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
-                <figcaption>{{ block.asset?.name || "视频素材" }}</figcaption>
-              </figure>
-              <div v-else-if="block.asset_kind === 'audio'" class="audio-block">
-                <span>{{ block.asset?.name || "音频素材" }}</span>
-                <audio v-if="assetSrc(block.asset)" :src="assetSrc(block.asset)" controls />
-              </div>
-            </template>
-          </div>
-          <div v-else class="body-preview">
+          <div class="body-preview">
             <pre>{{ activeDraft.body }}</pre>
           </div>
         </el-form-item>
@@ -719,8 +555,7 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
             {{ metric.label }}：<strong>{{ metric.value }}</strong>
           </span>
         </div>
-        </el-form>
-      </div>
+      </el-form>
     </template>
   </section>
 </template>
@@ -730,7 +565,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
 
 .preview-header {
@@ -766,54 +600,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 
 .preview-form {
   flex: 1;
-}
-
-/* ---- 编辑工具栏 ---- */
-.edit-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  padding: 6px 12px;
-  background: #f0f7ff;
-  border: 1px solid #d0e3f7;
-  border-radius: 6px;
-}
-
-.edit-badge {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f6feb;
-}
-
-.edit-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.edit-panel {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  background: #fafbfc;
-  border: 1px solid #e8ecf2;
-  border-radius: 8px;
-}
-
-.edit-panel :deep(.el-form-item) {
-  margin-bottom: 10px;
-}
-
-.edit-panel :deep(.el-form-item:last-child) {
-  margin-bottom: 0;
-}
-
-.platform-preview-scroll {
-  max-height: min(72vh, 780px);
-  min-height: min(540px, 72vh);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 2px 8px 10px 2px;
-  scrollbar-gutter: stable;
 }
 
 .readonly-field :deep(.el-input__inner),
@@ -995,10 +781,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 .zhihu-article {
   max-width: 780px;
   padding: 24px;
-  display: flex;
-  flex-direction: column;
-  max-height: min(72vh, 760px);
-  overflow: hidden;
 }
 
 .zhihu-title-area h2 {
@@ -1065,113 +847,11 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   word-break: break-word;
 }
 
-/* ---- 知乎结构化块样式 ---- */
-.zh-conclusion {
-  margin: 0 0 18px !important;
-  padding: 12px 16px;
-  background: #f0f7ff;
-  border-left: 4px solid #1f6feb;
-  border-radius: 0 6px 6px 0;
-  color: #172033 !important;
-  font-size: 15px !important;
-  line-height: 1.8 !important;
-}
-
-.zh-conclusion strong {
-  color: #1f6feb;
-}
-
-.zh-h1 {
-  margin: 24px 0 10px !important;
-  padding-left: 12px;
-  border-left: 3px solid #1f6feb;
-  color: #172033;
-  font-size: 18px;
-  font-weight: 650;
-  line-height: 1.4;
-}
-
-.zh-h1::before {
-  content: "▎";
-  margin-right: 6px;
-  color: #1f6feb;
-  font-weight: 400;
-}
-
-.zh-h2 {
-  margin: 18px 0 8px !important;
-  color: #253247;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.5;
-}
-
-.zh-text {
-  margin: 0 0 14px !important;
-  color: #253247;
-  font-size: 15px;
-  line-height: 1.85;
-  word-break: break-word;
-}
-
-.zh-sep {
-  margin: 16px 0;
-  border: none;
-  border-top: 1px solid #e8ecf2;
-}
-
-.zh-quote {
-  margin: 12px 0 16px;
-  padding: 10px 16px;
-  background: #f7f9fb;
-  border-left: 3px solid #c6d2e1;
-  border-radius: 0 4px 4px 0;
-  color: #4f6279;
-  font-size: 14px;
-  line-height: 1.75;
-}
-
-.zh-quote p {
-  margin: 0 0 6px;
-  font-size: inherit;
-  color: inherit;
-}
-
-.zh-quote-detail {
-  color: #78909c !important;
-  font-size: 13px !important;
-}
-
-.zh-image {
-  margin: 12px 0;
-  padding: 8px 12px;
-  background: #f7f9fb;
-  border: 1px dashed #c6d2e1;
-  border-radius: 6px;
-  text-align: center;
-}
-
-.zh-image img {
-  display: block;
-  max-width: 100%;
-  max-height: 220px;
-  margin: 0 auto;
-  object-fit: contain;
-}
-
-.zh-image figcaption {
-  margin-top: 6px;
-  color: #9aa9bb;
-  font-size: 13px;
-}
-
-.zhihu-inline-images {
-  display: grid;
-  gap: 12px;
+.zhihu-inline-figure {
   margin: 16px 0 4px;
 }
 
-.zhihu-inline-images img {
+.zhihu-inline-figure img {
   display: block;
   width: min(100%, 520px);
   max-height: 260px;
@@ -1179,6 +859,12 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   background: #f7f9fb;
   border: 1px solid #e2eaf3;
   border-radius: 8px;
+}
+
+.zhihu-inline-figure figcaption {
+  margin-top: 6px;
+  color: #607086;
+  font-size: 12px;
 }
 
 .zhihu-action-row,
@@ -1286,7 +972,8 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 .xhs-cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #f2f6fa;
 }
 
 .xhs-cover-empty {
@@ -1370,75 +1057,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
   line-height: 1.65;
 }
 
-.block-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: 360px;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid #dfe5ee;
-  border-radius: 6px;
-  background: #f7f9fb;
-}
-
-.text-block {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #253247;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.asset-block {
-  margin: 0;
-  padding: 10px;
-  background: #ffffff;
-  border: 1px solid #e2eaf3;
-  border-radius: 8px;
-}
-
-.asset-block img,
-.asset-block video {
-  display: block;
-  width: 100%;
-  max-height: 260px;
-  object-fit: contain;
-  background: #eef3f8;
-  border-radius: 6px;
-}
-
-.asset-block figcaption {
-  margin-top: 8px;
-  color: #607086;
-  font-size: 12px;
-}
-
-.audio-block {
-  display: grid;
-  grid-template-columns: minmax(120px, 220px) minmax(240px, 1fr);
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  background: #ffffff;
-  border: 1px solid #e2eaf3;
-  border-radius: 8px;
-}
-
-.audio-block span {
-  overflow: hidden;
-  color: #253247;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.audio-block audio {
-  width: 100%;
-}
-
 .tag-row {
   display: flex;
   flex-wrap: wrap;
@@ -1504,10 +1122,6 @@ function draftHighlights(draft: PlatformDraft | null, limit: number) {
 @media (max-width: 680px) {
   .preview-header {
     justify-content: flex-start;
-  }
-
-  .audio-block {
-    grid-template-columns: 1fr;
   }
 }
 </style>

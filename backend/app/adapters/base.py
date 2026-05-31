@@ -30,6 +30,22 @@ def clip_text(text: str, max_length: int, suffix: str = "...") -> str:
     return text[: max_length - len(suffix)].rstrip() + suffix
 
 
+def clip_tag(tag: str, max_length: int = 8) -> str:
+    """截断单个标签，保留最多 max_length 个字符（约 1-3 个中文词）。"""
+    tag = tag.strip()
+    if len(tag) <= max_length:
+        return tag
+    return tag[:max_length]
+
+
+def clip_tags(tags: list[str], *, max_length: int = 8, max_count: int | None = None) -> list[str]:
+    """截断标签列表：每个标签不超过 max_length 字符，可选限制总数。"""
+    result = [clip_tag(t, max_length) for t in tags if t.strip()]
+    if max_count is not None:
+        result = result[:max_count]
+    return result
+
+
 def first_non_empty(*values: str | None, fallback: str = "Untitled Content") -> str:
     for value in values:
         if value and value.strip():
@@ -61,32 +77,8 @@ class PlatformAdapter(ABC):
         limits = self.profile.get("limits", {})
         issues: list[dict[str, Any]] = []
 
-        title = draft.get("title", "")
-        body = draft.get("body", "")
         tags = draft.get("tags", [])
         assets = draft.get("assets", [])
-
-        title_max = limits.get("title_max_length")
-        if title_max and len(title) > title_max:
-            issues.append(
-                {
-                    "level": "warning",
-                    "code": "TITLE_TOO_LONG",
-                    "field": "title",
-                    "message": f"Title exceeds {title_max} characters.",
-                }
-            )
-
-        body_max = limits.get("body_max_length")
-        if body_max and len(body) > body_max:
-            issues.append(
-                {
-                    "level": "warning",
-                    "code": "BODY_TOO_LONG",
-                    "field": "body",
-                    "message": f"Body exceeds {body_max} characters.",
-                }
-            )
 
         tags_max = limits.get("tags_max_count")
         if tags_max and len(tags) > tags_max:
