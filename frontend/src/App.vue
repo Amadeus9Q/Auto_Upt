@@ -868,6 +868,10 @@ async function generatePreview() {
     return;
   }
 
+  // 记录调用前标题和关键词是否为空，用于回填判断
+  const titleWasEmpty = !title.value.trim();
+  const tagsWereEmpty = !tags.value.trim();
+
   // 获取已有的平台草稿和校验报告
   const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
   const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
@@ -907,6 +911,22 @@ async function generatePreview() {
       validation_report: mergedValidation,
     };
 
+    // 回填：如果调用前标题为空且后端生成了标题，自动填入
+    const ir = response.content_ir as Record<string, unknown> | null;
+    if (titleWasEmpty && ir) {
+      const generatedTitle = ir["title"];
+      if (typeof generatedTitle === "string" && generatedTitle.trim() && generatedTitle !== "Untitled Content") {
+        title.value = generatedTitle;
+      }
+    }
+    // 回填：如果调用前关键词为空且后端生成了关键词，自动填入
+    if (tagsWereEmpty && ir) {
+      const generatedTags = ir["tags"];
+      if (Array.isArray(generatedTags) && generatedTags.length > 0 && generatedTags.every((t: unknown) => typeof t === "string")) {
+        tags.value = (generatedTags as string[]).join(", ");
+      }
+    }
+
     ElMessage.success("预览已生成。");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
@@ -914,6 +934,44 @@ async function generatePreview() {
   } finally {
     previewLoading.value = false;
   }
+}
+
+function clearPlatformDraft(platform: PlatformKey) {
+  if (!preview.value) return;
+  const currentDraft = preview.value.drafts[platform];
+  if (!currentDraft) return;
+  updatePlatformDraft(platform, { title: "", body: "", tags: [] });
+  // 如果清除后所有平台草稿都为空，重置预览状态
+  const allCleared = Object.values(preview.value.drafts).every(
+    d => !d?.body?.trim()
+  );
+  if (allCleared) {
+    preview.value = null;
+  }
+}
+
+function clearCheckedPlatformDrafts() {
+  if (!preview.value) return;
+  for (const platform of selectedPlatforms.value) {
+    clearPlatformDraft(platform);
+  }
+  // 如果清除后所有平台草稿都为空，重置预览状态
+  const allCleared = Object.values(preview.value.drafts).every(
+    d => !d?.body?.trim()
+  );
+  if (allCleared) {
+    preview.value = null;
+  }
+}
+
+function clearBasicInfo() {
+  title.value = "";
+  tags.value = "";
+}
+
+function clearContent() {
+  content.value = "";
+  preview.value = null;
 }
 
 async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
@@ -1206,6 +1264,10 @@ onMounted(async () => {
           @optimize-with-agent="optimizeWithAgent"
           @update-platform-draft="updatePlatformDraft"
           @open-preview="openPreviewDialog"
+          @clear-platform-draft="clearPlatformDraft"
+          @clear-checked-platform-drafts="clearCheckedPlatformDrafts"
+          @clear-basic-info="clearBasicInfo"
+          @clear-content="clearContent"
           @confirm-publish="enterPublishConfirm"
         />
       </el-main>
