@@ -321,7 +321,7 @@ async function refreshAccounts(showToast = false) {
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : "账号状态刷新失败";
     if (showToast) {
-      ElMessage.error("账号接口暂不可用");
+      ElMessage.error("暂时无法读取账号状态");
     }
   } finally {
     loadingAction.value = "";
@@ -443,7 +443,7 @@ async function testConnection(platformKey: SupportedPlatform) {
     const platform = platformByKey(platformKey);
     if (platform) {
       platform.status = "error";
-      platform.note = "连接测试接口暂不可用";
+      platform.note = "当前暂时无法测试连接";
     }
     ElMessage.error(error instanceof Error ? error.message : "连接测试失败");
   } finally {
@@ -491,7 +491,7 @@ void refreshAccounts();
     <el-alert
       v-if="loadError"
       class="phase-note"
-      :title="`账号接口暂不可用：${loadError}`"
+      :title="`暂时无法读取账号状态：${loadError}`"
       type="warning"
       show-icon
       :closable="false"
