@@ -55,7 +55,7 @@ class ImportService:
         content = file.file.read().decode("utf-8", errors="replace")
         media: list[dict[str, Any]] = []
 
-        # 提取 ![alt](src) 图片引用
+        # 提取 ![alt](src) 图片引用，并替换为统一标记
         img_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
         for i, m in enumerate(img_pattern.finditer(content)):
             media.append({
@@ -64,6 +64,9 @@ class ImportService:
                 "kind": "image",
                 "description": m.group(1) or "",
             })
+        content = img_pattern.sub(
+            lambda m: f"【图片：{m.group(2).split('/')[-1]}】", content
+        )
 
         return content, media
 
