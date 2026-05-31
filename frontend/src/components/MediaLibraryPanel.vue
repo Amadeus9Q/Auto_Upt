@@ -292,7 +292,7 @@ function dropClass(tab: MediaTab, asset: LocalAsset) {
 
             <div class="media-actions">
               <el-button v-if="insertEnabled" text type="primary" :icon="Plus" @click="emit('insert', asset)">插入正文</el-button>
-              <el-button v-if="asset.folderId !== activeFolderId" text @click="moveAssetToCurrentFolder(asset)">移入此处</el-button>
+              <el-button v-if="(asset.folderId ?? null) !== activeFolderId" text @click="moveAssetToCurrentFolder(asset)">移入此处</el-button>
               <el-button text type="danger" :icon="Delete" @click="removeAsset(asset)" />
             </div>
           </article>
