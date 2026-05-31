@@ -56,8 +56,6 @@ const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
   zhihu: "knowledge",
   xiaohongshu: "social"
 };
-const allPlatforms: PlatformKey[] = ["wechat", "bilibili", "zhihu", "xiaohongshu"];
-
 const activeTab = ref<WorkspaceTab>("preview");
 const title = ref("");
 const content = ref("");
@@ -613,7 +611,7 @@ async function optimizeAllWithAgent() {
     const run = await runAgentAdaptPreview({
       ...basePayload,
       preview_id: preview.value?.preview_id ?? null,
-      platforms: allPlatforms,
+      platforms: selectedPlatforms.value,
       style_goal: editorAssets.value.videos.length ? "video" : "professional",
       rewrite_strength: "medium",
       overwrite_existing_metadata: false,
