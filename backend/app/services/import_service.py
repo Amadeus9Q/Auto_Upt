@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
+from backend.app.agents.content_analyst import ContentAnalystAgent
 from backend.app.agents.document_extractor import DocumentExtractorAgent
 from backend.app.schemas.content import ImportDocumentResponse, ImportedMedia
 
@@ -23,6 +24,7 @@ class ImportService:
 
     def __init__(self) -> None:
         self._extractor = DocumentExtractorAgent()
+        self._analyst = ContentAnalystAgent()
 
     # ------------------------------------------------------------------
     # 文件解析
@@ -178,12 +180,38 @@ class ImportService:
                 ))
                 seen_names.add(name)
 
-        return ImportDocumentResponse(
+        # ---- 章节智能分析：段落/标题/子标题识别 ----
+        body_text = extracted.get("body", raw_text)
+        analysis = self._analyst.analyze(
+            body=body_text,
             title=extracted.get("title", ""),
-            body=extracted.get("body", raw_text),
             tags=extracted.get("tags", []),
             content_type=extracted.get("content_type", "article"),
-            summary=extracted.get("summary", ""),
+        )
+
+        def _serialize_chapters(chapters: list[Any]) -> list[dict[str, Any]]:
+            result: list[dict[str, Any]] = []
+            for ch in chapters:
+                item: dict[str, Any] = {
+                    "level": ch.level,
+                    "title": ch.title,
+                    "content": ch.content,
+                    "start_index": ch.start_index,
+                    "word_count": ch.word_count,
+                }
+                if ch.sub_chapters:
+                    item["sub_chapters"] = _serialize_chapters(ch.sub_chapters)
+                result.append(item)
+            return result
+
+        return ImportDocumentResponse(
+            title=extracted.get("title", ""),
+            subtitle=analysis.subtitle or "",
+            body=body_text,
+            tags=extracted.get("tags", []),
+            content_type=analysis.content_type or extracted.get("content_type", "article"),
+            summary=analysis.summary or extracted.get("summary", ""),
             media=merged_media,
+            chapters=_serialize_chapters(analysis.chapters or analysis.flat_chapters),
             raw_text=raw_text,
         )
