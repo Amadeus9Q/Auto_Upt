@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { ElMessage, type UploadFile, type UploadProps } from "element-plus";
+import { ElMessage, ElMessageBox, type UploadFile, type UploadProps } from "element-plus";
 import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
 
 import { importDocument, type AgentWritingStyle, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
@@ -51,6 +51,10 @@ const emit = defineEmits<{
   optimizeAllWithAgent: [options: AgentOptimizeOptions];
   optimizeWithAgent: [platform: PlatformKey, options: AgentOptimizeOptions];
   updatePlatformDraft: [platform: PlatformKey, patch: Partial<Pick<DraftPayload, "title" | "body" | "tags">>];
+  clearPlatformDraft: [platform: PlatformKey];
+  clearCheckedPlatformDrafts: [];
+  clearBasicInfo: [];
+  clearContent: [];
 }>();
 
 const platformOptions: Array<{ label: string; value: PlatformKey }> = [
@@ -246,6 +250,50 @@ function emitOptimizeWithAgent() {
   if (options) {
     emit("optimizeWithAgent", activePreviewPlatform.value, options);
   }
+}
+
+async function handleClearPlatform() {
+  try {
+    await ElMessageBox.confirm("确认清除当前平台的标题、关键词和正文？", "清除当前平台", {
+      confirmButtonText: "确认清除",
+      cancelButtonText: "取消",
+      type: "warning"
+    });
+    emit("clearPlatformDraft", activePreviewPlatform.value);
+  } catch { /* 用户取消 */ }
+}
+
+async function handleClearCheckedPlatforms() {
+  try {
+    await ElMessageBox.confirm("确认清除所有勾选平台的标题、关键词和正文？", "一键清除勾选平台", {
+      confirmButtonText: "确认清除",
+      cancelButtonText: "取消",
+      type: "warning"
+    });
+    emit("clearCheckedPlatformDrafts");
+  } catch { /* 用户取消 */ }
+}
+
+async function handleClearBasicInfo() {
+  try {
+    await ElMessageBox.confirm("确认清除标题和关键词？", "清除基础信息", {
+      confirmButtonText: "确认清除",
+      cancelButtonText: "取消",
+      type: "warning"
+    });
+    emit("clearBasicInfo");
+  } catch { /* 用户取消 */ }
+}
+
+async function handleClearContent() {
+  try {
+    await ElMessageBox.confirm("确认清除正文内容？", "清除正文", {
+      confirmButtonText: "确认清除",
+      cancelButtonText: "取消",
+      type: "warning"
+    });
+    emit("clearContent");
+  } catch { /* 用户取消 */ }
 }
 
 function toLocalAsset(file: UploadFile, tab: MediaTab): LocalAsset | null {
@@ -960,6 +1008,9 @@ function dropClass(tab: MediaTab, index: number) {
           </div>
         </el-form-item>
       </div>
+      <div class="meta-clear-row">
+        <el-button text type="danger" @click="handleClearBasicInfo">清除</el-button>
+      </div>
       </section>
 
       <section class="editor-panel editor-panel-content">
@@ -1016,11 +1067,14 @@ function dropClass(tab: MediaTab, index: number) {
           </div>
         </div>
       </el-form-item>
+      <div class="content-clear-row">
+        <el-button text type="danger" @click="handleClearContent">清除</el-button>
+      </div>
       </section>
 
       <div class="asset-strip">
         <el-icon><MagicStick /></el-icon>
-        <span>已选择 {{ assetCount }} 个素材。可拖拽调整顺序，封面图将在发布时优先使用。</span>
+        <span>可拖拽多媒体库中素材至文本框以添加至正文，封面图将在发布时优先使用。</span>
       </div>
 
       <section class="editor-panel editor-panel-platform">
@@ -1126,18 +1180,19 @@ function dropClass(tab: MediaTab, index: number) {
               >
                 智能优化
               </el-button>
+              <el-button
+                type="danger"
+                text
+                :disabled="!hasPreview"
+                @click="handleClearPlatform"
+              >
+                清除
+              </el-button>
             </div>
           </div>
         </section>
       </el-form-item>
 
-      <el-form-item label="平台" class="platform-before-actions">
-        <el-checkbox-group v-model="platforms" class="platforms">
-          <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </el-checkbox-button>
-        </el-checkbox-group>
-      </el-form-item>
       </section>
     </el-form>
       </div>
@@ -1166,6 +1221,14 @@ function dropClass(tab: MediaTab, index: number) {
           @delete="handleMediaDelete"
         />
       </aside>
+    </div>
+
+    <div class="platform-before-actions">
+      <el-checkbox-group v-model="platforms" class="platforms">
+        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
+          {{ option.label }}
+        </el-checkbox-button>
+      </el-checkbox-group>
     </div>
 
     <div class="batch-agent-style-row">
@@ -1200,6 +1263,9 @@ function dropClass(tab: MediaTab, index: number) {
       </el-button>
       <el-button type="primary" :icon="Promotion" @click="$emit('confirmPublish')">
         发布
+      </el-button>
+      <el-button type="danger" text :disabled="!hasPreview" @click="handleClearCheckedPlatforms">
+        一键清除
       </el-button>
     </div>
   </section>
@@ -1319,6 +1385,13 @@ function dropClass(tab: MediaTab, index: number) {
   color: #607086;
   font-size: 13px;
   font-weight: 650;
+}
+
+.meta-clear-row,
+.content-clear-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
 .editor-media-side {
@@ -1454,6 +1527,9 @@ function dropClass(tab: MediaTab, index: number) {
 }
 
 .platform-before-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 14px;
 }
 
