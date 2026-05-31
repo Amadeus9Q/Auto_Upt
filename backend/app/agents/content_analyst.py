@@ -149,6 +149,7 @@ class ContentAnalystAgent:
         content_blocks: list[dict[str, Any]] | None = None,
         assets: list[dict[str, Any]] | None = None,
         content_type: str = "article",
+        allow_llm: bool = True,
     ) -> ContentAnalysis:
         """对正文执行完整分析。
 
@@ -203,6 +204,9 @@ class ContentAnalystAgent:
             chapters, flat_chapters = self._parse_markdown_chapters(
                 body, headings, media_by_position
             )
+            llm_used = False
+        elif not allow_llm:
+            chapters, flat_chapters = self._parse_chapters(body, media_by_position)
             llm_used = False
         else:
             # 无 Markdown 标题 → 尝试 LLM 语义分段

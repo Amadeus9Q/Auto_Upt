@@ -15,6 +15,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _import_settings() -> tuple[bool, float, int]:
+    try:
+        from backend.app.core.config import get_settings
+
+        settings = get_settings()
+        return (
+            settings.import_use_llm,
+            settings.import_llm_timeout_seconds,
+            settings.import_llm_max_chars,
+        )
+    except Exception:
+        return True, 25.0, 12000
+
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
@@ -267,6 +281,9 @@ class DocumentExtractorAgent:
 
     @property
     def available(self) -> bool:
+        import_use_llm, _, _ = _import_settings()
+        if not import_use_llm:
+            return False
         if self._api_key:
             return True
         try:
@@ -308,7 +325,12 @@ class DocumentExtractorAgent:
                 base_url = s.openai_base_url
         except Exception:
             pass
-        self._client = openai.OpenAI(api_key=self._api_key, base_url=base_url)
+        _, timeout_seconds, _ = _import_settings()
+        self._client = openai.OpenAI(
+            api_key=self._api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+        )
         return self._client
 
     def extract(self, raw_text: str) -> dict[str, Any]:
@@ -325,7 +347,15 @@ class DocumentExtractorAgent:
 
         try:
             client = self._get_client()
-            user_prompt = EXTRACT_USER_TEMPLATE.format(raw_text=raw_text)
+            _, _, max_chars = _import_settings()
+            llm_text = raw_text[:max(1000, max_chars)]
+            if len(raw_text) > len(llm_text):
+                logger.info(
+                    "Document import text truncated for LLM: original=%s chars, sent=%s chars.",
+                    len(raw_text),
+                    len(llm_text),
+                )
+            user_prompt = EXTRACT_USER_TEMPLATE.format(raw_text=llm_text)
 
             response = client.chat.completions.create(
                 model=self.model,
@@ -334,7 +364,7 @@ class DocumentExtractorAgent:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2,
-                max_tokens=min(max(4096, len(raw_text) // 2), 16000),
+                max_tokens=min(max(2048, len(llm_text) // 3), 6000),
             )
 
             content = response.choices[0].message.content or ""
