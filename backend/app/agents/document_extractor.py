@@ -229,7 +229,7 @@ def _rule_based_extract(raw_text: str) -> dict[str, Any]:
     # 摘要
     summary = rule_summary or body[:200].replace("\n", " ").strip()
 
-    # 媒体提取：![...](...) Markdown 图片语法
+    # 媒体提取：![...](...) Markdown 图片语法，并替换正文中的引用
     media: list[dict[str, Any]] = []
     img_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
     for i, m in enumerate(img_pattern.finditer(raw_text)):
@@ -239,6 +239,9 @@ def _rule_based_extract(raw_text: str) -> dict[str, Any]:
             "kind": "image",
             "description": m.group(1) or "",
         })
+    body = img_pattern.sub(
+        lambda m: f"【图片：{m.group(2).split('/')[-1]}】", body
+    )
 
     return {
         "title": title or "未命名文档",
