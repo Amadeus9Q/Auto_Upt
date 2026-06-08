@@ -286,7 +286,18 @@ export interface AccountConnection {
   capabilities: Record<string, unknown>;
   external_user_id?: string | null;
   token_expires_at?: string | null;
+  saved_credentials?: SavedCredentialOption[];
   message: string;
+}
+
+export interface SavedCredentialOption {
+  account_id: string;
+  app_id: string;
+  display_name: string;
+  status: AccountStatus;
+  has_secret: boolean;
+  is_active: boolean;
+  token_expires_at?: string | null;
 }
 
 export interface AccountListResponse {
@@ -295,7 +306,8 @@ export interface AccountListResponse {
 
 export interface WechatConnectPayload {
   app_id: string;
-  app_secret: string;
+  app_secret?: string | null;
+  account_id?: string | null;
   display_name?: string;
 }
 
@@ -325,6 +337,13 @@ export interface AccountTestResponse {
   ok: boolean;
   message: string;
   details: Record<string, unknown>;
+}
+
+export interface AccountSecretRevealResponse {
+  account_id: string;
+  platform: PlatformKey;
+  app_id: string;
+  app_secret: string;
 }
 
 export interface UploadedAssetResponse {
@@ -500,5 +519,11 @@ export function testAccountConnection(platform: PlatformKey): Promise<AccountTes
 export async function deleteAccount(accountId: string): Promise<AccountConnection> {
   return request<AccountConnection>(`/api/v1/accounts/connections/${accountId}`, {
     method: "DELETE"
+  });
+}
+
+export function revealAccountSecret(accountId: string): Promise<AccountSecretRevealResponse> {
+  return request<AccountSecretRevealResponse>(`/api/v1/accounts/connections/${accountId}/reveal-secret`, {
+    method: "POST"
   });
 }

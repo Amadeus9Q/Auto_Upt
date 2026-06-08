@@ -9,6 +9,7 @@ from backend.app.db.session import get_session
 from backend.app.schemas.account import (
     AccountListResponse,
     AccountPlatformResponse,
+    AccountSecretRevealResponse,
     AccountTestResponse,
     BilibiliCaptchaResponse,
     BilibiliLoginRequest,
@@ -157,6 +158,31 @@ async def test_account(
         return await AccountService(session).test_account(platform)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/connections/{account_id}/reveal-secret",
+    response_model=AccountSecretRevealResponse,
+    summary="查看已保存的公众号 AppSecret",
+    description="解密并返回已保存的公众号 AppSecret。当前项目没有用户权限体系，该接口仅供账号管理页主动查看使用。",
+    response_description="解密后的公众号 AppSecret。",
+    responses={
+        400: {"description": "当前账号不支持查看密钥，或凭据不完整。"},
+        404: {"description": "账号连接不存在。"},
+    },
+)
+async def reveal_account_secret(
+    account_id: Annotated[str, Path(description="账号连接 ID。")],
+    session: AsyncSession = Depends(get_session),
+) -> AccountSecretRevealResponse:
+    service = AccountService(session)
+    try:
+        result = await service.reveal_account_secret(account_id)
+    except (PlatformClientError, CredentialCryptoError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Account connection not found.")
+    return result
 
 
 @router.delete(

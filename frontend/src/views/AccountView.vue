@@ -3,6 +3,7 @@ import { computed, reactive, ref } from "vue";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import {
   ChatDotRound,
+  Close,
   CircleCheck,
   CircleClose,
   Connection,
@@ -19,10 +20,12 @@ import {
   getAccounts,
   getBilibiliCaptcha,
   loginBilibili,
+  revealAccountSecret,
   testAccountConnection,
   type AccountConnection,
   type BilibiliLoginPayload,
   type PlatformKey,
+  type SavedCredentialOption,
   type WechatConnectPayload
 } from "@/api/client";
 
@@ -69,12 +72,15 @@ const bilibiliCaptchaRef = ref<HTMLElement>();
 const bilibiliCaptchaInstance = ref<GeetestInstance | null>(null);
 const loadingAction = ref<string>("");
 const loadError = ref("");
+const wechatSavedCredentials = ref<SavedCredentialOption[]>([]);
+const wechatPopoverVisible = ref(false);
 
 let geetestScriptPromise: Promise<void> | null = null;
 
 const wechatForm = reactive<WechatConnectPayload>({
   app_id: "",
-  app_secret: ""
+  app_secret: "",
+  account_id: null
 });
 
 const bilibiliForm = reactive<BilibiliLoginPayload>({
@@ -99,7 +105,7 @@ const bilibiliLoginState = reactive({
 
 const wechatRules: FormRules<WechatConnectPayload> = {
   app_id: [{ required: true, message: "请输入 AppID", trigger: "blur" }],
-  app_secret: [{ required: true, message: "请输入 AppSecret", trigger: "blur" }]
+  app_secret: [{ validator: validateWechatSecret, trigger: "blur" }]
 };
 
 const bilibiliRules: FormRules<BilibiliLoginPayload> = {
@@ -186,6 +192,15 @@ function formatExpireTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
 }
 
+function isBeforeExpiry(value?: string | null) {
+  if (!value) {
+    return true;
+  }
+
+  const expiresAt = new Date(value).getTime();
+  return Number.isNaN(expiresAt) ? true : expiresAt > Date.now();
+}
+
 function toLocalStatus(account: AccountConnection): AccountStatus {
   if (account.status === "connected") {
     return "connected";
@@ -194,6 +209,88 @@ function toLocalStatus(account: AccountConnection): AccountStatus {
     return "error";
   }
   return "disconnected";
+}
+
+function validateWechatSecret(_rule: unknown, value: string | null | undefined, callback: (error?: Error) => void) {
+  if (value?.trim()) {
+    callback();
+    return;
+  }
+  callback(new Error("请输入 AppSecret，或从历史 AppID 中选择已保存凭据。"));
+}
+
+function findWechatCredential(appId: string) {
+  return wechatSavedCredentials.value.find((item) => item.app_id === appId);
+}
+
+function queryWechatCredentials(query: string, callback: (items: SavedCredentialOption[]) => void) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const options = normalizedQuery
+    ? wechatSavedCredentials.value.filter((item) => item.app_id.toLowerCase().includes(normalizedQuery))
+    : wechatSavedCredentials.value;
+  callback(options);
+}
+
+async function selectWechatCredential(option: SavedCredentialOption) {
+  wechatForm.app_id = option.app_id;
+  wechatForm.account_id = option.account_id;
+  wechatForm.app_secret = "";
+  if (!option.has_secret) {
+    return;
+  }
+
+  loadingAction.value = `wechat-reveal-${option.account_id}`;
+  try {
+    const revealed = await revealAccountSecret(option.account_id);
+    wechatForm.app_secret = revealed.app_secret;
+    void wechatFormRef.value?.clearValidate?.("app_secret");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "读取 AppSecret 失败");
+  } finally {
+    loadingAction.value = "";
+  }
+}
+
+function clearWechatCredentialSelection() {
+  wechatForm.account_id = null;
+  wechatForm.app_secret = "";
+}
+
+function handleWechatAppIdInput(value: string) {
+  const option = findWechatCredential(value);
+  if (option) {
+    void selectWechatCredential(option);
+    return;
+  }
+  clearWechatCredentialSelection();
+}
+
+function handleWechatAppIdBlur() {
+  wechatForm.app_id = wechatForm.app_id.trim();
+  handleWechatAppIdInput(wechatForm.app_id);
+}
+
+function syncWechatForm(account: AccountConnection) {
+  wechatSavedCredentials.value = account.saved_credentials ?? [];
+  const usableSavedCredential = account.status === "connected" && isBeforeExpiry(account.token_expires_at);
+  if (!usableSavedCredential) {
+    wechatForm.app_id = "";
+    wechatForm.app_secret = "";
+    wechatForm.account_id = null;
+    return;
+  }
+
+  const option = wechatSavedCredentials.value.find(
+    (item) => item.is_active || item.account_id === account.account_id || item.app_id === account.external_user_id
+  );
+  if (option) {
+    void selectWechatCredential(option);
+    return;
+  }
+
+  wechatForm.app_id = account.external_user_id ?? "";
+  wechatForm.account_id = account.account_id;
+  wechatForm.app_secret = "";
 }
 
 function applyAccounts(accounts: AccountConnection[]) {
@@ -206,7 +303,13 @@ function applyAccounts(accounts: AccountConnection[]) {
     platform.account = account;
     platform.status = toLocalStatus(account);
     platform.note = account.message || (account.status === "connected" ? "已完成配置" : "尚未连接");
-    platform.username = account.status === "connected" ? account.display_name : platform.key === "bilibili" ? "未登录" : "未配置";
+    platform.username = account.status === "connected"
+      ? (account.platform === "wechat" ? account.external_user_id || account.display_name : account.display_name)
+      : platform.key === "bilibili" ? "未登录" : "未配置";
+
+    if (account.platform === "wechat") {
+      syncWechatForm(account);
+    }
   }
 }
 
@@ -342,12 +445,14 @@ async function connectWechat() {
   loadingAction.value = "wechat-connect";
 
   try {
+    const appSecret = wechatForm.app_secret?.trim() ?? "";
     const account = await connectWechatAccount({
-      app_id: wechatForm.app_id,
-      app_secret: wechatForm.app_secret
+      app_id: wechatForm.app_id.trim(),
+      app_secret: appSecret || null,
+      account_id: wechatForm.account_id ?? null
     });
     applyAccounts([account]);
-    ElMessage.success("公众号配置已保存");
+    ElMessage.success("公众号登录成功");
   } catch (error) {
     const platform = platformByKey("wechat");
     if (platform) {
@@ -468,9 +573,45 @@ async function disconnect(platformKey: SupportedPlatform) {
     platform.note = platformKey === "bilibili" ? "等待登录" : "尚未连接";
     platform.username = platformKey === "bilibili" ? "未登录" : "未配置";
     platform.loginResult = "";
+    if (platformKey === "wechat") {
+      wechatForm.app_id = "";
+      wechatForm.app_secret = "";
+      wechatForm.account_id = null;
+      wechatSavedCredentials.value = wechatSavedCredentials.value.filter((item) => item.account_id !== accountId);
+    }
     ElMessage.success("已断开连接");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "断开连接失败");
+  } finally {
+    loadingAction.value = "";
+  }
+}
+
+async function deleteWechatCredential(credential: SavedCredentialOption, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  loadingAction.value = `wechat-delete-${credential.account_id}`;
+  try {
+    await deleteAccount(credential.account_id);
+    wechatSavedCredentials.value = wechatSavedCredentials.value.filter((item) => item.account_id !== credential.account_id);
+    const platform = platformByKey("wechat");
+    const deletedActive = credential.is_active || platform?.account?.account_id === credential.account_id;
+    const deletedSelected = wechatForm.account_id === credential.account_id;
+    if (deletedSelected) {
+      wechatForm.app_id = "";
+      wechatForm.app_secret = "";
+      wechatForm.account_id = null;
+    }
+    if (deletedActive && platform) {
+      platform.account = undefined;
+      platform.status = "disconnected";
+      platform.note = "尚未连接";
+      platform.username = "未配置";
+    }
+    ElMessage.success("已删除账号");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除账号失败");
   } finally {
     loadingAction.value = "";
   }
@@ -534,21 +675,51 @@ void refreshAccounts();
         </div>
 
         <div class="actions-cell">
-          <el-popover v-if="platform.key === 'wechat'" placement="bottom-end" :width="360" trigger="click">
+          <el-popover v-if="platform.key === 'wechat'" placement="bottom-end" :width="360" :visible="wechatPopoverVisible">
             <template #reference>
-              <el-button :icon="Connection" type="primary">配置</el-button>
+              <el-button :icon="Connection" type="primary" @click.stop="wechatPopoverVisible = true">配置</el-button>
             </template>
 
             <el-form :ref="setWechatFormRef" class="account-form" :model="wechatForm" :rules="wechatRules" label-position="top">
+              <div class="form-head">
+                <span>公众号账号</span>
+                <el-button text circle :icon="Close" @click="wechatPopoverVisible = false" />
+              </div>
               <el-form-item label="AppID" prop="app_id">
-                <el-input v-model="wechatForm.app_id" autocomplete="off" placeholder="请输入公众号 AppID">
-                  <template #prefix>
-                    <el-icon><Key /></el-icon>
+                <el-autocomplete
+                  v-model="wechatForm.app_id"
+                  clearable
+                  value-key="app_id"
+                  :fetch-suggestions="queryWechatCredentials"
+                  placeholder="输入或选择公众号 AppID"
+                  @input="handleWechatAppIdInput"
+                  @select="selectWechatCredential"
+                  @blur="handleWechatAppIdBlur"
+                  @clear="clearWechatCredentialSelection"
+                >
+                  <template #default="{ item: credential }">
+                    <div class="credential-option">
+                      <span>{{ credential.app_id }}</span>
+                      <el-button
+                        class="credential-delete"
+                        text
+                        circle
+                        :icon="Close"
+                        :loading="loadingAction === `wechat-delete-${credential.account_id}`"
+                        @click="deleteWechatCredential(credential, $event)"
+                      />
+                    </div>
                   </template>
-                </el-input>
+                </el-autocomplete>
               </el-form-item>
               <el-form-item label="AppSecret" prop="app_secret">
-                <el-input v-model="wechatForm.app_secret" type="password" show-password autocomplete="new-password" placeholder="请输入 AppSecret">
+                <el-input
+                  v-model="wechatForm.app_secret"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  placeholder="请输入 AppSecret"
+                >
                   <template #prefix>
                     <el-icon><Key /></el-icon>
                   </template>
@@ -560,7 +731,7 @@ void refreshAccounts();
                 :disabled="isBusy && loadingAction !== 'wechat-connect'"
                 @click="connectWechat"
               >
-                保存配置
+                登录
               </el-button>
             </el-form>
           </el-popover>
@@ -760,6 +931,41 @@ void refreshAccounts();
   color: #1f6feb;
   background: #edf4ff;
   border-radius: 8px;
+}
+
+.account-form .el-select,
+.account-form .el-autocomplete {
+  width: 100%;
+}
+
+.form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.credential-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.credential-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.credential-delete {
+  flex: 0 0 auto;
+  color: #607086;
 }
 
 .captcha-panel,
