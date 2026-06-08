@@ -530,15 +530,9 @@ class PublishService:
     ) -> dict[str, Any]:
         account_id = task.account_ids.get(platform) if task.account_ids else None
 
-        # ---- 自动查找该平台第一个已连接账号 ----
+        # ---- 自动查找平台默认账号。公众号只使用账号管理中标记 active 的账号。----
         if not account_id:
-            result = await self.session.execute(
-                select(ConnectedAccountRecord)
-                .where(ConnectedAccountRecord.platform == platform)
-                .order_by(ConnectedAccountRecord.created_at.desc())
-                .limit(1)
-            )
-            account = result.scalars().first()
+            account = await self._default_account_for_platform(platform)
             if account is None:
                 raise PlatformClientError(
                     f"No connected account found for {platform}. Please connect an account first.",
@@ -576,6 +570,23 @@ class PublishService:
             "assets": assets,
             "options": task.platform_options.get(platform, {}) if task.platform_options else {},
         }
+
+    async def _default_account_for_platform(self, platform: str) -> ConnectedAccountRecord | None:
+        result = await self.session.execute(
+            select(ConnectedAccountRecord)
+            .where(
+                ConnectedAccountRecord.platform == platform,
+                ConnectedAccountRecord.status == "connected",
+            )
+            .order_by(ConnectedAccountRecord.updated_at.desc(), ConnectedAccountRecord.created_at.desc())
+        )
+        records = list(result.scalars().all())
+        if platform == "wechat":
+            for record in records:
+                if (record.credential_metadata or {}).get("active") is True:
+                    return record
+            return None
+        return records[0] if records else None
 
     async def _load_assets(self, asset_ids: list[str]) -> list[LocalAsset]:
         if not asset_ids:
