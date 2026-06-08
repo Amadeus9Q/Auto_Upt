@@ -106,6 +106,7 @@ const taskLoading = ref(false);
 const taskHistoryLoading = ref(false);
 const taskActionLoading = ref<string | null>(null);
 const errorMessage = ref("");
+const taskErrorMessage = ref("");
 const previewDialogVisible = ref(false);
 const previewDialogPlatform = ref<PlatformKey>("wechat");
 const draftSyncTimers = new Map<PlatformKey, number>();
@@ -808,14 +809,17 @@ async function loadPublishTasks(showToast = false) {
   try {
     tasks.value = await listPublishTasks({ limit: 20 });
     task.value = tasks.value[0] ?? null;
+    taskErrorMessage.value = "";
     if (showToast) {
       ElMessage.success("任务列表已刷新。");
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "加载任务列表失败。";
-    errorMessage.value = message;
+    taskErrorMessage.value = showToast || tasks.value.length > 0 ? message : "";
     if (showToast) {
       ElMessage.error(message);
+    } else {
+      console.warn("[TaskBoard] 初始任务列表加载失败", error);
     }
   } finally {
     taskHistoryLoading.value = false;
@@ -827,10 +831,11 @@ async function refreshTaskStatus(taskId: string) {
   try {
     const nextTask = await refreshPublishTask(taskId);
     upsertTask(nextTask);
+    taskErrorMessage.value = "";
     ElMessage.success("任务状态已更新。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "更新任务状态失败。";
-    errorMessage.value = message;
+    taskErrorMessage.value = message;
     ElMessage.error(message);
   } finally {
     taskActionLoading.value = null;
@@ -852,10 +857,11 @@ async function publishDraftFromTask(publicationId: string) {
   try {
     await publishDraftPublication(publicationId);
     await loadPublishTasks(false);
+    taskErrorMessage.value = "";
     ElMessage.success("内容已加入发布队列。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "提交发布请求失败。";
-    errorMessage.value = message;
+    taskErrorMessage.value = message;
     ElMessage.error(message);
   } finally {
     taskActionLoading.value = null;
@@ -1126,17 +1132,19 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
 
   taskLoading.value = true;
   errorMessage.value = "";
+  taskErrorMessage.value = "";
   activeTab.value = "task";
 
   try {
     upsertTask(await createPublishTask(await buildPublishTaskPayload(payload)));
+    taskErrorMessage.value = "";
     ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "创建发布任务失败。";
     const failedTask = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
     task.value = failedTask;
     tasks.value = [failedTask, ...tasks.value];
-    errorMessage.value = message;
+    taskErrorMessage.value = message;
     ElMessage.error("发布任务提交失败，已在任务看板展示原因。");
   } finally {
     taskLoading.value = false;
@@ -1236,7 +1244,7 @@ onMounted(async () => {
         <TaskView
           :tasks="tasks"
           :loading="taskLoading || taskHistoryLoading"
-          :error-message="errorMessage"
+          :error-message="taskErrorMessage"
           :action-loading="taskActionLoading"
           @refresh-tasks="loadPublishTasks(true)"
           @refresh-task="refreshTaskStatus"
