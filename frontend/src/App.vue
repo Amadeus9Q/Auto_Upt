@@ -595,23 +595,23 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
-function buildPlatformOptions(platforms: PlatformKey[], unified: boolean): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
     const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
       title: unified
-        ? publishForms.value.wechat.title.trim() || title.value.trim()
-        : publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
-      author: publishForms.value.wechat.author.trim(),
+        ? forms.wechat.title.trim() || title.value.trim()
+        : forms.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      author: forms.wechat.author.trim(),
       digest: unified
-        ? publishForms.value.wechat.summary.trim()
-        : publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
-      content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
-      need_open_comment: publishForms.value.wechat.needOpenComment,
-      only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
-      direct_publish: publishForms.value.wechat.directPublish
+        ? forms.wechat.summary.trim()
+        : forms.wechat.summary.trim() || wechatDraft?.summary || "",
+      content_source_url: forms.wechat.contentSourceUrl.trim(),
+      need_open_comment: forms.wechat.needOpenComment,
+      only_fans_can_comment: forms.wechat.needOpenComment && forms.wechat.onlyFansCanComment,
+      direct_publish: forms.wechat.directPublish
     };
   }
 
@@ -619,15 +619,15 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean): NonNu
     const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
       title: unified
-        ? publishForms.value.bilibili.title.trim() || title.value.trim()
-        : publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
+        ? forms.bilibili.title.trim() || title.value.trim()
+        : forms.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
       description: unified
-        ? publishForms.value.bilibili.description.trim()
-        : publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
-      tags: parseTagText(publishForms.value.bilibili.tags).length
-        ? parseTagText(publishForms.value.bilibili.tags)
+        ? forms.bilibili.description.trim()
+        : forms.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      tags: parseTagText(forms.bilibili.tags).length
+        ? parseTagText(forms.bilibili.tags)
         : bilibiliDraft?.tags ?? [],
-      tid: 201,
+      tid: Number(forms.bilibili.category) || 201,
       copyright: 1,
       source: "",
       no_reprint: true,
@@ -639,23 +639,23 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean): NonNu
     const xhsDraft = preview.value?.drafts.xiaohongshu;
     platformOptions.xiaohongshu = {
       title: unified
-        ? publishForms.value.xiaohongshu.title.trim() || title.value.trim()
-        : publishForms.value.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
+        ? forms.xiaohongshu.title.trim() || title.value.trim()
+        : forms.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
       content: unified
-        ? publishForms.value.xiaohongshu.content.trim()
-        : publishForms.value.xiaohongshu.content.trim() || xhsDraft?.body || "",
+        ? forms.xiaohongshu.content.trim()
+        : forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
     };
   }
 
   return platformOptions;
 }
 
-async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }): Promise<PublishTaskCreatePayload> {
+async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
     throw new Error("请先生成内容预览。");
   }
 
-  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings);
+  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings, payload.forms);
 
   if (payload.mode === "simulate") {
     return {
@@ -1055,7 +1055,7 @@ function enterPublishConfirm() {
   activeTab.value = "confirm";
 }
 
-async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }) {
+async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }) {
   if (!preview.value) {
     ElMessage.warning("请先生成预览。");
     return;

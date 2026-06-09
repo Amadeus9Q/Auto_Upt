@@ -5,10 +5,7 @@ import { CircleCheck, InfoFilled, WarningFilled } from "@element-plus/icons-vue"
 import type { PlatformKey, PublishMode, ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
 import { PLATFORM_LABELS } from "@/utils/platforms";
-import { useDebounce } from "@/composables/useDebounce";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
-
-const { debounce } = useDebounce(150);
 
 const props = defineProps<{
   selectedPlatforms: PlatformKey[];
@@ -21,7 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   back: [];
-  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean }];
+  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }];
 }>();
 
 const publishForms = defineModel<PublishForms>("publishForms", { required: true });
@@ -36,49 +33,21 @@ const globalSummary = ref(
   || ""
 );
 
-function syncGlobalToPlatforms() {
-  const gt = globalTitle.value;
-  const gs = globalSummary.value;
-  publishForms.value.wechat.title = gt;
-  publishForms.value.bilibili.title = gt;
-  publishForms.value.xiaohongshu.title = gt;
-  publishForms.value.wechat.summary = gs;
-  publishForms.value.bilibili.description = gs;
-  publishForms.value.xiaohongshu.content = gs;
+function cloneForms(forms: PublishForms): PublishForms {
+  return {
+    wechat: { ...forms.wechat },
+    bilibili: { ...forms.bilibili },
+    xiaohongshu: { ...forms.xiaohongshu }
+  };
 }
 
-const debouncedSyncToPlatforms = () => debounce(syncGlobalToPlatforms);
-watch(globalTitle, debouncedSyncToPlatforms);
-watch(globalSummary, debouncedSyncToPlatforms);
-
-// ---- 切换到独立配置时，各平台字段从 Agent 输出取默认值 ----
-function populateFromAgent(platform: PlatformKey) {
-  const draft = props.platformDrafts?.[platform];
-  if (!draft) return;
-  if (platform === "wechat") {
-    publishForms.value.wechat.title = draft.title || "";
-    publishForms.value.wechat.summary = draft.summary || "";
-  } else if (platform === "bilibili") {
-    publishForms.value.bilibili.title = draft.title || "";
-    publishForms.value.bilibili.description = draft.body || "";
-  } else if (platform === "xiaohongshu") {
-    publishForms.value.xiaohongshu.title = draft.title || "";
-    publishForms.value.xiaohongshu.content = draft.body || "";
-  }
-}
-
-watch(useUnifiedSettings, (unified) => {
-  if (!unified) {
-    // 切到独立：各平台从 Agent 草稿初始化
-    for (const platform of selectedConfirmPlatforms.value) {
-      populateFromAgent(platform);
-    }
-  }
-  // 切回统一：globalTitle/globalSummary 保持原值，重新同步至所有平台
-  if (unified) {
-    syncGlobalToPlatforms();
-  }
-}, { immediate: true });
+const independentForms = ref<PublishForms>(cloneForms(publishForms.value));
+independentForms.value.wechat.title = props.platformDrafts?.wechat?.title || independentForms.value.wechat.title;
+independentForms.value.wechat.summary = props.platformDrafts?.wechat?.summary || independentForms.value.wechat.summary;
+independentForms.value.bilibili.title = props.platformDrafts?.bilibili?.title || independentForms.value.bilibili.title;
+independentForms.value.bilibili.description = props.platformDrafts?.bilibili?.body || independentForms.value.bilibili.description;
+independentForms.value.xiaohongshu.title = props.platformDrafts?.xiaohongshu?.title || independentForms.value.xiaohongshu.title;
+independentForms.value.xiaohongshu.content = props.platformDrafts?.xiaohongshu?.body || independentForms.value.xiaohongshu.content;
 
 const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const selectedMode = ref<PublishMode>("simulate");
@@ -122,9 +91,21 @@ watch(selectedMode, () => {
   if (!selectedConfirmPlatforms.value.length) {
     selectedConfirmPlatforms.value = [...allowed];
   }
-  // 同步发布模式到公众号发布方式：草稿→草稿箱，发布→直接提交
-  publishForms.value.wechat.directPublish = selectedMode.value === "publish";
 }, { immediate: true });
+
+function effectiveForms(): PublishForms {
+  const forms = cloneForms(useUnifiedSettings.value ? publishForms.value : independentForms.value);
+  if (useUnifiedSettings.value) {
+    forms.wechat.title = globalTitle.value;
+    forms.bilibili.title = globalTitle.value;
+    forms.xiaohongshu.title = globalTitle.value;
+    forms.wechat.summary = globalSummary.value;
+    forms.bilibili.description = globalSummary.value;
+    forms.xiaohongshu.content = globalSummary.value;
+  }
+  forms.wechat.directPublish = selectedMode.value === "publish";
+  return forms;
+}
 
 function submit() {
   if (!selectedConfirmPlatforms.value.length) {
@@ -134,7 +115,8 @@ function submit() {
   emit("submit", {
     platforms: selectedConfirmPlatforms.value,
     mode: selectedMode.value,
-    useUnifiedSettings: useUnifiedSettings.value
+    useUnifiedSettings: useUnifiedSettings.value,
+    forms: effectiveForms()
   });
 }
 </script>
@@ -250,7 +232,7 @@ function submit() {
               <el-input v-model="publishForms.bilibili.tags" placeholder="例如：科技,AI,编程" />
             </el-form-item>
             <el-form-item v-if="selectedConfirmPlatforms.includes('bilibili')" label="B站分类">
-              <el-input v-model="publishForms.bilibili.category" placeholder="例如：科技" />
+              <el-input v-model="publishForms.bilibili.category" placeholder="分区 ID，例如：201" />
             </el-form-item>
 
             <div class="asset-status">
@@ -268,13 +250,23 @@ function submit() {
       </div>
 
       <!-- 独立设置（仅显示勾选的平台） -->
-      <PublishFormView
-        v-else
-        v-model:forms="publishForms"
-        :selected-platforms="selectedConfirmPlatforms"
-        :validation-report="validationReport"
-        :assets="assets"
-      />
+      <template v-else>
+        <el-form label-position="top" class="independent-mode-form">
+          <el-form-item v-if="hasPublishablePlatform" label="发布方式">
+            <el-radio-group v-model="selectedMode" class="mode-group">
+              <el-radio-button value="simulate">模拟</el-radio-button>
+              <el-radio-button value="draft">保存草稿</el-radio-button>
+              <el-radio-button value="publish">真实发布</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
+        <PublishFormView
+          v-model:forms="independentForms"
+          :selected-platforms="selectedConfirmPlatforms"
+          :validation-report="validationReport"
+          :assets="assets"
+        />
+      </template>
     </section>
 
     <el-alert
