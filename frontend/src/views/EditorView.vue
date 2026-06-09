@@ -86,6 +86,7 @@ const assets = defineModel<EditorAssets>("assets", { required: true });
 const mediaFolders = defineModel<MediaFolder[]>("mediaFolders", { required: true });
 
 const dragState = ref<DragState | null>(null);
+const isCoverDragOver = ref(false);
 const isContentDragOver = ref(false);
 const contentDropIndex = ref<number | null>(null);
 const contentDropCaretStyle = ref<{ left: string; top: string } | null>(null);
@@ -397,6 +398,42 @@ const onCoverChange: UploadProps["onChange"] = (file) => {
   assets.value.coverImage = cover;
   assets.value.coverImageId = cover.id;
 };
+
+function onCoverDragOver(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  if (asset?.kind !== "image") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  isCoverDragOver.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+function onCoverDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) {
+    isCoverDragOver.value = false;
+  }
+}
+
+function onCoverDrop(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  isCoverDragOver.value = false;
+  if (asset?.kind !== "image") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  assets.value.coverImage = asset;
+  assets.value.coverImageId = asset.id;
+  dragState.value = null;
+}
 
 function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
   return (file) => {
@@ -982,7 +1019,14 @@ function dropClass(tab: MediaTab, index: number) {
         </div>
 
         <el-form-item label="封面图" class="cover-form-item">
-          <div class="cover-picker">
+          <div
+            class="cover-picker"
+            :class="{ 'is-cover-drag-over': isCoverDragOver }"
+            @dragenter.capture="onCoverDragOver"
+            @dragover.capture="onCoverDragOver"
+            @dragleave="onCoverDragLeave"
+            @drop.capture="onCoverDrop"
+          >
             <el-upload
               v-if="!assets.coverImage"
               class="cover-upload"
@@ -1458,6 +1502,21 @@ function dropClass(tab: MediaTab, index: number) {
 .cover-upload :deep(.el-upload),
 .cover-upload :deep(.el-upload-dragger) {
   width: 100%;
+}
+
+.cover-picker {
+  border-radius: 8px;
+  transition: box-shadow 0.15s ease;
+}
+
+.cover-picker.is-cover-drag-over {
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.18);
+}
+
+.cover-picker.is-cover-drag-over .cover-preview,
+.cover-picker.is-cover-drag-over :deep(.el-upload-dragger) {
+  border-color: #1f6feb;
+  background: #edf4ff;
 }
 
 .cover-upload :deep(.el-upload-dragger) {
