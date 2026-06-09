@@ -780,6 +780,9 @@ function findDraggedAsset(event: DragEvent): LocalAsset | null {
 }
 
 function hasSupportedExternalFiles(event: DragEvent) {
+  if (event.dataTransfer?.types.includes("application/x-auto-upt-asset")) {
+    return false;
+  }
   const files = event.dataTransfer?.files;
   if (!files?.length) {
     return false;
@@ -799,8 +802,9 @@ function onContentDragOver(event: DragEvent) {
 }
 
 function onContentDrop(event: DragEvent) {
-  const externalAssets = event.dataTransfer?.files?.length ? addExternalFilesToAssets(event.dataTransfer.files) : [];
+  const isInternalAssetDrag = event.dataTransfer?.types.includes("application/x-auto-upt-asset") ?? false;
   const asset = findDraggedAsset(event);
+  const externalAssets = !isInternalAssetDrag && event.dataTransfer?.files?.length ? addExternalFilesToAssets(event.dataTransfer.files) : [];
   isContentDragOver.value = false;
   if (!asset && !externalAssets.length) {
     return;
@@ -1081,7 +1085,7 @@ function dropClass(tab: MediaTab, index: number) {
             placeholder="输入正文，支持 Markdown、图文要点、视频简介；也可从文件夹直接拖入图片/视频/音频。"
           />
           <div v-if="isContentDragOver && contentDropCaretStyle" class="content-drop-caret" :style="contentDropCaretStyle" />
-          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
+          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入素材引用；外部文件会自动加入素材库</div>
         </div>
         <div v-if="contentAssetReferences.length" class="content-asset-references">
           <div class="reference-header">
