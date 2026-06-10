@@ -172,7 +172,7 @@ const batchOptimizeUnavailableReason = computed(() => {
 const generatePreviewUnavailableReason = computed(() => {
   if (props.previewLoading) return "所选平台预览正在生成，请稍候。";
   if (!content.value.trim()) return "请先填写正文内容。";
-  if (!platforms.value.length) return "请至少勾选一个需要生成预览的平台。";
+  if (!platforms.value.length) return "请至少勾选一个需要生成草稿的平台。";
   return "";
 });
 const currentPreviewUnavailableReason = computed(() => {
@@ -1416,7 +1416,7 @@ function dropClass(tab: MediaTab, index: number) {
                 :disabled="Boolean(generatePreviewUnavailableReason)"
                 @click="$emit('generatePreview')"
               >
-                生成预览
+                生成草稿
               </el-button>
             </span>
           </el-tooltip>

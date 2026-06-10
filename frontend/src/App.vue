@@ -862,16 +862,23 @@ async function publishDraftFromTask(publicationId: string) {
 }
 
 async function generatePreview() {
-  if (!content.value.trim()) {
+  if (previewLoading.value || !content.value.trim()) {
     return;
   }
 
-  const existingPreviewPlatforms = selectedPlatforms.value.filter(
-    (platform) => preview.value?.drafts[platform]?.body?.trim()
-  );
-  if (existingPreviewPlatforms.length) {
-    ElMessage.info("已有平台预览，请先清除后再生成。");
-    return;
+  const existingDraftPlatforms = selectedPlatforms.value.filter((platform) => hasDraftContent(preview.value?.drafts[platform]));
+  previewLoading.value = true;
+  if (existingDraftPlatforms.length) {
+    try {
+      await ElMessageBox.confirm("生成草稿会覆盖已有平台草稿，是否继续？", "确认生成草稿", {
+        confirmButtonText: "确认",
+        cancelButtonText: "取消",
+        type: "warning"
+      });
+    } catch {
+      previewLoading.value = false;
+      return;
+    }
   }
 
   // 记录调用前标题和关键词是否为空，用于回填判断
@@ -883,7 +890,6 @@ async function generatePreview() {
   const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
   const payload = buildContentPayload({ platforms: [...selectedPlatforms.value] });
 
-  previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
