@@ -161,6 +161,16 @@ function handleAccountConfigClosed() {
   void refreshAccountStatuses();
 }
 
+function handleAccountUpdated(account: AccountConnection) {
+  const accountIndex = accounts.value.findIndex((item) => item.platform === account.platform);
+  if (accountIndex >= 0) {
+    accounts.value.splice(accountIndex, 1, account);
+  } else {
+    accounts.value.push(account);
+  }
+  accountsError.value = "";
+}
+
 function accountStatusMeta(status?: AccountStatus) {
   return status === "connected"
     ? { label: "账号已连接", className: "is-connected" }
@@ -289,8 +299,10 @@ function submit() {
     >
       <AccountView
         :focused-platform="configuringPlatform"
+        :initial-accounts="accounts"
         configuration-only
         compact
+        @account-updated="handleAccountUpdated"
       />
     </el-dialog>
 
