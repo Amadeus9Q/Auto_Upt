@@ -528,12 +528,14 @@ function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
 function removeAsset(tab: MediaTab, index: number) {
   const [removed] = assets.value[tab].splice(index, 1);
   if (tab === "images" && removed?.id === assets.value.coverImageId) {
+    assets.value.coverImage = null;
     assets.value.coverImageId = null;
   }
 }
 
 function clearCoverImage() {
   assets.value.coverImage = null;
+  assets.value.coverImageId = null;
 }
 
 function assetFolderPath(asset: LocalAsset, name = asset.name) {

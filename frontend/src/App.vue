@@ -247,6 +247,7 @@ function assetsToStoredRecords(): StoredAssetRecord[] {
 }
 
 async function hydrateMediaLibrary() {
+  localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
   const storedFolders = localStorage.getItem(STORAGE_KEYS.MEDIA_FOLDERS);
   if (storedFolders) {
     try {
@@ -258,8 +259,7 @@ async function hydrateMediaLibrary() {
 
   try {
     const records = await readStoredAssets();
-    const storedCoverImageId = localStorage.getItem(STORAGE_KEYS.COVER_IMAGE_ID);
-    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
+    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: null };
     for (const record of records) {
       const asset: LocalAsset = {
         ...record,
@@ -269,7 +269,6 @@ async function hydrateMediaLibrary() {
       const tab: MediaTab = asset.kind === "image" ? "images" : asset.kind === "video" ? "videos" : "audios";
       nextAssets[tab].push(asset);
     }
-    nextAssets.coverImage = nextAssets.images.find((image) => image.id === storedCoverImageId) ?? null;
     editorAssets.value = nextAssets;
   } catch (error) {
     console.warn("[MediaLibrary] 恢复本地素材失败", error);
@@ -283,11 +282,7 @@ function scheduleMediaLibraryPersist() {
   if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
   mediaPersistTimer = window.setTimeout(() => {
     localStorage.setItem(STORAGE_KEYS.MEDIA_FOLDERS, JSON.stringify(mediaFolders.value));
-    if (editorAssets.value.coverImageId) {
-      localStorage.setItem(STORAGE_KEYS.COVER_IMAGE_ID, editorAssets.value.coverImageId);
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
-    }
+    localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
     void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
       console.warn("[MediaLibrary] 保存本地素材失败", error);
     });
@@ -336,12 +331,13 @@ function collectAssetPayloads(sourceBody = content.value): AssetPayload[] {
     if (byName) referencedIds.add(byName.id);
   }
 
-  const coverImageId = editorAssets.value.coverImageId ?? editorAssets.value.images[0]?.id;
-  // Always include cover image
-  if (editorAssets.value.coverImage) referencedIds.add(editorAssets.value.coverImage.id);
+  const coverImage = editorAssets.value.coverImage
+    ?? editorAssets.value.images.find((asset) => asset.id === editorAssets.value.coverImageId)
+    ?? null;
+  const coverImageId = coverImage?.id ?? null;
+  if (coverImage) referencedIds.add(coverImage.id);
 
   return [
-    ...(editorAssets.value.coverImage ? [assetToPayload(editorAssets.value.coverImage, "cover", "default_cover")] : []),
     ...editorAssets.value.images
       .filter((asset) => referencedIds.has(asset.id))
       .map((asset) => assetToPayload(asset, "image", asset.id === coverImageId ? "default_cover" : "body_image")),
@@ -611,7 +607,7 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
 }
 
 function getCoverImage(): LocalAsset | null {
-  return editorAssets.value.coverImage ?? editorAssets.value.images.find((image) => image.id === editorAssets.value.coverImageId) ?? editorAssets.value.images[0] ?? null;
+  return editorAssets.value.coverImage ?? editorAssets.value.images.find((image) => image.id === editorAssets.value.coverImageId) ?? null;
 }
 
 function getUploadAssetType(asset: LocalAsset): "image" | "video" | "file" {
