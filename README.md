@@ -100,4 +100,3 @@ docker compose down -v
 ```
 
 生产环境请定期备份 PostgreSQL 数据卷，或使用外部管理的数据库服务。
-

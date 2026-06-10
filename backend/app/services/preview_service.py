@@ -34,11 +34,12 @@ class PreviewService:
 
     def normalize_content(self, request: ContentInput) -> dict[str, Any]:
         body = request.body.strip()
-        title = self._normalize_title(request.title, body)
+        explicit_title = (request.title or "").strip()
+        title = self._clean_generated_title(explicit_title) if explicit_title else "Untitled Content"
         tags = self._normalize_tags(request.tags)
 
         # ---- 标题或关键词缺失时，自动调用 LLM 生成 ----
-        title_missing = not title or title == "Untitled Content"
+        title_missing = not explicit_title or not title or title == "Untitled Content"
         tags_missing = not tags
         if body and (title_missing or tags_missing):
             if title_missing:
@@ -53,6 +54,8 @@ class PreviewService:
                 llm_title, _ = self._call_llm_for_metadata(title_prompt)
                 if llm_title:
                     title = llm_title
+                else:
+                    title = self._normalize_title(None, body)
             if tags_missing:
                 tags_prompt = (
                     "你是一个专业的中文内容编辑。请根据正文内容提取5个以内的关键词。\n"

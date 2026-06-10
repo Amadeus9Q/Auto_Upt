@@ -354,21 +354,13 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
     # ---- 生成公众号 HTML ----
     wechat_html = render_wechat_html(content_ir)
 
-    # ---- 传统文本正文 ----
-    body_parts = [
-        f"导语：{summary}",
-        "",
-        "正文",
-        *(paragraphs or [content_ir["body"]]),
-        "",
-        "发布提示：可在公众号编辑器中继续调整封面、摘要和排版。",
-    ]
+    body_text = "\n".join(paragraphs or [content_ir["body"]])
 
     return {
         "platform": profile["platform"],
         "display_name": profile.get("display_name", profile["platform"]),
         "title": title,
-        "body": "\n".join(body_parts),
+        "body": body_text,
         "summary": clip_text(summary, 120),
         "tags": clip_tags(content_ir.get("tags", []), max_count=4),
         "assets": content_ir.get("assets", []),

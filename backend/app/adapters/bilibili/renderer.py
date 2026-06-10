@@ -9,21 +9,13 @@ def render_draft(content_ir: dict[str, Any], profile: dict[str, Any]) -> dict[st
     title = first_non_empty(content_ir.get("title"), content_ir.get("summary"))
     tags = clip_tags(content_ir.get("tags", []), max_count=4)
     media_slots = content_ir.get("media_slots", {})
-    body_parts = [
-        "视频简介",
-        content_ir.get("summary", ""),
-        "",
-        "内容要点",
-        *[f"- {item}" for item in (paragraphs[:5] or [content_ir["body"]])],
-        "",
-        f"标签：{', '.join(tags)}" if tags else "标签：待补充",
-    ]
+    body_text = "\n".join(paragraphs or [content_ir["body"]])
 
     return {
         "platform": profile["platform"],
         "display_name": profile.get("display_name", profile["platform"]),
         "title": title,
-        "body": "\n".join(body_parts),
+        "body": body_text,
         "summary": content_ir.get("summary", ""),
         "tags": tags,
         "assets": content_ir.get("assets", []),

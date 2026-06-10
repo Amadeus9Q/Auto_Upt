@@ -2,6 +2,22 @@
 
 本目录用于存放本地开发常用脚本，包括 Docker 容器管理和 FastAPI 后端服务管理。
 
+## 依赖
+
+需要下载docker、npm
+
+安装python依赖
+
+```powershell
+pip install -r requirements.txt
+```
+
+安装npm依赖
+
+```powershell
+npm install -D vue-tsc typescript
+```
+
 ## 一键启动
 
 启动 PostgreSQL、Redis 和 FastAPI 后端服务：

@@ -29,6 +29,7 @@ raw input
 - `POST /api/v1/agent-runs/preview`
 - `GET /api/v1/agent-runs/tools`
 - `POST /api/v1/agent-runs/adapt-preview`
+- `GET /api/v1/agent-runs/llm-health`
 - `GET /api/v1/agent-runs/{run_id}`
 
 旧 `preview` 接口执行规则模拟流程：复用内容标准化、平台 Adapter 渲染、格式校验和模拟发布能力，返回每个 Agent 步骤的结构化输出、合规提示和恢复建议。该接口不落库，不调用真实模型，也不会访问真实平台账号。

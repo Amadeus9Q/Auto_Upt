@@ -65,15 +65,25 @@ class WechatOfficialAccountClient:
         self.base_url = self.settings.wechat_api_base_url.rstrip("/")
 
     async def get_access_token(self, app_id: str, app_secret: str) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=30) as client:
-            response = await client.get(
-                "/cgi-bin/token",
-                params={
-                    "grant_type": "client_credential",
-                    "appid": app_id,
-                    "secret": app_secret,
-                },
-            )
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=30) as client:
+                response = await client.get(
+                    "/cgi-bin/token",
+                    params={
+                        "grant_type": "client_credential",
+                        "appid": app_id,
+                        "secret": app_secret,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise PlatformClientError(
+                "微信 access_token 接口无法连接。",
+                platform_code="NETWORK_ERROR",
+                platform_message=str(exc),
+                retryable=True,
+                next_action="请确认当前网络或代理可以访问 api.weixin.qq.com，然后重试；也可以暂时关闭连接测试后保存凭据。",
+                details={"error": str(exc)},
+            ) from exc
         data = self._ensure_ok(response)
         return {
             "access_token": data["access_token"],
