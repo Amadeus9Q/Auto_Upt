@@ -64,6 +64,8 @@ http://127.0.0.1:8000/docs
 .\scripts\stop.ps1
 ```
 
+> ⚠️ **不要手动执行 `docker compose down -v`**，该命令会删除 PostgreSQL 数据卷，导致所有账号设置、发布记录等数据永久丢失。
+
 关闭服务并删除数据卷：
 
 ```powershell

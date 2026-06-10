@@ -496,6 +496,10 @@ class PublishService:
                 next_draft["summary"] = description
             if tags := options.get("tags"):
                 next_draft["tags"] = tags
+        elif platform == "xiaohongshu":
+            if content := options.get("content"):
+                next_draft["body"] = content
+                next_draft["summary"] = content
         return next_draft
 
     @staticmethod

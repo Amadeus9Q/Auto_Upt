@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { CircleCheck, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { CircleCheck, InfoFilled, Setting, Refresh, WarningFilled } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 
-import type { PlatformKey, PublishMode, ValidationIssue } from "@/api/client";
+import { getAccounts, type AccountConnection, type AccountStatus, type PlatformKey, type PublishMode, type ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
+import { getErrorMessage } from "@/utils/errors";
+import { PLATFORM_LABELS } from "@/utils/platforms";
+import AccountView from "@/views/AccountView.vue";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 
 const props = defineProps<{
@@ -11,52 +15,51 @@ const props = defineProps<{
   loading: boolean;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
   assets: EditorAssets;
+  editorTitle: string;
+  platformDrafts?: Record<string, { title?: string; body?: string; summary?: string }>;
 }>();
 
 const emit = defineEmits<{
   back: [];
-  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode }];
+  submit: [payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }];
 }>();
 
 const publishForms = defineModel<PublishForms>("publishForms", { required: true });
 const useUnifiedSettings = ref(true);
 
 // ---- 全局字段（独立状态，同步至各平台） ----
-const globalTitle = ref(publishForms.value.wechat.title);
-const globalSummary = ref(publishForms.value.wechat.summary);
+// 统一配置下默认值来自编辑页标题；独立配置下各平台默认值来自 Agent 输出
+const globalTitle = ref(props.editorTitle);
+const globalSummary = ref(
+  props.platformDrafts?.wechat?.summary
+  || props.platformDrafts?.bilibili?.body?.slice(0, 120)
+  || ""
+);
 
-function syncGlobalToPlatforms() {
-  const gt = globalTitle.value;
-  const gs = globalSummary.value;
-  publishForms.value.wechat.title = gt;
-  publishForms.value.bilibili.title = gt;
-  publishForms.value.xiaohongshu.title = gt;
-  publishForms.value.wechat.summary = gs;
-  publishForms.value.bilibili.description = gs;
-  publishForms.value.xiaohongshu.content = gs;
+function cloneForms(forms: PublishForms): PublishForms {
+  return {
+    wechat: { ...forms.wechat },
+    bilibili: { ...forms.bilibili },
+    xiaohongshu: { ...forms.xiaohongshu }
+  };
 }
 
-watch(globalTitle, syncGlobalToPlatforms);
-watch(globalSummary, syncGlobalToPlatforms);
-
-// ---- 反向：独立模式下用户修改了 wechat 字段后切回统一，需同步回全局 ----
-watch(useUnifiedSettings, (unified) => {
-  if (unified) {
-    globalTitle.value = publishForms.value.wechat.title;
-    globalSummary.value = publishForms.value.wechat.summary;
-  }
-});
-
-const platformLabels: Record<PlatformKey, string> = {
-  wechat: "公众号",
-  bilibili: "B站",
-  zhihu: "知乎",
-  xiaohongshu: "小红书"
-};
+const independentForms = ref<PublishForms>(cloneForms(publishForms.value));
+independentForms.value.wechat.title = props.platformDrafts?.wechat?.title || independentForms.value.wechat.title;
+independentForms.value.wechat.summary = props.platformDrafts?.wechat?.summary || independentForms.value.wechat.summary;
+independentForms.value.bilibili.title = props.platformDrafts?.bilibili?.title || independentForms.value.bilibili.title;
+independentForms.value.bilibili.description = props.platformDrafts?.bilibili?.body || independentForms.value.bilibili.description;
+independentForms.value.xiaohongshu.title = props.platformDrafts?.xiaohongshu?.title || independentForms.value.xiaohongshu.title;
+independentForms.value.xiaohongshu.content = props.platformDrafts?.xiaohongshu?.body || independentForms.value.xiaohongshu.content;
 
 const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const selectedMode = ref<PublishMode>("simulate");
 const selectedConfirmPlatforms = ref<PlatformKey[]>([...props.selectedPlatforms]);
+const accounts = ref<AccountConnection[]>([]);
+const accountsLoading = ref(false);
+const accountsError = ref("");
+const accountConfigVisible = ref(false);
+const configuringPlatform = ref<PlatformKey | null>(null);
 
 const coverImage = computed(
   () => props.assets.coverImage ?? props.assets.images.find((image) => image.id === props.assets.coverImageId) ?? props.assets.images[0] ?? null
@@ -64,6 +67,9 @@ const coverImage = computed(
 const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
 const wechatIssues = computed(() => props.validationReport.wechat ?? []);
 const hasPublishablePlatform = computed(() => selectedConfirmPlatforms.value.some((p) => publishablePlatforms.includes(p)));
+const confirmPublishUnavailableReason = computed(() =>
+  selectedConfirmPlatforms.value.length ? "" : "请先选择一个已连接的平台"
+);
 const commonMissing = computed(() => [
   ...(!globalTitle.value.trim() ? ["标题"] : []),
   ...(!globalSummary.value.trim() ? ["摘要/简介"] : []),
@@ -76,7 +82,7 @@ function issueType(issue: ValidationIssue) {
 
 const platformOptions = computed(() => {
   const allowed = selectedMode.value === "simulate" ? props.selectedPlatforms : props.selectedPlatforms.filter((platform) => publishablePlatforms.includes(platform));
-  return allowed.map((platform) => ({ label: platformLabels[platform], value: platform }));
+  return allowed.map((platform) => ({ label: PLATFORM_LABELS[platform], value: platform }));
 });
 
 const selectedIssues = computed(() =>
@@ -89,16 +95,94 @@ const selectedIssues = computed(() =>
 );
 
 const hasRealPublish = computed(() => selectedMode.value === "draft" || selectedMode.value === "publish");
+const platformAccountOptions = computed(() =>
+  platformOptions.value.map((option) => ({
+    ...option,
+    account: accounts.value.find((account) => account.platform === option.value) ?? null
+  }))
+);
+const connectedPlatformValues = computed(() =>
+  platformAccountOptions.value
+    .filter((option) => option.account?.status === "connected")
+    .map((option) => option.value)
+);
+const configurablePlatforms: PlatformKey[] = ["wechat", "bilibili"];
+
+function isAccountConnected(account: AccountConnection | null) {
+  return account?.status === "connected";
+}
+
+function isAccountConfigurable(platform: PlatformKey) {
+  return configurablePlatforms.includes(platform);
+}
+
+function accountConfigTooltip(platform: PlatformKey) {
+  return isAccountConfigurable(platform) ? "配置账号" : "账号配置功能待上线";
+}
+
+function handlePlatformCardClick(account: AccountConnection | null) {
+  if (!isAccountConnected(account)) {
+    ElMessage.warning("该平台尚未连接，请先点击右侧配置按钮完成配置");
+  }
+}
+
+function openAccountConfig(platform: PlatformKey) {
+  if (!isAccountConfigurable(platform)) {
+    return;
+  }
+  configuringPlatform.value = platform;
+  accountConfigVisible.value = true;
+}
+
+function handleAccountConfigClosed() {
+  configuringPlatform.value = null;
+  void refreshAccountStatuses();
+}
+
+function accountStatusMeta(status?: AccountStatus) {
+  return status === "connected"
+    ? { label: "账号已连接", className: "is-connected" }
+    : { label: status === "expired" ? "账号已过期" : status === "error" ? "账号连接异常" : "账号未配置", className: "is-disconnected" };
+}
+
+async function refreshAccountStatuses() {
+  accountsLoading.value = true;
+  accountsError.value = "";
+  try {
+    accounts.value = await getAccounts();
+  } catch (error) {
+    accountsError.value = getErrorMessage(error, "账号状态刷新失败，请稍后重试。");
+  } finally {
+    accountsLoading.value = false;
+  }
+}
 
 watch(selectedMode, () => {
   const allowed = platformOptions.value.map((option) => option.value);
   selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => allowed.includes(platform));
-  if (!selectedConfirmPlatforms.value.length) {
-    selectedConfirmPlatforms.value = [...allowed];
-  }
-  // 同步发布模式到公众号发布方式：草稿→草稿箱，发布→直接提交
-  publishForms.value.wechat.directPublish = selectedMode.value === "publish";
 }, { immediate: true });
+
+watch(connectedPlatformValues, (connected) => {
+  selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => connected.includes(platform));
+}, { immediate: true });
+
+onMounted(() => {
+  void refreshAccountStatuses();
+});
+
+function effectiveForms(): PublishForms {
+  const forms = cloneForms(useUnifiedSettings.value ? publishForms.value : independentForms.value);
+  if (useUnifiedSettings.value) {
+    forms.wechat.title = globalTitle.value;
+    forms.bilibili.title = globalTitle.value;
+    forms.xiaohongshu.title = globalTitle.value;
+    forms.wechat.summary = globalSummary.value;
+    forms.bilibili.description = globalSummary.value;
+    forms.xiaohongshu.content = globalSummary.value;
+  }
+  forms.wechat.directPublish = selectedMode.value === "publish";
+  return forms;
+}
 
 function submit() {
   if (!selectedConfirmPlatforms.value.length) {
@@ -107,7 +191,9 @@ function submit() {
 
   emit("submit", {
     platforms: selectedConfirmPlatforms.value,
-    mode: selectedMode.value
+    mode: selectedMode.value,
+    useUnifiedSettings: useUnifiedSettings.value,
+    forms: effectiveForms()
   });
 }
 </script>
@@ -115,15 +201,76 @@ function submit() {
 <template>
   <section class="publish-confirm-view">
 
-    <!-- 平台选择（放在最前面） -->
-    <div class="platform-select-section">
-      <label class="platform-select-label">发布平台</label>
-      <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
-        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </el-checkbox-button>
+    <section class="account-status-section">
+      <header class="account-status-header">
+        <div>
+          <strong>发布平台与账号联通</strong>
+          <small>勾选本次发布平台，并确认对应账号联通状态。</small>
+        </div>
+        <el-button :icon="Refresh" :loading="accountsLoading" @click="refreshAccountStatuses">
+          刷新账号状态
+        </el-button>
+      </header>
+
+      <el-alert
+        v-if="accountsError"
+        :title="accountsError"
+        type="error"
+        show-icon
+        :closable="false"
+      />
+
+      <el-checkbox-group v-model="selectedConfirmPlatforms" class="account-status-grid">
+        <article
+          v-for="item in platformAccountOptions"
+          :key="item.value"
+          class="account-status-card"
+          :class="{
+            'is-selected': selectedConfirmPlatforms.includes(item.value),
+            'is-disconnected': !isAccountConnected(item.account)
+          }"
+          @click="handlePlatformCardClick(item.account)"
+        >
+          <el-checkbox
+            :value="item.value"
+            :disabled="!isAccountConnected(item.account)"
+            class="account-platform-checkbox"
+          >
+            {{ item.label }}
+          </el-checkbox>
+          <el-tooltip :content="accountStatusMeta(item.account?.status).label" placement="top">
+            <span class="account-status-dot" :class="accountStatusMeta(item.account?.status).className" />
+          </el-tooltip>
+          <el-tooltip :content="accountConfigTooltip(item.value)" placement="top">
+            <span class="account-config-action" @click.stop>
+              <el-button
+                size="small"
+                text
+                circle
+                :icon="Setting"
+                :disabled="!isAccountConfigurable(item.value)"
+                :aria-label="accountConfigTooltip(item.value)"
+                @click="openAccountConfig(item.value)"
+              />
+            </span>
+          </el-tooltip>
+        </article>
       </el-checkbox-group>
-    </div>
+    </section>
+
+    <el-dialog
+      v-model="accountConfigVisible"
+      :title="configuringPlatform ? `配置${PLATFORM_LABELS[configuringPlatform]}账号` : '配置平台账号'"
+      width="min(92vw, 520px)"
+      destroy-on-close
+      @closed="handleAccountConfigClosed"
+    >
+      <AccountView
+        :focused-platform="configuringPlatform"
+        configuration-only
+        compact
+      />
+    </el-dialog>
 
     <!-- 发布设置 -->
     <section class="unified-publish-section">
@@ -223,7 +370,7 @@ function submit() {
               <el-input v-model="publishForms.bilibili.tags" placeholder="例如：科技,AI,编程" />
             </el-form-item>
             <el-form-item v-if="selectedConfirmPlatforms.includes('bilibili')" label="B站分类">
-              <el-input v-model="publishForms.bilibili.category" placeholder="例如：科技" />
+              <el-input v-model="publishForms.bilibili.category" placeholder="分区 ID，例如：201" />
             </el-form-item>
 
             <div class="asset-status">
@@ -241,13 +388,23 @@ function submit() {
       </div>
 
       <!-- 独立设置（仅显示勾选的平台） -->
-      <PublishFormView
-        v-else
-        v-model:forms="publishForms"
-        :selected-platforms="selectedConfirmPlatforms"
-        :validation-report="validationReport"
-        :assets="assets"
-      />
+      <template v-else>
+        <el-form label-position="top" class="independent-mode-form">
+          <el-form-item v-if="hasPublishablePlatform" label="发布方式">
+            <el-radio-group v-model="selectedMode" class="mode-group">
+              <el-radio-button value="simulate">模拟</el-radio-button>
+              <el-radio-button value="draft">保存草稿</el-radio-button>
+              <el-radio-button value="publish">真实发布</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
+        <PublishFormView
+          v-model:forms="independentForms"
+          :selected-platforms="selectedConfirmPlatforms"
+          :validation-report="validationReport"
+          :assets="assets"
+        />
+      </template>
     </section>
 
     <el-alert
@@ -277,7 +434,7 @@ function submit() {
       <ul v-else>
         <li v-for="issue in selectedIssues" :key="`${issue.platform}-${issue.code}-${issue.field}`">
           <el-tag :type="issue.level === 'error' ? 'danger' : issue.level === 'warning' ? 'warning' : 'info'" size="small">
-            {{ platformLabels[issue.platform] }}
+            {{ PLATFORM_LABELS[issue.platform] }}
           </el-tag>
           <span>{{ issue.field }}：{{ issue.message }}</span>
         </li>
@@ -285,11 +442,25 @@ function submit() {
     </div>
 
     <footer class="confirm-actions">
-      <el-button @click="$emit('back')">返回预览</el-button>
+      <el-button @click="$emit('back')">返回编辑所选平台</el-button>
       <div class="footer-spacer"></div>
-      <el-button type="primary" :icon="CircleCheck" :loading="loading" :disabled="!selectedConfirmPlatforms.length" @click="submit">
-        确认发布
-      </el-button>
+      <el-tooltip
+        :content="confirmPublishUnavailableReason"
+        placement="top"
+        :disabled="!confirmPublishUnavailableReason"
+      >
+        <span class="disabled-action-tooltip">
+          <el-button
+            type="primary"
+            :icon="CircleCheck"
+            :loading="loading"
+            :disabled="Boolean(confirmPublishUnavailableReason)"
+            @click="submit"
+          >
+            确认发布
+          </el-button>
+        </span>
+      </el-tooltip>
     </footer>
   </section>
 </template>
@@ -351,6 +522,10 @@ function submit() {
 
 .footer-spacer {
   flex: 1;
+}
+
+.disabled-action-tooltip {
+  display: inline-flex;
 }
 
 .unified-form {
@@ -415,15 +590,119 @@ function submit() {
   font-size: 14px;
 }
 
-.mode-group,
-.platforms {
+.mode-group {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.platform-select-section {
+.account-status-section {
+  display: grid;
+  gap: 12px;
   margin-bottom: 18px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+}
+
+.account-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-status-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-status-header small,
+.account-status-card small {
+  color: #607086;
+  font-size: 12px;
+}
+
+.account-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-status-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.account-status-card.is-selected {
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.08);
+}
+
+.account-status-card.is-disconnected {
+  cursor: not-allowed;
+}
+
+.account-status-card.is-disconnected .account-platform-checkbox {
+  cursor: not-allowed;
+}
+
+.account-platform-checkbox {
+  min-width: 0;
+  flex: 1;
+  margin-right: 0;
+}
+
+.account-platform-checkbox :deep(.el-checkbox__label) {
+  overflow: hidden;
+  color: #253247;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-status-card .el-button {
+  flex-shrink: 0;
+}
+
+.account-config-action {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.account-status-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.account-status-dot.is-connected {
+  background: #2f9e64;
+  box-shadow: 0 0 0 3px rgba(47, 158, 100, 0.12);
+}
+
+.account-status-dot.is-disconnected {
+  background: #a8b4c4;
+}
+
+@media (max-width: 1280px) {
+  .account-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .account-status-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .platform-select-label {
@@ -435,7 +714,7 @@ function submit() {
 }
 
 .mode-group :deep(.el-radio-button__inner),
-.platforms :deep(.el-checkbox-button__inner) {
+.inline-radio-group :deep(.el-radio-button__inner) {
   border-left: 1px solid var(--el-border-color);
   border-radius: 8px;
 }

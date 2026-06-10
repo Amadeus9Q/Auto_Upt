@@ -124,12 +124,6 @@ function issueType(issue: ValidationIssue) {
               </el-radio-group>
             </div>
           </el-form-item>
-          <el-form-item label="发布方式">
-            <el-radio-group v-model="forms.wechat.directPublish" class="mode-group">
-              <el-radio-button :value="false">先保存到草稿箱</el-radio-button>
-              <el-radio-button :value="true">直接提交发布</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
           <div class="asset-status">
             <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
             <span>正文图片：{{ assets.images.length }} 张</span>
@@ -142,17 +136,24 @@ function issueType(issue: ValidationIssue) {
           <el-icon><InfoFilled /></el-icon>
           <strong>B站投稿内容</strong>
         </div>
-        <el-alert
-          class="form-alert"
-          title="当前只需要确认封面和视频，其他投稿设置会使用系统默认值。"
-          type="info"
-          show-icon
-          :closable="false"
-        />
-        <div class="asset-status">
-          <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
-          <span>视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
-        </div>
+        <el-form label-position="top">
+          <el-form-item label="标题">
+            <el-input v-model="forms.bilibili.title" maxlength="80" show-word-limit />
+          </el-form-item>
+          <el-form-item label="简介">
+            <el-input v-model="forms.bilibili.description" type="textarea" :rows="5" resize="none" />
+          </el-form-item>
+          <el-form-item label="标签（逗号分隔）">
+            <el-input v-model="forms.bilibili.tags" />
+          </el-form-item>
+          <el-form-item label="分区 ID">
+            <el-input v-model="forms.bilibili.category" placeholder="例如：201" />
+          </el-form-item>
+          <div class="asset-status">
+            <span>封面：{{ coverImage?.name || "未选择，默认使用图片列表第一张" }}</span>
+            <span>视频：{{ bilibiliVideo?.name || "未选择，默认使用视频列表第一条" }}</span>
+          </div>
+        </el-form>
       </el-tab-pane>
 
       <el-tab-pane v-if="selectedPlatforms.includes('xiaohongshu')" label="小红书" name="xiaohongshu">

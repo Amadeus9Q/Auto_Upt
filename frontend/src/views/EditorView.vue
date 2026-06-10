@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, type UploadFile, type UploadProps } from "element-plus";
-import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
+import { ArrowLeft, Connection, Delete, EditPen, MagicStick, Plus, Right } from "@element-plus/icons-vue";
 
 import { importDocument, type AgentWritingStyle, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
 import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
+import { ASSET_MARKER_PATTERN, kindLabel } from "@/utils/assetMarkers";
+import { getErrorMessage } from "@/utils/errors";
+import { parseTagText } from "@/utils/text";
 
 type DraftAssetEntry = { type?: string; name?: string; preview_url?: string; url?: string };
 
@@ -39,6 +42,7 @@ const props = defineProps<{
   hasPreview: boolean;
   platformDrafts: Partial<Record<PlatformKey, DraftPayload>>;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
+  workflowStage: 1 | 2;
 }>();
 
 const emit = defineEmits<{
@@ -83,6 +87,7 @@ const assets = defineModel<EditorAssets>("assets", { required: true });
 const mediaFolders = defineModel<MediaFolder[]>("mediaFolders", { required: true });
 
 const dragState = ref<DragState | null>(null);
+const isCoverDragOver = ref(false);
 const isContentDragOver = ref(false);
 const contentDropIndex = ref<number | null>(null);
 const contentDropCaretStyle = ref<{ left: string; top: string } | null>(null);
@@ -96,6 +101,8 @@ const mediaPanelWidth = ref(340);
 const isResizing = ref(false);
 const agentUpdateTitle = ref(false);
 const agentUpdateTags = ref(false);
+const batchAgentUpdateTitle = ref(false);
+const batchAgentUpdateTags = ref(false);
 const platformWritingStyleValue = ref<AgentWritingStyle | string>("default");
 const batchWritingStyleValue = ref<AgentWritingStyle | string>("default");
 
@@ -125,18 +132,19 @@ function onGutterMouseDown(event: MouseEvent) {
 }
 
 const editorShellStyle = computed(() => {
-  if (mediaPanelCollapsed.value) return {};
+  if (props.workflowStage !== 1 || mediaPanelCollapsed.value) return {};
   return { gridTemplateColumns: `minmax(0, 1fr) 18px ${mediaPanelWidth.value}px` };
 });
 
 const assetCount = computed(() => assets.value.images.length + assets.value.videos.length + assets.value.audios.length);
 const contentAssetReferences = computed<ContentAssetReference[]>(() => {
   const references: ContentAssetReference[] = [];
-  const pattern = /【(图片|视频|音频)：([^】]+)】/g;
+  const pattern = ASSET_MARKER_PATTERN;
+  pattern.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content.value)) !== null) {
-    const label = match[1];
-    const token = match[2];
+    const label = match[1] ? kindLabel(match[1]) : match[3] ?? "";
+    const token = match[2] ?? match[4] ?? "";
     references.push({
       marker: match[0],
       index: match.index,
@@ -148,6 +156,51 @@ const contentAssetReferences = computed<ContentAssetReference[]>(() => {
   return references;
 });
 const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
+const selectedPlatformOptions = computed(() => platformOptions.filter((option) => platforms.value.includes(option.value)));
+const platformOptimizeUnavailableReason = computed(() => {
+  if (props.agentLoading) return "智能优化正在进行，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!props.hasPreview) return "请先生成平台预览。";
+  return "";
+});
+const batchOptimizeUnavailableReason = computed(() => {
+  if (props.agentLoading) return "智能优化正在进行，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!platforms.value.length) return "请至少勾选一个需要优化的平台。";
+  return "";
+});
+const generatePreviewUnavailableReason = computed(() => {
+  if (props.previewLoading) return "所选平台预览正在生成，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!platforms.value.length) return "请至少勾选一个需要生成预览的平台。";
+  return "";
+});
+const currentPreviewUnavailableReason = computed(() => {
+  if (props.previewLoading && !activePreviewDraft.value) return "当前平台预览正在生成，请稍候。";
+  if (!activePreviewDraft.value) return "请先生成当前平台的预览内容。";
+  return "";
+});
+const multiPreviewUnavailableReason = computed(() => {
+  if (props.previewLoading && !props.hasPreview) return "平台预览正在生成，请稍候。";
+  if (!props.hasPreview) return "请先生成至少一个平台的预览内容。";
+  return "";
+});
+const currentClearUnavailableReason = computed(() => {
+  if (!draftHasEditableContent(activePreviewDraft.value)) return "当前平台没有可清除的预览内容。";
+  return "";
+});
+const batchClearUnavailableReason = computed(() => {
+  if (!platforms.value.length) return "请至少勾选一个需要清除的平台。";
+  const hasSelectedDraftContent = platforms.value.some((platform) => draftHasEditableContent(props.platformDrafts[platform]));
+  if (!hasSelectedDraftContent) return "已勾选的平台没有可清除的预览内容。";
+  return "";
+});
+const publishConfirmUnavailableReason = computed(() => {
+  if (props.publishLoading) return "发布任务正在处理中，请稍候。";
+  if (!props.hasPreview) return "请先生成平台预览。";
+  if (!platforms.value.length) return "请至少选择一个发布平台。";
+  return "";
+});
 const activePreviewTitle = computed({
   get: () => activePreviewDraft.value?.title ?? "",
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { title: value })
@@ -160,6 +213,20 @@ const activePreviewTags = computed({
   get: () => activePreviewDraft.value?.tags?.join(", ") ?? "",
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { tags: parseTagText(value) })
 });
+
+function selectPreviewPlatform(platform: PlatformKey) {
+  activePreviewPlatform.value = platform;
+}
+
+watch(platforms, (nextPlatforms) => {
+  if (nextPlatforms.length && !nextPlatforms.includes(activePreviewPlatform.value)) {
+    activePreviewPlatform.value = nextPlatforms[0];
+  }
+}, { deep: true });
+
+function draftHasEditableContent(draft?: DraftPayload | null) {
+  return Boolean(draft?.title?.trim() || draft?.body?.trim() || draft?.tags?.length);
+}
 
 async function handleImportClick() {
   importInputRef.value?.click();
@@ -194,7 +261,7 @@ async function handleImportFileChange(event: Event) {
     }
     console.log("[ImportDoc]", result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "导入文件失败。";
+    const message = getErrorMessage(error, "导入文件失败。");
     window.alert(message);
   } finally {
     importLoading.value = false;
@@ -204,13 +271,6 @@ async function handleImportFileChange(event: Event) {
 
 function kindFromTab(tab: MediaTab): MediaKind {
   return tab === "images" ? "image" : tab === "videos" ? "video" : "audio";
-}
-
-function parseTagText(value: string): string[] {
-  return value
-    .split(/[,，\s]+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 }
 
 function resolveWritingStyle(value: AgentWritingStyle | string): Pick<AgentOptimizeOptions, "writingStyle" | "customWritingStyle"> | null {
@@ -229,27 +289,39 @@ function resolveWritingStyle(value: AgentWritingStyle | string): Pick<AgentOptim
   return { writingStyle: "custom", customWritingStyle: normalized };
 }
 
-function buildAgentOptimizeOptions(value: AgentWritingStyle | string): AgentOptimizeOptions | null {
+function buildAgentOptimizeOptions(
+  value: AgentWritingStyle | string,
+  updateTitle: boolean,
+  updateTags: boolean
+): AgentOptimizeOptions | null {
   const style = resolveWritingStyle(value);
   if (!style) {
     return null;
   }
   return {
-    updateTitle: agentUpdateTitle.value,
-    updateTags: agentUpdateTags.value,
+    updateTitle,
+    updateTags,
     ...style
   };
 }
 
 function emitOptimizeAllWithAgent() {
-  const options = buildAgentOptimizeOptions(batchWritingStyleValue.value);
+  const options = buildAgentOptimizeOptions(
+    batchWritingStyleValue.value,
+    batchAgentUpdateTitle.value,
+    batchAgentUpdateTags.value
+  );
   if (options) {
     emit("optimizeAllWithAgent", options);
   }
 }
 
 function emitOptimizeWithAgent() {
-  const options = buildAgentOptimizeOptions(platformWritingStyleValue.value);
+  const options = buildAgentOptimizeOptions(
+    platformWritingStyleValue.value,
+    agentUpdateTitle.value,
+    agentUpdateTags.value
+  );
   if (options) {
     emit("optimizeWithAgent", activePreviewPlatform.value, options);
   }
@@ -401,6 +473,42 @@ const onCoverChange: UploadProps["onChange"] = (file) => {
   assets.value.coverImageId = cover.id;
 };
 
+function onCoverDragOver(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  if (asset?.kind !== "image") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  isCoverDragOver.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+function onCoverDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) {
+    isCoverDragOver.value = false;
+  }
+}
+
+function onCoverDrop(event: DragEvent) {
+  const asset = findDraggedAsset(event);
+  isCoverDragOver.value = false;
+  if (asset?.kind !== "image") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  assets.value.coverImage = asset;
+  assets.value.coverImageId = asset.id;
+  dragState.value = null;
+}
+
 function createChangeHandler(tab: MediaTab): UploadProps["onChange"] {
   return (file) => {
     const asset = toLocalAsset(file, tab);
@@ -428,12 +536,6 @@ function clearCoverImage() {
   assets.value.coverImage = null;
 }
 
-const kindLabel: Record<MediaKind, string> = {
-  image: "图片",
-  video: "视频",
-  audio: "音频"
-};
-
 function assetFolderPath(asset: LocalAsset, name = asset.name) {
   const names: string[] = [];
   let cursor = asset.folderId;
@@ -447,7 +549,7 @@ function assetFolderPath(asset: LocalAsset, name = asset.name) {
 }
 
 function makeAssetMarker(asset: LocalAsset, name = asset.name) {
-  return `【${kindLabel[asset.kind]}：${assetFolderPath(asset, name)}】`;
+  return `【${kindLabel(asset.kind)}：${assetFolderPath(asset, name)}】`;
 }
 
 function assetMarker(asset: LocalAsset) {
@@ -459,13 +561,13 @@ function markerMatchesAsset(kind: MediaKind, token: string, asset: LocalAsset, l
   const cleanToken = token.split("｜id:")[0].trim();
   const currentPath = assetFolderPath(asset);
   const oldPath = legacyName ? assetFolderPath(asset, legacyName) : "";
-  return kindLabel[kind] === kindLabel[asset.kind] && [asset.name, legacyName, currentPath, oldPath, ...(asset.aliasPaths ?? [])].filter(Boolean).includes(cleanToken);
+  return kindLabel(kind) === kindLabel(asset.kind) && [asset.name, legacyName, currentPath, oldPath, ...(asset.aliasPaths ?? [])].filter(Boolean).includes(cleanToken);
 }
 
 function kindFromLabel(label: string): MediaKind | null {
-  if (label === kindLabel.image || label === "图片") return "image";
-  if (label === kindLabel.video || label === "视频") return "video";
-  if (label === kindLabel.audio || label === "音频") return "audio";
+  if (label === kindLabel("image") || label === "图片") return "image";
+  if (label === kindLabel("video") || label === "视频") return "video";
+  if (label === kindLabel("audio") || label === "音频") return "audio";
   return null;
 }
 
@@ -490,7 +592,9 @@ function locateContentReference(reference: ContentAssetReference) {
 }
 
 function refreshAssetMarkersInText(text: string, changedAsset?: LocalAsset, legacyName?: string) {
-  return text.replace(/【(图片|视频|音频)：([^】]+)】/g, (full, label: string, token: string) => {
+  return text.replace(ASSET_MARKER_PATTERN, (full, rawKind: string | undefined, rawToken: string | undefined, rawLabel: string | undefined, rawTextToken: string | undefined) => {
+    const label = rawKind ? kindLabel(rawKind) : rawLabel ?? "";
+    const token = rawToken ?? rawTextToken ?? "";
     const assetsForKind = label === "图片" ? assets.value.images : label === "视频" ? assets.value.videos : assets.value.audios;
     const asset = changedAsset
       ? markerMatchesAsset(changedAsset.kind, token, changedAsset, legacyName) ? changedAsset : undefined
@@ -500,8 +604,10 @@ function refreshAssetMarkersInText(text: string, changedAsset?: LocalAsset, lega
 }
 
 function removeAssetMarkersFromText(text: string, removedAsset: LocalAsset) {
-  return text.replace(/【(图片|视频|音频)：([^】]+)】\s*/g, (full, label: string, token: string) => {
-    return markerMatchesAsset(removedAsset.kind, token, removedAsset) && label === kindLabel[removedAsset.kind] ? "" : full;
+  return text.replace(ASSET_MARKER_PATTERN, (full, rawKind: string | undefined, rawToken: string | undefined, rawLabel: string | undefined, rawTextToken: string | undefined) => {
+    const label = rawKind ? kindLabel(rawKind) : rawLabel ?? "";
+    const token = rawToken ?? rawTextToken ?? "";
+    return markerMatchesAsset(removedAsset.kind, token, removedAsset) && label === kindLabel(removedAsset.kind) ? "" : full;
   });
 }
 
@@ -748,6 +854,9 @@ function findDraggedAsset(event: DragEvent): LocalAsset | null {
 }
 
 function hasSupportedExternalFiles(event: DragEvent) {
+  if (event.dataTransfer?.types.includes("application/x-auto-upt-asset")) {
+    return false;
+  }
   const files = event.dataTransfer?.files;
   if (!files?.length) {
     return false;
@@ -767,8 +876,9 @@ function onContentDragOver(event: DragEvent) {
 }
 
 function onContentDrop(event: DragEvent) {
-  const externalAssets = event.dataTransfer?.files?.length ? addExternalFilesToAssets(event.dataTransfer.files) : [];
+  const isInternalAssetDrag = event.dataTransfer?.types.includes("application/x-auto-upt-asset") ?? false;
   const asset = findDraggedAsset(event);
+  const externalAssets = !isInternalAssetDrag && event.dataTransfer?.files?.length ? addExternalFilesToAssets(event.dataTransfer.files) : [];
   isContentDragOver.value = false;
   if (!asset && !externalAssets.length) {
     return;
@@ -952,10 +1062,10 @@ function dropClass(tab: MediaTab, index: number) {
   <section class="editor-view">
     <div class="section-title">
       <div>
-        <p>内容编辑</p>
-        <h2>统一内容编辑区</h2>
+        <p>{{ workflowStage === 1 ? "统一内容编译" : "编辑所选平台" }}</p>
+        <h2>{{ workflowStage === 1 ? "统一内容编辑区" : "编辑与优化平台内容" }}</h2>
       </div>
-      <div class="section-actions">
+      <div v-if="workflowStage === 1" class="section-actions">
         <el-button type="primary" plain :icon="Plus" :loading="importLoading" @click="handleImportClick">
           导入文档（.md / .txt / .docx）
         </el-button>
@@ -970,10 +1080,10 @@ function dropClass(tab: MediaTab, index: number) {
       @change="handleImportFileChange"
     />
 
-    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed }" :style="editorShellStyle">
+    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed, 'is-flow-stage': workflowStage !== 1 }" :style="editorShellStyle">
       <div class="editor-main">
     <el-form label-position="top">
-      <section class="editor-panel editor-panel-meta">
+      <section v-if="workflowStage === 1" class="editor-panel editor-panel-meta">
         <div class="panel-kicker">基础信息</div>
       <div class="title-cover-row">
         <div class="title-tag-fields">
@@ -987,7 +1097,14 @@ function dropClass(tab: MediaTab, index: number) {
         </div>
 
         <el-form-item label="封面图" class="cover-form-item">
-          <div class="cover-picker">
+          <div
+            class="cover-picker"
+            :class="{ 'is-cover-drag-over': isCoverDragOver }"
+            @dragenter.capture="onCoverDragOver"
+            @dragover.capture="onCoverDragOver"
+            @dragleave="onCoverDragLeave"
+            @drop.capture="onCoverDrop"
+          >
             <el-upload
               v-if="!assets.coverImage"
               class="cover-upload"
@@ -1018,7 +1135,7 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
       </section>
 
-      <section class="editor-panel editor-panel-content">
+      <section v-if="workflowStage === 1" class="editor-panel editor-panel-content">
       <el-form-item>
         <template #label>
           <div class="content-label-row">
@@ -1042,7 +1159,7 @@ function dropClass(tab: MediaTab, index: number) {
             placeholder="输入正文，支持 Markdown、图文要点、视频简介；也可从文件夹直接拖入图片/视频/音频。"
           />
           <div v-if="isContentDragOver && contentDropCaretStyle" class="content-drop-caret" :style="contentDropCaretStyle" />
-          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入正文，并自动加入对应素材库</div>
+          <div v-if="isContentDragOver" class="content-drop-hint">松开后插入素材引用；外部文件会自动加入素材库</div>
         </div>
         <div v-if="contentAssetReferences.length" class="content-asset-references">
           <div class="reference-header">
@@ -1077,20 +1194,26 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
       </section>
 
-      <div class="asset-strip">
+      <div v-if="workflowStage === 1" class="asset-strip">
         <el-icon><MagicStick /></el-icon>
         <span>可拖拽多媒体库中素材至文本框以添加至正文，封面图将在发布时优先使用。</span>
       </div>
 
-      <section class="editor-panel editor-panel-platform">
+      <section v-if="workflowStage === 2" class="editor-panel editor-panel-platform">
       <el-form-item label="平台预览">
         <section class="platform-preview-box">
-          <div class="platform-preview-tabs">
-            <el-radio-group v-model="activePreviewPlatform" size="default">
-              <el-radio-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </el-radio-button>
-            </el-radio-group>
+          <div class="platform-edit-list">
+            <button
+              v-for="option in selectedPlatformOptions"
+              :key="option.value"
+              type="button"
+              class="platform-edit-card"
+              :class="{ 'is-active': activePreviewPlatform === option.value }"
+              @click="selectPreviewPlatform(option.value)"
+            >
+              {{ option.label }}
+            </button>
+            <el-empty v-if="!selectedPlatformOptions.length" description="请返回统一内容编译区选择需要编辑的平台" />
           </div>
 
           <div
@@ -1170,29 +1293,53 @@ function dropClass(tab: MediaTab, index: number) {
           <div class="platform-preview-actions">
             <span>{{ activePreviewDraft ? "当前平台内容已生成，可直接修改或拖放素材。" : "当前平台还没有生成内容。" }}</span>
             <div class="platform-preview-btns">
-              <el-button
-                :disabled="!hasPreview"
-                @click="$emit('openPreview', activePreviewPlatform)"
+              <el-tooltip
+                :content="currentPreviewUnavailableReason"
+                placement="top"
+                :disabled="!currentPreviewUnavailableReason"
               >
-                查看当前预览
-              </el-button>
-              <el-button
-                type="success"
-                :icon="MagicStick"
-                :loading="agentLoading"
-                :disabled="!hasPreview || !content.trim()"
-                @click="emitOptimizeWithAgent"
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    :disabled="Boolean(currentPreviewUnavailableReason)"
+                    @click="$emit('openPreview', activePreviewPlatform)"
+                  >
+                    查看当前预览
+                  </el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
+                :content="platformOptimizeUnavailableReason"
+                placement="top"
+                :disabled="!platformOptimizeUnavailableReason"
               >
-                智能优化
-              </el-button>
-              <el-button
-                type="danger"
-                text
-                :disabled="!hasPreview"
-                @click="handleClearPlatform"
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    type="success"
+                    :icon="MagicStick"
+                    :loading="agentLoading"
+                    :disabled="Boolean(platformOptimizeUnavailableReason)"
+                    @click="emitOptimizeWithAgent"
+                  >
+                    智能优化
+                  </el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
+                :content="currentClearUnavailableReason"
+                placement="top"
+                :disabled="!currentClearUnavailableReason"
               >
-                清除
-              </el-button>
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    type="danger"
+                    text
+                    :disabled="Boolean(currentClearUnavailableReason)"
+                    @click="handleClearPlatform"
+                  >
+                    清除
+                  </el-button>
+                </span>
+              </el-tooltip>
             </div>
           </div>
         </section>
@@ -1203,7 +1350,7 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
 
       <div
-        v-if="!mediaPanelCollapsed"
+        v-if="workflowStage === 1 && !mediaPanelCollapsed"
         class="editor-gutter"
         :class="{ 'is-resizing': isResizing }"
         @mousedown="onGutterMouseDown"
@@ -1211,68 +1358,164 @@ function dropClass(tab: MediaTab, index: number) {
         <span class="editor-gutter-handle" />
       </div>
 
-      <aside class="editor-media-side">
-        <el-button class="media-collapse-button" :icon="mediaPanelCollapsed ? ArrowLeft : ArrowRight" @click="mediaPanelCollapsed = !mediaPanelCollapsed">
-          {{ mediaPanelCollapsed ? "展开多媒体库" : "收起多媒体库" }}
+      <aside v-if="workflowStage === 1" class="editor-media-side">
+        <el-button v-if="mediaPanelCollapsed" class="media-collapse-button" :icon="ArrowLeft" @click="mediaPanelCollapsed = false">
+          展开多媒体库
         </el-button>
         <MediaLibraryPanel
           v-show="!mediaPanelCollapsed"
           v-model:assets="assets"
           v-model:folders="mediaFolders"
           compact
+          collapsible
           title="多媒体库"
           @insert="insertAssetReference"
           @rename="handleMediaRename"
           @delete="handleMediaDelete"
+          @collapse="mediaPanelCollapsed = true"
         />
       </aside>
+
+      <section v-if="workflowStage === 1" class="editor-panel platform-selection-panel">
+        <div class="platform-context-header">
+          <div class="platform-context-copy-header">
+            <strong>选择生成平台</strong>
+            <span>勾选需要适配的平台，生成后进入“编辑所选平台”。</span>
+          </div>
+          <div class="platform-context-actions">
+            <el-tag type="info" effect="plain">已选 {{ platforms.length }} 个平台</el-tag>
+          </div>
+        </div>
+
+        <div class="platform-selection-row">
+          <el-checkbox-group v-model="platforms" class="platform-context-list">
+            <div
+              v-for="option in platformOptions"
+              :key="option.value"
+              class="platform-context-card"
+              :class="{ 'is-selected': platforms.includes(option.value) }"
+            >
+              <el-checkbox :value="option.value" class="platform-context-checkbox">
+                {{ option.label }}
+              </el-checkbox>
+            </div>
+          </el-checkbox-group>
+
+          <el-tooltip
+            :content="generatePreviewUnavailableReason"
+            placement="top"
+            :disabled="!generatePreviewUnavailableReason"
+          >
+            <span class="disabled-action-tooltip platform-generate-action">
+              <el-button
+                type="primary"
+                :icon="Connection"
+                :loading="previewLoading"
+                :disabled="Boolean(generatePreviewUnavailableReason)"
+                @click="$emit('generatePreview')"
+              >
+                生成预览
+              </el-button>
+            </span>
+          </el-tooltip>
+        </div>
+      </section>
     </div>
 
-    <div class="platform-before-actions">
-      <el-checkbox-group v-model="platforms" class="platforms">
-        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </el-checkbox-button>
-      </el-checkbox-group>
-    </div>
+    <section v-if="workflowStage === 2" class="batch-agent-panel">
+      <div class="batch-agent-settings">
+        <div class="agent-option-row">
+          <span>一键优化范围</span>
+          <el-checkbox v-model="batchAgentUpdateTitle">修改标题</el-checkbox>
+          <el-checkbox v-model="batchAgentUpdateTags">修改关键词</el-checkbox>
+        </div>
+        <div class="batch-agent-style-row">
+          <span>一键优化风格</span>
+          <el-select
+            v-model="batchWritingStyleValue"
+            class="agent-style-select"
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="选择或输入发布风格"
+          >
+            <el-option
+              v-for="option in writingStyleOptions"
+              :key="`batch-${option.value}`"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+      </div>
 
-    <div class="batch-agent-style-row">
-      <span>一键优化风格</span>
-      <el-select
-        v-model="batchWritingStyleValue"
-        class="agent-style-select"
-        filterable
-        allow-create
-        default-first-option
-        :reserve-keyword="false"
-        placeholder="选择或输入发布风格"
-      >
-        <el-option
-          v-for="option in writingStyleOptions"
-          :key="`batch-${option.value}`"
-          :label="option.label"
-          :value="option.value"
-        />
-      </el-select>
-    </div>
-
-    <div class="action-row">
-      <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
-        生成平台预览
-      </el-button>
-      <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="emitOptimizeAllWithAgent">
-        一键智能优化
-      </el-button>
-      <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
-        多平台预览
-      </el-button>
-      <el-button type="primary" :icon="Promotion" @click="$emit('confirmPublish')">
-        发布
-      </el-button>
-      <el-button type="danger" text :disabled="!hasPreview" @click="handleClearCheckedPlatforms">
-        一键清除
-      </el-button>
-    </div>
+      <div class="platform-preview-actions">
+        <span>批量操作将应用于已勾选的 {{ platforms.length }} 个平台。</span>
+        <div class="platform-preview-btns">
+          <el-tooltip
+            :content="multiPreviewUnavailableReason"
+            placement="top"
+            :disabled="!multiPreviewUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button :disabled="Boolean(multiPreviewUnavailableReason)" @click="$emit('openPreview')">
+                多平台预览
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="batchOptimizeUnavailableReason"
+            placement="top"
+            :disabled="!batchOptimizeUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="success"
+                :icon="MagicStick"
+                :loading="agentLoading"
+                :disabled="Boolean(batchOptimizeUnavailableReason)"
+                @click="emitOptimizeAllWithAgent"
+              >
+                一键智能优化
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="batchClearUnavailableReason"
+            placement="top"
+            :disabled="!batchClearUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="danger"
+                text
+                :disabled="Boolean(batchClearUnavailableReason)"
+                @click="handleClearCheckedPlatforms"
+              >
+                一键清除
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="publishConfirmUnavailableReason"
+            placement="top"
+            :disabled="!publishConfirmUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="primary"
+                :icon="Right"
+                :disabled="Boolean(publishConfirmUnavailableReason)"
+                @click="$emit('confirmPublish')"
+              >
+                进入发布确认
+              </el-button>
+            </span>
+          </el-tooltip>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -1317,6 +1560,10 @@ function dropClass(tab: MediaTab, index: number) {
 
 .editor-shell.is-media-collapsed {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.editor-shell.is-flow-stage {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .editor-gutter {
@@ -1385,6 +1632,13 @@ function dropClass(tab: MediaTab, index: number) {
   background: #f8fafc;
 }
 
+.platform-selection-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 12px;
+  margin-top: 16px;
+}
+
 .panel-kicker {
   margin-bottom: 12px;
   color: #607086;
@@ -1400,12 +1654,12 @@ function dropClass(tab: MediaTab, index: number) {
 }
 
 .editor-media-side {
-  position: sticky;
-  top: 18px;
+  position: relative;
+  align-self: start;
   display: grid;
   gap: 10px;
-  max-height: calc(100vh - 132px);
   min-width: 0;
+  overflow: hidden;
 }
 
 .media-collapse-button {
@@ -1465,6 +1719,21 @@ function dropClass(tab: MediaTab, index: number) {
   width: 100%;
 }
 
+.cover-picker {
+  border-radius: 8px;
+  transition: box-shadow 0.15s ease;
+}
+
+.cover-picker.is-cover-drag-over {
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.18);
+}
+
+.cover-picker.is-cover-drag-over .cover-preview,
+.cover-picker.is-cover-drag-over :deep(.el-upload-dragger) {
+  border-color: #1f6feb;
+  background: #edf4ff;
+}
+
 .cover-upload :deep(.el-upload-dragger) {
   display: grid;
   place-items: center;
@@ -1519,23 +1788,14 @@ function dropClass(tab: MediaTab, index: number) {
 .platforms,
 .media-list,
 .media-actions,
-.action-row,
 .asset-strip {
   display: flex;
   align-items: center;
 }
 
-.platforms,
-.action-row {
+.platforms {
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.platform-before-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
 }
 
 .platforms :deep(.el-checkbox-button__inner) {
@@ -1707,15 +1967,152 @@ function dropClass(tab: MediaTab, index: number) {
   border-radius: 8px;
 }
 
-.platform-preview-tabs {
+.platform-context-header {
   display: flex;
+  align-items: center;
+}
+
+.platform-context-header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.platform-context-copy-header {
+  display: grid;
+  gap: 3px;
+}
+
+.platform-context-copy-header strong {
+  color: #253247;
+}
+
+.platform-context-copy-header span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.platform-context-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.platform-preview-tabs :deep(.el-radio-button__inner) {
+.platform-context-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.platform-selection-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.platform-generate-action,
+.platform-generate-action .el-button {
+  height: 100%;
+}
+
+.platform-context-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #dfe7f1;
   border-radius: 8px;
-  border-left: 1px solid var(--el-border-color);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.platform-context-card:hover {
+  border-color: #9fc2f7;
+}
+
+.platform-context-card.is-selected {
+  background: #f7faff;
+}
+
+.platform-context-card.is-active {
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+}
+
+.platform-context-card.is-active::after {
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  width: 14px;
+  height: 22px;
+  content: "";
+  background: #1f6feb;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+}
+
+.platform-edit-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.platform-edit-card {
+  position: relative;
+  min-height: 46px;
+  padding: 10px 14px;
+  overflow: hidden;
+  color: #253247;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+}
+
+.platform-edit-card:hover,
+.platform-edit-card.is-active {
+  border-color: #1f6feb;
+}
+
+.platform-edit-card.is-active {
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+}
+
+.platform-edit-card.is-active::after {
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  width: 14px;
+  height: 22px;
+  content: "";
+  background: #1f6feb;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+}
+
+.platform-context-checkbox {
+  width: 100%;
+  min-width: 0;
+  margin-right: 0;
+}
+
+.platform-context-checkbox :deep(.el-checkbox__label) {
+  min-width: 0;
+  overflow: hidden;
+  color: #253247;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .platform-preview-box :deep(.el-textarea__inner),
@@ -1764,7 +2161,22 @@ function dropClass(tab: MediaTab, index: number) {
 }
 
 .batch-agent-style-row {
-  margin: 2px 0 10px;
+  margin: 0;
+}
+
+.batch-agent-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-agent-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
 }
 
 .platform-preview-actions {
@@ -1994,10 +2406,6 @@ function dropClass(tab: MediaTab, index: number) {
   margin-top: 0;
 }
 
-.action-row {
-  margin-bottom: 14px;
-}
-
 @media (max-width: 1180px) {
   .editor-shell {
     grid-template-columns: 1fr;
@@ -2006,6 +2414,18 @@ function dropClass(tab: MediaTab, index: number) {
   .editor-media-side {
     position: static;
     max-height: none;
+  }
+
+  .platform-context-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .platform-selection-row {
+    align-items: stretch;
+  }
+
+  .platform-edit-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2054,6 +2474,10 @@ function dropClass(tab: MediaTab, index: number) {
   gap: 8px;
 }
 
+.disabled-action-tooltip {
+  display: inline-flex;
+}
+
 .asset-strip {
   gap: 8px;
   padding: 12px 14px;
@@ -2083,6 +2507,33 @@ function dropClass(tab: MediaTab, index: number) {
   }
 
   .media-card-audio {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-context-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .platform-context-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .platform-context-list {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-selection-row {
+    flex-direction: column;
+  }
+
+  .platform-generate-action,
+  .platform-generate-action .el-button {
+    width: 100%;
+  }
+
+  .platform-edit-list {
     grid-template-columns: 1fr;
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import {
   ChatDotRound,
@@ -28,9 +28,22 @@ import {
   type SavedCredentialOption,
   type WechatConnectPayload
 } from "@/api/client";
+import { getErrorMessage } from "@/utils/errors";
 
 type AccountStatus = "connected" | "disconnected" | "placeholder" | "error";
 type SupportedPlatform = PlatformKey;
+
+const props = withDefaults(defineProps<{
+  focusedPlatform?: PlatformKey | null;
+  autoOpenConfig?: boolean;
+  compact?: boolean;
+  configurationOnly?: boolean;
+}>(), {
+  focusedPlatform: null,
+  autoOpenConfig: false,
+  compact: false,
+  configurationOnly: false
+});
 
 interface GeetestValidation {
   geetest_challenge: string;
@@ -73,7 +86,8 @@ const bilibiliCaptchaInstance = ref<GeetestInstance | null>(null);
 const loadingAction = ref<string>("");
 const loadError = ref("");
 const wechatSavedCredentials = ref<SavedCredentialOption[]>([]);
-const wechatPopoverVisible = ref(false);
+const wechatConfigVisible = ref(false);
+const bilibiliConfigVisible = ref(false);
 
 let geetestScriptPromise: Promise<void> | null = null;
 
@@ -155,6 +169,11 @@ const platforms = reactive<PlatformConfig[]>([
 ]);
 
 const isBusy = computed(() => Boolean(loadingAction.value));
+const visiblePlatforms = computed(() =>
+  props.focusedPlatform
+    ? platforms.filter((platform) => platform.key === props.focusedPlatform)
+    : platforms
+);
 
 function platformByKey(platform: SupportedPlatform) {
   return platforms.find((item) => item.key === platform);
@@ -245,7 +264,7 @@ async function selectWechatCredential(option: SavedCredentialOption) {
     wechatForm.app_secret = revealed.app_secret;
     void wechatFormRef.value?.clearValidate?.("app_secret");
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "读取 AppSecret 失败");
+    ElMessage.error(getErrorMessage(error, "读取 AppSecret 失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -404,7 +423,7 @@ async function initializeBilibiliCaptcha() {
       }
     );
   } catch (error) {
-    bilibiliCaptchaState.message = error instanceof Error ? error.message : "验证码获取失败";
+    bilibiliCaptchaState.message = getErrorMessage(error, "验证码获取失败");
     ElMessage.error(bilibiliCaptchaState.message);
   } finally {
     loadingAction.value = "";
@@ -422,7 +441,7 @@ async function refreshAccounts(showToast = false) {
       ElMessage.success("账号状态已刷新");
     }
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : "账号状态刷新失败";
+    loadError.value = getErrorMessage(error, "账号状态刷新失败");
     if (showToast) {
       ElMessage.error("暂时无法读取账号状态");
     }
@@ -459,7 +478,7 @@ async function connectWechat() {
       platform.status = "error";
       platform.note = "连接接口未完成或配置校验失败";
     }
-    ElMessage.error(error instanceof Error ? error.message : "公众号连接失败");
+    ElMessage.error(getErrorMessage(error, "公众号连接失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -515,7 +534,7 @@ async function connectBilibili() {
     resetBilibiliCaptcha();
     ElMessage.success(result.message);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "B站登录失败";
+    const message = getErrorMessage(error, "B站登录失败");
     const platform = platformByKey("bilibili");
     if (platform) {
       platform.status = "error";
@@ -550,7 +569,7 @@ async function testConnection(platformKey: SupportedPlatform) {
       platform.status = "error";
       platform.note = "当前暂时无法测试连接";
     }
-    ElMessage.error(error instanceof Error ? error.message : "连接测试失败");
+    ElMessage.error(getErrorMessage(error, "连接测试失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -581,7 +600,7 @@ async function disconnect(platformKey: SupportedPlatform) {
     }
     ElMessage.success("已断开连接");
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "断开连接失败");
+    ElMessage.error(getErrorMessage(error, "断开连接失败"));
   } finally {
     loadingAction.value = "";
   }
@@ -611,18 +630,26 @@ async function deleteWechatCredential(credential: SavedCredentialOption, event: 
     }
     ElMessage.success("已删除账号");
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "删除账号失败");
+    ElMessage.error(getErrorMessage(error, "删除账号失败"));
   } finally {
     loadingAction.value = "";
   }
 }
 
-void refreshAccounts();
+onMounted(async () => {
+  void refreshAccounts();
+  if (!props.autoOpenConfig) {
+    return;
+  }
+  await nextTick();
+  wechatConfigVisible.value = props.focusedPlatform === "wechat";
+  bilibiliConfigVisible.value = props.focusedPlatform === "bilibili";
+});
 </script>
 
 <template>
-  <section class="account-view">
-    <div class="section-title">
+  <section class="account-view" :class="{ 'is-compact': compact }">
+    <div v-if="!compact && !configurationOnly" class="section-title">
       <div>
         <h2>平台授权状态</h2>
       </div>
@@ -630,7 +657,7 @@ void refreshAccounts();
     </div>
 
     <el-alert
-      v-if="loadError"
+      v-if="loadError && !configurationOnly"
       class="phase-note"
       :title="`暂时无法读取账号状态：${loadError}`"
       type="warning"
@@ -638,15 +665,128 @@ void refreshAccounts();
       :closable="false"
     />
 
-    <div class="account-table">
-      <div class="account-table-head">
+    <div v-if="configurationOnly" class="direct-config-panel">
+      <el-form
+        v-if="focusedPlatform === 'wechat'"
+        :ref="setWechatFormRef"
+        class="account-form"
+        :model="wechatForm"
+        :rules="wechatRules"
+        label-position="right"
+        label-width="88px"
+      >
+        <el-form-item label="AppID" prop="app_id">
+          <el-autocomplete
+            v-model="wechatForm.app_id"
+            clearable
+            value-key="app_id"
+            :fetch-suggestions="queryWechatCredentials"
+            placeholder="输入或选择公众号 AppID"
+            @input="handleWechatAppIdInput"
+            @select="selectWechatCredential"
+            @blur="handleWechatAppIdBlur"
+            @clear="clearWechatCredentialSelection"
+          >
+            <template #default="{ item: credential }">
+              <div class="credential-option">
+                <span>{{ credential.app_id }}</span>
+                <el-button
+                  class="credential-delete"
+                  text
+                  circle
+                  :icon="Close"
+                  :loading="loadingAction === `wechat-delete-${credential.account_id}`"
+                  @click="deleteWechatCredential(credential, $event)"
+                />
+              </div>
+            </template>
+          </el-autocomplete>
+        </el-form-item>
+        <el-form-item label="AppSecret" prop="app_secret">
+          <el-input v-model="wechatForm.app_secret" type="password" show-password autocomplete="new-password" placeholder="请输入 AppSecret">
+            <template #prefix>
+              <el-icon><Key /></el-icon>
+            </template>
+          </el-input>
+        </el-form-item>
+        <div class="direct-config-actions">
+          <el-button
+            type="primary"
+            :loading="loadingAction === 'wechat-connect'"
+            :disabled="isBusy && loadingAction !== 'wechat-connect'"
+            @click="connectWechat"
+          >
+            保存配置
+          </el-button>
+        </div>
+      </el-form>
+
+      <el-form
+        v-else-if="focusedPlatform === 'bilibili'"
+        :ref="setBilibiliFormRef"
+        class="account-form"
+        :model="bilibiliForm"
+        :rules="bilibiliRules"
+        label-position="right"
+        label-width="88px"
+      >
+        <el-form-item label="B 站账号" prop="username">
+          <el-input v-model="bilibiliForm.username" autocomplete="username" placeholder="手机号或邮箱">
+            <template #prefix>
+              <el-icon><Key /></el-icon>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="B 站密码" prop="password">
+          <el-input v-model="bilibiliForm.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码">
+            <template #prefix>
+              <el-icon><Key /></el-icon>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="验证码">
+          <div class="captcha-panel">
+            <div ref="bilibiliCaptchaRef" class="captcha-box"></div>
+            <div class="captcha-actions">
+              <el-button
+                size="small"
+                :loading="loadingAction === 'bilibili-captcha'"
+                :disabled="isBusy && loadingAction !== 'bilibili-captcha'"
+                @click="initializeBilibiliCaptcha"
+              >
+                {{ bilibiliCaptchaState.ready ? "刷新验证码" : "获取验证码" }}
+              </el-button>
+              <span :class="['captcha-status', { verified: bilibiliCaptchaState.verified }]">
+                {{ bilibiliCaptchaState.message }}
+              </span>
+            </div>
+          </div>
+        </el-form-item>
+        <div v-if="bilibiliLoginState.message" :class="['login-result', bilibiliLoginState.type]">
+          {{ bilibiliLoginState.message }}
+        </div>
+        <div class="direct-config-actions">
+          <el-button
+            type="primary"
+            :loading="loadingAction === 'bilibili-login'"
+            :disabled="isBusy && loadingAction !== 'bilibili-login'"
+            @click="connectBilibili"
+          >
+            保存登录
+          </el-button>
+        </div>
+      </el-form>
+    </div>
+
+    <div v-else class="account-table">
+      <div v-if="!compact" class="account-table-head">
         <span>平台</span>
         <span>用户名称</span>
         <span>状态</span>
         <span>操作</span>
       </div>
 
-      <article v-for="platform in platforms" :key="platform.key" class="account-row">
+      <article v-for="platform in visiblePlatforms" :key="platform.key" class="account-row">
         <div class="platform-cell">
           <span class="account-icon">
             <el-icon :size="22">
@@ -675,15 +815,15 @@ void refreshAccounts();
         </div>
 
         <div class="actions-cell">
-          <el-popover v-if="platform.key === 'wechat'" placement="bottom-end" :width="360" :visible="wechatPopoverVisible">
+          <el-popover v-if="platform.key === 'wechat'" v-model:visible="wechatConfigVisible" placement="bottom-end" :width="360" trigger="click">
             <template #reference>
-              <el-button :icon="Connection" type="primary" @click.stop="wechatPopoverVisible = true">配置</el-button>
+              <el-button :icon="Connection" type="primary">配置</el-button>
             </template>
 
             <el-form :ref="setWechatFormRef" class="account-form" :model="wechatForm" :rules="wechatRules" label-position="top">
               <div class="form-head">
                 <span>公众号账号</span>
-                <el-button text circle :icon="Close" @click="wechatPopoverVisible = false" />
+                <el-button text circle :icon="Close" @click="wechatConfigVisible = false" />
               </div>
               <el-form-item label="AppID" prop="app_id">
                 <el-autocomplete
@@ -736,7 +876,7 @@ void refreshAccounts();
             </el-form>
           </el-popover>
 
-          <el-popover v-if="platform.key === 'bilibili'" placement="bottom-end" :width="420" trigger="click">
+          <el-popover v-if="platform.key === 'bilibili'" v-model:visible="bilibiliConfigVisible" placement="bottom-end" :width="420" trigger="click">
             <template #reference>
               <el-button
                 type="primary"
@@ -824,6 +964,32 @@ void refreshAccounts();
 <style scoped>
 .account-view {
   min-width: 0;
+}
+
+.account-view.is-compact .account-table {
+  overflow: visible;
+}
+
+.account-view.is-compact .account-row {
+  grid-template-columns: minmax(160px, 0.8fr) minmax(140px, 0.8fr) minmax(180px, 1fr) minmax(320px, 1.4fr);
+  border-bottom: 0;
+}
+
+.direct-config-panel {
+  padding-top: 4px;
+}
+
+.direct-config-panel .account-form {
+  max-width: none;
+}
+
+.direct-config-panel :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.direct-config-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .section-title {

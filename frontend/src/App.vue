@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
+import { Expand, Fold, FolderOpened, Monitor, Operation, Right, User, VideoPlay, WarningFilled } from "@element-plus/icons-vue";
 
 import {
   createPreview,
@@ -36,7 +36,19 @@ import { type PublishForms } from "@/views/PublishFormView.vue";
 import TaskView from "@/views/TaskView.vue";
 import type { EditorAssets, LocalAsset, MediaFolder, MediaTab } from "@/types/media";
 
-type WorkspaceTab = "preview" | "confirm" | "task" | "media" | "account";
+import {
+  getErrorMessage,
+  parseTagText,
+  PLATFORM_AGENT_STYLE_GOALS,
+  PLATFORM_LABELS,
+  REAL_PUBLISH_PLATFORMS,
+  STORAGE_KEYS,
+} from "@/utils";
+import { useDebounce } from "@/composables/useDebounce";
+import { useIndexedDB } from "@/composables/useIndexedDB";
+
+type WorkspaceTab = "preview" | "task" | "media" | "account";
+type ContentWorkflowStage = 1 | 2 | 3;
 type TaskStep = {
   name: string;
   state: "wait" | "process" | "finish" | "error" | "success";
@@ -48,21 +60,11 @@ type AgentOptimizeOptions = {
   customWritingStyle?: string | null;
 };
 
-const platformLabels: Record<PlatformKey, string> = {
-  wechat: "公众号",
-  bilibili: "B站",
-  zhihu: "知乎",
-  xiaohongshu: "小红书"
-};
-
-const realPublishPlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
-const platformAgentStyleGoal: Record<PlatformKey, AgentStyleGoal> = {
-  wechat: "professional",
-  bilibili: "video",
-  zhihu: "knowledge",
-  xiaohongshu: "social"
-};
 const activeTab = ref<WorkspaceTab>("preview");
+const activeContentStage = ref<ContentWorkflowStage>(1);
+const furthestContentStage = ref<ContentWorkflowStage>(1);
+const generatedSourceSignature = ref<string | null>(null);
+const sidebarCollapsed = ref(false);
 const title = ref("");
 const content = ref("");
 const tags = ref("");
@@ -122,14 +124,45 @@ const tagList = computed(() =>
 
 const tabSubtitle = computed(() => {
   const subtitles: Record<WorkspaceTab, string> = {
-    preview: "内容预览",
-    confirm: "发布确认",
+    preview: ["统一内容编译", "编辑所选平台", "发布确认"][activeContentStage.value - 1] ?? "内容工作流",
     task: "任务看板",
     media: "多媒体库",
     account: "账号管理"
   };
   return subtitles[activeTab.value] ?? "内容预览";
 });
+
+const contentWorkflowSteps: Array<{ stage: ContentWorkflowStage; title: string; description: string }> = [
+  { stage: 1, title: "统一内容编译", description: "编辑正文、素材并选择平台" },
+  { stage: 2, title: "编辑所选平台", description: "调整平台内容与预览" },
+  { stage: 3, title: "发布确认", description: "检查并提交发布" }
+];
+
+const editorWorkflowStage = computed<1 | 2>(() => Math.min(activeContentStage.value, 2) as 1 | 2);
+const contentSourceSignature = computed(() => JSON.stringify({
+  title: title.value,
+  content: content.value,
+  tags: tags.value,
+  platforms: [...selectedPlatforms.value].sort(),
+  coverImageId: editorAssets.value.coverImageId,
+  assets: allAssets.value.map((asset) => ({
+    id: asset.id,
+    name: asset.name,
+    size: asset.size,
+    folderId: asset.folderId ?? null
+  })),
+  folders: mediaFolders.value.map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+    parentId: folder.parentId ?? null
+  }))
+}));
+const sourceMatchesGeneratedPreview = computed(
+  () => Boolean(preview.value && generatedSourceSignature.value === contentSourceSignature.value)
+);
+const availableContentStage = computed<ContentWorkflowStage>(
+  () => sourceMatchesGeneratedPreview.value ? furthestContentStage.value : 1
+);
 
 const validationReport = computed(() => preview.value?.validation_report ?? {});
 
@@ -145,8 +178,8 @@ const drafts = computed<PlatformDraft[]>(() => {
 
     return {
       key: platform,
-      label: platformLabels[platform],
-      title: draft?.title ?? platformLabels[platform],
+      label: PLATFORM_LABELS[platform],
+      title: draft?.title ?? PLATFORM_LABELS[platform],
       summary: draft?.summary || draft?.body || "暂无摘要。",
       body: draft?.body ?? "",
       tags: draft?.tags ?? [],
@@ -205,69 +238,21 @@ const taskSteps = computed<TaskStep[]>(() => {
 watch(title, (nextTitle) => {
   publishForms.value.bilibili.title = nextTitle;
   publishForms.value.wechat.title = nextTitle;
+  publishForms.value.xiaohongshu.title = nextTitle;
 });
 
 watch(tags, (nextTags) => {
   publishForms.value.bilibili.tags = nextTags;
 });
 
-const MEDIA_LIBRARY_DB = "auto-upt-media-library";
-const MEDIA_LIBRARY_STORE = "assets";
-const MEDIA_FOLDERS_KEY = "auto-upt-media-folders";
-const MEDIA_COVER_KEY = "auto-upt-cover-image-id";
-let mediaPersistTimer: number | null = null;
-let mediaHydrated = false;
+const { readAll: readStoredAssets, writeAll: writeStoredAssets } = useIndexedDB<StoredAssetRecord>(
+  STORAGE_KEYS.MEDIA_LIBRARY_DB,
+  STORAGE_KEYS.MEDIA_LIBRARY_STORE
+);
 
 type StoredAssetRecord = Omit<LocalAsset, "previewUrl" | "file"> & { file: File };
-
-function openMediaLibraryDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(MEDIA_LIBRARY_DB, 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(MEDIA_LIBRARY_STORE)) {
-        db.createObjectStore(MEDIA_LIBRARY_STORE, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function readStoredAssets(): Promise<StoredAssetRecord[]> {
-  const db = await openMediaLibraryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readonly");
-    const request = tx.objectStore(MEDIA_LIBRARY_STORE).getAll();
-    request.onsuccess = () => resolve(request.result as StoredAssetRecord[]);
-    request.onerror = () => reject(request.error);
-    tx.oncomplete = () => db.close();
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
-
-async function writeStoredAssets(records: StoredAssetRecord[]) {
-  const db = await openMediaLibraryDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(MEDIA_LIBRARY_STORE, "readwrite");
-    const store = tx.objectStore(MEDIA_LIBRARY_STORE);
-    store.clear();
-    for (const record of records) {
-      store.put(record);
-    }
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
+let mediaPersistTimer: number | null = null;
+let mediaHydrated = false;
 
 function assetsToStoredRecords(): StoredAssetRecord[] {
   return (["images", "videos", "audios"] as MediaTab[]).flatMap((tab) =>
@@ -288,7 +273,7 @@ function assetsToStoredRecords(): StoredAssetRecord[] {
 }
 
 async function hydrateMediaLibrary() {
-  const storedFolders = localStorage.getItem(MEDIA_FOLDERS_KEY);
+  const storedFolders = localStorage.getItem(STORAGE_KEYS.MEDIA_FOLDERS);
   if (storedFolders) {
     try {
       mediaFolders.value = JSON.parse(storedFolders) as MediaFolder[];
@@ -299,7 +284,7 @@ async function hydrateMediaLibrary() {
 
   try {
     const records = await readStoredAssets();
-    const storedCoverImageId = localStorage.getItem(MEDIA_COVER_KEY);
+    const storedCoverImageId = localStorage.getItem(STORAGE_KEYS.COVER_IMAGE_ID);
     const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
     for (const record of records) {
       const asset: LocalAsset = {
@@ -323,11 +308,11 @@ function scheduleMediaLibraryPersist() {
   if (!mediaHydrated) return;
   if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
   mediaPersistTimer = window.setTimeout(() => {
-    localStorage.setItem(MEDIA_FOLDERS_KEY, JSON.stringify(mediaFolders.value));
+    localStorage.setItem(STORAGE_KEYS.MEDIA_FOLDERS, JSON.stringify(mediaFolders.value));
     if (editorAssets.value.coverImageId) {
-      localStorage.setItem(MEDIA_COVER_KEY, editorAssets.value.coverImageId);
+      localStorage.setItem(STORAGE_KEYS.COVER_IMAGE_ID, editorAssets.value.coverImageId);
     } else {
-      localStorage.removeItem(MEDIA_COVER_KEY);
+      localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
     }
     void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
       console.warn("[MediaLibrary] 保存本地素材失败", error);
@@ -562,7 +547,7 @@ function scheduleDraftSync(platform: PlatformKey) {
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "同步平台内容失败，请检查网络连接。";
+      const message = getErrorMessage(error, "同步平台内容失败，请检查网络连接。");
       errorMessage.value = message;
       ElMessage.error(message);
     } finally {
@@ -617,7 +602,7 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
         platform,
         {
           platform,
-          display_name: platformLabels[platform],
+          display_name: PLATFORM_LABELS[platform],
           mode,
           status: "failed",
           message
@@ -649,15 +634,10 @@ async function ensureBackendAsset(asset: LocalAsset, purpose: string): Promise<s
   const uploaded = await uploadAsset(asset.file, getUploadAssetType(asset), purpose);
   asset.backendAssetId = uploaded.asset_id;
   asset.backendUrl = uploaded.url;
-  asset.uploadPurpose = purpose;
+  if (!asset.uploadPurpose) {
+    asset.uploadPurpose = purpose;
+  }
   return uploaded.asset_id;
-}
-
-function parseTagText(value: string): string[] {
-  return value
-    .split(/[,，\s]+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 }
 
 async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Partial<Record<PlatformKey, string>>> {
@@ -667,7 +647,7 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   for (const platform of platforms) {
     const account = accounts.find((item) => item.platform === platform && item.status === "connected" && item.account_id);
     if (!account?.account_id) {
-      throw new Error(`请先在「账号管理」中连接${platformLabels[platform]}账号，再执行发布操作。`);
+      throw new Error(`请先在「账号管理」中连接${PLATFORM_LABELS[platform]}账号，再执行发布操作。`);
     }
     accountIds[platform] = account.account_id;
   }
@@ -675,31 +655,39 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
-function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
     const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
-      title: publishForms.value.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
-      author: publishForms.value.wechat.author.trim(),
-      digest: publishForms.value.wechat.summary.trim() || wechatDraft?.summary || "",
-      content_source_url: publishForms.value.wechat.contentSourceUrl.trim(),
-      need_open_comment: publishForms.value.wechat.needOpenComment,
-      only_fans_can_comment: publishForms.value.wechat.needOpenComment && publishForms.value.wechat.onlyFansCanComment,
-      direct_publish: publishForms.value.wechat.directPublish
+      title: unified
+        ? forms.wechat.title.trim() || title.value.trim()
+        : forms.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      author: forms.wechat.author.trim(),
+      digest: unified
+        ? forms.wechat.summary.trim()
+        : forms.wechat.summary.trim() || wechatDraft?.summary || "",
+      content_source_url: forms.wechat.contentSourceUrl.trim(),
+      need_open_comment: forms.wechat.needOpenComment,
+      only_fans_can_comment: forms.wechat.needOpenComment && forms.wechat.onlyFansCanComment,
+      direct_publish: forms.wechat.directPublish
     };
   }
 
   if (platforms.includes("bilibili")) {
     const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
-      title: publishForms.value.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
-      description: publishForms.value.bilibili.description.trim() || bilibiliDraft?.body || content.value,
-      tags: parseTagText(publishForms.value.bilibili.tags).length
-        ? parseTagText(publishForms.value.bilibili.tags)
+      title: unified
+        ? forms.bilibili.title.trim() || title.value.trim()
+        : forms.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
+      description: unified
+        ? forms.bilibili.description.trim()
+        : forms.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      tags: parseTagText(forms.bilibili.tags).length
+        ? parseTagText(forms.bilibili.tags)
         : bilibiliDraft?.tags ?? [],
-      tid: 201,
+      tid: Number(forms.bilibili.category) || 201,
       copyright: 1,
       source: "",
       no_reprint: true,
@@ -710,33 +698,37 @@ function buildPlatformOptions(platforms: PlatformKey[]): NonNullable<PublishTask
   if (platforms.includes("xiaohongshu")) {
     const xhsDraft = preview.value?.drafts.xiaohongshu;
     platformOptions.xiaohongshu = {
-      title: publishForms.value.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
-      content: publishForms.value.xiaohongshu.content.trim() || xhsDraft?.body || "",
+      title: unified
+        ? forms.xiaohongshu.title.trim() || title.value.trim()
+        : forms.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
+      content: unified
+        ? forms.xiaohongshu.content.trim()
+        : forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
     };
   }
 
   return platformOptions;
 }
 
-async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode }): Promise<PublishTaskCreatePayload> {
+async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
     throw new Error("请先生成内容预览。");
   }
 
-  const selectedPlatformOptions = buildPlatformOptions(payload.platforms);
+  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings, payload.forms);
 
   if (payload.mode === "simulate") {
     return {
       preview_id: preview.value.preview_id,
       mode: payload.mode,
       platforms: payload.platforms,
-      platform_options: selectedPlatformOptions,
+      platform_options: platformOptions,
       inline_drafts: preview.value.drafts,
       inline_content_ir: preview.value.content_ir
     };
   }
 
-  const platforms = payload.platforms.filter((platform) => realPublishPlatforms.includes(platform));
+  const platforms = payload.platforms.filter((platform) => REAL_PUBLISH_PLATFORMS.includes(platform));
   if (!platforms.length) {
     throw new Error("当前版本只有公众号、B站和小红书支持保存草稿或真实发布。");
   }
@@ -746,7 +738,6 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
 
   const accountIds = await resolveConnectedAccountIds(platforms);
   const assetIds: NonNullable<PublishTaskCreatePayload["asset_ids"]> = {};
-  const platformOptions = buildPlatformOptions(platforms);
 
   if (platforms.includes("wechat")) {
     const cover = getCoverImage();
@@ -837,7 +828,7 @@ async function loadPublishTasks(showToast = false) {
       ElMessage.success("任务列表已刷新。");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "加载任务列表失败。";
+    const message = getErrorMessage(error, "加载任务列表失败。");
     taskErrorMessage.value = showToast || tasks.value.length > 0 ? message : "";
     if (showToast) {
       ElMessage.error(message);
@@ -857,7 +848,7 @@ async function refreshTaskStatus(taskId: string) {
     taskErrorMessage.value = "";
     ElMessage.success("任务状态已更新。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "更新任务状态失败。";
+    const message = getErrorMessage(error, "更新任务状态失败。");
     taskErrorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -883,7 +874,7 @@ async function publishDraftFromTask(publicationId: string) {
     taskErrorMessage.value = "";
     ElMessage.success("内容已加入发布队列。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "提交发布请求失败。";
+    const message = getErrorMessage(error, "提交发布请求失败。");
     taskErrorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -940,8 +931,11 @@ async function generatePreview() {
     }
 
     ElMessage.success("预览已生成。");
+    generatedSourceSignature.value = contentSourceSignature.value;
+    furthestContentStage.value = 2;
+    activeContentStage.value = 2;
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
+    errorMessage.value = getErrorMessage(error, "预览生成失败，请稍后重试。");
     ElMessage.error(errorMessage.value);
   } finally {
     previewLoading.value = false;
@@ -1023,7 +1017,7 @@ async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
     if (mergedPreview) preview.value = mergedPreview;
     ElMessage.success("所选平台的智能优化结果已生成。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "智能优化失败。";
+    const message = getErrorMessage(error, "智能优化失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -1053,7 +1047,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
       preview_id: preview.value.preview_id,
       body: basePayload.body,
       platforms: [platform],
-      style_goal: platformAgentStyleGoal[platform],
+      style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
       rewrite_strength: "medium",
       use_llm: "auto",
       persist_preview: false
@@ -1065,9 +1059,9 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
       preview.value.validation_report
     );
     if (mergedPreview) preview.value = mergedPreview;
-    ElMessage.success(`${platformLabels[platform]}内容已优化。`);
+    ElMessage.success(`${PLATFORM_LABELS[platform]}内容已优化。`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "智能优化失败。";
+    const message = getErrorMessage(error, "智能优化失败。");
     errorMessage.value = message;
     ElMessage.error(message);
   } finally {
@@ -1080,11 +1074,17 @@ function enterPublishConfirm() {
     ElMessage.warning("请先生成预览。");
     return;
   }
+  if (!sourceMatchesGeneratedPreview.value) {
+    ElMessage.warning("统一内容或平台选择已修改，请重新生成预览后再进入发布确认。");
+    return;
+  }
   previewDialogVisible.value = false;
-  activeTab.value = "confirm";
+  activeTab.value = "preview";
+  furthestContentStage.value = 3;
+  activeContentStage.value = 3;
 }
 
-async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode }) {
+async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }) {
   if (!preview.value) {
     ElMessage.warning("请先生成预览。");
     return;
@@ -1118,7 +1118,7 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
     taskErrorMessage.value = "";
     ElMessage.success(payload.mode === "simulate" ? "模拟发布任务已创建。" : "发布任务已提交。");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "创建发布任务失败。";
+    const message = getErrorMessage(error, "创建发布任务失败。");
     const failedTask = createFailedLocalTask(preview.value.preview_id, payload.platforms, payload.mode, message);
     task.value = failedTask;
     tasks.value = [failedTask, ...tasks.value];
@@ -1131,6 +1131,30 @@ async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishM
 
 function selectTab(key: string) {
   activeTab.value = key as WorkspaceTab;
+}
+
+function selectContentStage(stage: ContentWorkflowStage) {
+  if (stage > activeContentStage.value) {
+    if (stage <= availableContentStage.value) {
+      activeContentStage.value = stage;
+      return;
+    }
+    if (stage === 3) {
+      ElMessage.warning(
+        sourceMatchesGeneratedPreview.value
+          ? "请点击编辑所选平台页面底部的“进入发布确认”按钮首次进入发布确认。"
+          : "统一内容或平台选择已修改，请重新生成预览后再进入发布确认。"
+      );
+      return;
+    }
+    ElMessage.warning(
+      !sourceMatchesGeneratedPreview.value && Boolean(preview.value)
+        ? "统一内容或平台选择已修改，请重新生成预览后再返回后续流程。"
+        : "请点击“选择生成平台”区域右侧的“生成预览”按钮进入编辑所选平台。"
+    );
+    return;
+  }
+  activeContentStage.value = stage;
 }
 
 function openPreviewDialog(platform?: PlatformKey) {
@@ -1146,25 +1170,45 @@ onMounted(async () => {
 
 <template>
   <el-container class="app-shell">
-    <el-aside class="sidebar" width="236px">
+    <el-aside
+      class="sidebar"
+      :class="{ 'is-collapsed': sidebarCollapsed }"
+      :width="sidebarCollapsed ? '76px' : '236px'"
+    >
       <div class="brand">
         <el-icon :size="28"><VideoPlay /></el-icon>
-        <div>
+        <div v-show="!sidebarCollapsed" class="brand-copy">
           <strong>Auto_Upt</strong>
           <span>内容发布助手</span>
         </div>
+        <el-tooltip v-if="!sidebarCollapsed" content="折叠侧边栏" placement="right">
+          <el-button
+            class="sidebar-collapse-button"
+            text
+            circle
+            :icon="Fold"
+            aria-label="折叠侧边栏"
+            @click="sidebarCollapsed = true"
+          />
+        </el-tooltip>
+        <el-tooltip v-if="sidebarCollapsed" content="展开侧边栏" placement="right">
+          <el-button
+            class="sidebar-collapse-button"
+            text
+            circle
+            :icon="Expand"
+            aria-label="展开侧边栏"
+            @click="sidebarCollapsed = false"
+          />
+        </el-tooltip>
       </div>
 
-      <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
-        <el-menu-item index="preview">
+      <el-menu :default-active="activeTab" :collapse="sidebarCollapsed" class="nav-menu" @select="selectTab">
+        <el-menu-item index="preview" :title="sidebarCollapsed ? '内容工作台' : undefined">
           <el-icon><Monitor /></el-icon>
-          <span>内容预览</span>
+          <span>内容工作台</span>
         </el-menu-item>
-        <el-menu-item index="confirm" :disabled="!preview">
-          <el-icon><Check /></el-icon>
-          <span>发布确认</span>
-        </el-menu-item>
-        <el-menu-item index="task">
+        <el-menu-item index="task" :title="sidebarCollapsed ? '任务看板' : undefined">
           <el-icon><Operation /></el-icon>
           <span>任务看板</span>
         </el-menu-item>
@@ -1173,12 +1217,12 @@ onMounted(async () => {
       <div class="sidebar-spacer"></div>
 
       <div class="sidebar-bottom">
-        <el-menu :default-active="activeTab" class="nav-menu" @select="selectTab">
-          <el-menu-item index="media">
+        <el-menu :default-active="activeTab" :collapse="sidebarCollapsed" class="nav-menu" @select="selectTab">
+          <el-menu-item index="media" :title="sidebarCollapsed ? '多媒体库' : undefined">
             <el-icon><FolderOpened /></el-icon>
             <span>多媒体库</span>
           </el-menu-item>
-          <el-menu-item index="account">
+          <el-menu-item index="account" :title="sidebarCollapsed ? '账号管理' : undefined">
             <el-icon><User /></el-icon>
             <span>账号管理</span>
           </el-menu-item>
@@ -1206,18 +1250,6 @@ onMounted(async () => {
         />
       </el-main>
 
-      <el-main v-else-if="activeTab === 'confirm'" class="confirm-workspace">
-        <PublishConfirmView
-          v-model:publish-forms="publishForms"
-          :selected-platforms="selectedPlatforms"
-          :loading="taskLoading"
-          :validation-report="validationReport"
-          :assets="editorAssets"
-          @back="activeTab = 'preview'"
-          @submit="submitPublish"
-        />
-      </el-main>
-
       <el-main v-else-if="activeTab === 'task'" class="task-workspace">
         <TaskView
           :tasks="tasks"
@@ -1231,7 +1263,43 @@ onMounted(async () => {
       </el-main>
 
       <el-main v-else class="workspace">
+        <nav class="content-workflow" aria-label="内容发布流程">
+          <button
+            v-for="step in contentWorkflowSteps"
+            :key="step.stage"
+            type="button"
+            class="content-workflow-step"
+            :class="{
+              'is-active': activeContentStage === step.stage,
+              'is-finished': activeContentStage > step.stage,
+              'is-available': step.stage <= activeContentStage || step.stage <= availableContentStage
+            }"
+            :aria-current="activeContentStage === step.stage ? 'step' : undefined"
+            @click="selectContentStage(step.stage)"
+          >
+            <span class="content-workflow-index">{{ step.stage }}</span>
+            <span class="content-workflow-copy">
+              <strong>{{ step.title }}</strong>
+              <small>{{ step.description }}</small>
+            </span>
+          </button>
+        </nav>
+
+        <PublishConfirmView
+          v-if="activeContentStage === 3"
+          v-model:publish-forms="publishForms"
+          :selected-platforms="selectedPlatforms"
+          :loading="taskLoading"
+          :validation-report="validationReport"
+          :assets="editorAssets"
+          :editor-title="title"
+          :platform-drafts="preview?.drafts"
+          @back="activeContentStage = 2"
+          @submit="submitPublish"
+        />
+
         <EditorView
+          v-else
           v-model:title="title"
           v-model:content="content"
           v-model:tags="tags"
@@ -1245,6 +1313,7 @@ onMounted(async () => {
           :has-preview="Boolean(preview)"
           :platform-drafts="preview?.drafts ?? {}"
           :validation-report="validationReport"
+          :workflow-stage="editorWorkflowStage"
           @generate-preview="generatePreview"
           @optimize-all-with-agent="optimizeAllWithAgent"
           @optimize-with-agent="optimizeWithAgent"
@@ -1334,6 +1403,14 @@ onMounted(async () => {
   background: #172033;
   color: #f7fafc;
   padding: 24px 14px;
+  transition:
+    width 0.2s ease,
+    padding 0.2s ease;
+}
+
+.sidebar.is-collapsed {
+  padding-right: 10px;
+  padding-left: 10px;
 }
 
 .brand {
@@ -1342,6 +1419,35 @@ onMounted(async () => {
   gap: 12px;
   padding: 4px 8px 26px;
   flex-shrink: 0;
+}
+
+.sidebar.is-collapsed .brand {
+  display: grid;
+  justify-content: center;
+  gap: 12px;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.sidebar-collapse-button {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  color: #aab6c7;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-collapse-button:hover {
+  color: #ffffff;
+  background: #263347;
+}
+
+.sidebar.is-collapsed .sidebar-collapse-button {
+  justify-self: center;
 }
 
 .brand strong,
@@ -1363,6 +1469,10 @@ onMounted(async () => {
   border-right: 0;
   background: transparent;
   flex-shrink: 0;
+}
+
+.nav-menu.el-menu--collapse {
+  width: 100%;
 }
 
 .nav-menu :deep(.el-menu-item) {
@@ -1420,6 +1530,95 @@ onMounted(async () => {
 
 .workspace {
   padding: 24px 32px 32px;
+}
+
+.sidebar.is-collapsed .nav-menu :deep(.el-menu-item) {
+  justify-content: center;
+  padding: 0 !important;
+}
+
+.sidebar.is-collapsed .nav-menu :deep(.el-menu-item .el-icon) {
+  margin-right: 0;
+}
+
+.content-workflow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.content-workflow-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  color: #8492a6;
+  text-align: left;
+  cursor: not-allowed;
+  background: #f8fafc;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+}
+
+.content-workflow-step.is-available {
+  color: #4f6279;
+  cursor: pointer;
+  background: #ffffff;
+}
+
+.content-workflow-step.is-active {
+  color: #1f6feb;
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+}
+
+.content-workflow-step.is-finished {
+  color: #2b7a4b;
+  border-color: #a9d6bc;
+}
+
+.content-workflow-index {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: #ffffff;
+  background: #9aa9bb;
+  border-radius: 50%;
+  font-weight: 700;
+}
+
+.content-workflow-step.is-active .content-workflow-index {
+  background: #1f6feb;
+}
+
+.content-workflow-step.is-finished .content-workflow-index {
+  background: #2b7a4b;
+}
+
+.content-workflow-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.content-workflow-copy strong,
+.content-workflow-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content-workflow-copy strong {
+  font-size: 14px;
+}
+
+.content-workflow-copy small {
+  font-size: 12px;
 }
 
 .account-workspace,
@@ -1592,8 +1791,34 @@ onMounted(async () => {
     padding: 16px;
   }
 
+  .sidebar.is-collapsed {
+    padding: 16px;
+  }
+
   .brand {
     padding-bottom: 14px;
+  }
+
+  .sidebar.is-collapsed .brand {
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .sidebar-collapse-button {
+    display: none;
+  }
+
+  .nav-menu.el-menu--collapse {
+    width: auto;
+  }
+
+  .sidebar.is-collapsed .nav-menu :deep(.el-menu-item) {
+    justify-content: flex-start;
+    padding: 0 20px !important;
+  }
+
+  .sidebar.is-collapsed .nav-menu :deep(.el-menu-item .el-icon) {
+    margin-right: 5px;
   }
 
   .sidebar-spacer {
@@ -1623,12 +1848,22 @@ onMounted(async () => {
     padding: 20px;
   }
 
+  .content-workflow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .preview-dialog-footer {
     justify-content: flex-end;
   }
 
   .dialog-notice {
     display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .content-workflow {
+    grid-template-columns: 1fr;
   }
 }
 </style>

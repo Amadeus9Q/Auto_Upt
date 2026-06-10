@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { UploadFile, UploadProps } from "element-plus";
-import { Back, Delete, EditPen, FolderAdd, FolderOpened, UploadFilled } from "@element-plus/icons-vue";
+import { ArrowRight, Back, Delete, EditPen, FolderAdd, FolderOpened, UploadFilled } from "@element-plus/icons-vue";
 
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
@@ -16,16 +16,19 @@ const props = withDefaults(defineProps<{
   compact?: boolean;
   insertEnabled?: boolean;
   title?: string;
+  collapsible?: boolean;
 }>(), {
   compact: false,
   insertEnabled: true,
-  title: "多媒体库"
+  title: "多媒体库",
+  collapsible: false
 });
 
 const emit = defineEmits<{
   insert: [asset: LocalAsset];
   rename: [payload: { asset: LocalAsset; oldName: string; newName: string }];
   delete: [asset: LocalAsset];
+  collapse: [];
 }>();
 
 const assets = defineModel<EditorAssets>("assets", { required: true });
@@ -427,7 +430,12 @@ function cancelRename() {
         <p>素材管理</p>
         <h2>{{ title }}</h2>
       </div>
-      <el-tag type="info">{{ assetCount }} 个素材</el-tag>
+      <div class="library-header-actions">
+        <el-tag type="info">{{ assetCount }} 个素材</el-tag>
+        <el-tooltip v-if="collapsible" content="收起多媒体库" placement="top">
+          <el-button text circle :icon="ArrowRight" aria-label="收起多媒体库" @click="$emit('collapse')" />
+        </el-tooltip>
+      </div>
     </header>
 
     <div class="folder-toolbar">
@@ -474,6 +482,7 @@ function cancelRename() {
             class="media-unit folder-unit"
             :class="{ 'is-folder-drag-target': folderDragTargetId === folder.id }"
             draggable="false"
+            @click="activeFolderId = folder.id"
             @dragstart="onFolderDragStart(folder, $event)"
             @dragover.prevent="onFolderDragOver(folder, $event)"
             @dragleave="onFolderDragLeave(folder, $event)"
@@ -481,11 +490,9 @@ function cancelRename() {
             @dragend="disableDragHandle($event); folderDragTargetId = null"
           >
             <span class="drag-handle" @mousedown="enableDragHandle" @mouseup="resetDragHandle" />
-            <button type="button" class="folder-open-button" @click="activeFolderId = folder.id">
-              <el-icon><FolderOpened /></el-icon>
-              <strong>{{ folder.name }}</strong>
-              <small>打开文件夹</small>
-            </button>
+            <el-icon><FolderOpened /></el-icon>
+            <strong>{{ folder.name }}</strong>
+            <small>打开文件夹</small>
             <el-button class="folder-delete-button" text type="danger" :icon="Delete" @click.stop="removeFolder(folder)" />
           </article>
 
@@ -549,6 +556,7 @@ function cancelRename() {
 }
 
 .library-header,
+.library-header-actions,
 .folder-toolbar,
 .media-actions {
   display: flex;
@@ -558,6 +566,11 @@ function cancelRename() {
 .library-header {
   justify-content: space-between;
   gap: 12px;
+}
+
+.library-header-actions {
+  flex-shrink: 0;
+  gap: 4px;
 }
 
 .library-header p,
@@ -696,8 +709,7 @@ function cancelRename() {
   transition: outline 0.15s, background 0.15s, transform 0.15s;
 }
 
-.folder-unit > .el-icon,
-.folder-open-button .el-icon {
+.folder-unit > .el-icon {
   color: #1f6feb;
   font-size: 22px;
 }
@@ -715,10 +727,6 @@ function cancelRename() {
   color: #607086;
   font-size: 11px;
   line-height: 1.3;
-}
-
-.folder-open-button {
-  display: contents;
 }
 
 .folder-delete-button {

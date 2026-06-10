@@ -58,7 +58,7 @@ flowchart TB
         W1["公众号 API<br/>title: options.title 或 draft.title<br/>digest: options.digest 或 draft.summary<br/>content: draft.wechat_html / draft.body<br/>thumb_media_id: cover_asset_id<br/>author/comment: options"]
         BILI1["B站 API<br/>title: options.title 或 draft.title<br/>description: options.description 或 draft.body<br/>tags: options.tags 或 draft.tags<br/>video/cover: asset_ids + options"]
         XHS1["小红书 API<br/>title: options.title 或 draft.title<br/>content: options.content 或 draft.body<br/>images/video/cover: asset_ids + options"]
-        ZH1["知乎<br/>有平台草稿预览和模拟发布<br/>不进入真实发布 API"]
+        ZH1["知乎<br/>当前仅预览<br/>不进入真实发布 API"]
     end
 
     E1 --> A1
@@ -111,22 +111,13 @@ flowchart TB
 - **平台预览** 只读取 `preview.drafts`，不会直接读取统一编辑区正文；标题、摘要、章节标题、正文、图片等展示效果由各平台 draft 决定。
 - **发布确认页** 决定最终提交字段：统一配置优先用 `globalTitle/globalSummary`，独立配置优先用各平台 `publishForms`。
 - **平台 API 输入** 来自两部分合并：`platform_options` 提供用户确认后的字段，`drafts.<platform>` 提供 Agent 生成的平台正文和兜底字段，`asset_ids` 提供封面、图片、视频等素材。
-- **知乎** 当前生成 `drafts.zhihu` 供预览和模拟发布使用，但不进入真实发布 API。
+- **知乎** 当前只进入预览链路，不进入真实发布 API。
 
 ---
 
 ## 2. Agent 输出结构
 
-Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各平台都可以包含以下通用字段：
-
-- `title`：平台标题。
-- `summary`：摘要、简介或平台推荐开头。
-- `body`：平台正文、回答正文或视频简介。
-- `tags`：平台标签。
-- `rich_body` 或 `body_blocks`：结构化章节、段落和素材块。
-- `media_slots`：封面、主视频、正文图片、正文音视频等素材槽。
-
-平台专用字段如下：
+Agent 为每个平台生成 `drafts.<platform>` 对象，字段如下：
 
 | 平台 | 字段 | 类型 | 说明 |
 |------|------|------|------|
@@ -139,10 +130,7 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 | | `tags` | `string[]` | 标签列表 |
 | **小红书** | `title` | `string` | 笔记标题 |
 | | `body` | `string` | 笔记正文（纯文本） |
-| **知乎** | `title` | `string` | 回答或文章标题 |
-| | `summary` | `string` | 摘要 |
-| | `body` | `string` | 回答或文章正文 |
-| | `tags` | `string[]` | 话题或关键词 |
+| **知乎** | — | — | 仅模拟预览，无草稿/发布 |
 
 ---
 
@@ -185,7 +173,7 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 | 公众号 | 标题、摘要、作者、原文链接、评论设置、发布方式 | title≤64字, summary≤120字 |
 | B站 | 仅显示封面/视频素材状态 | — |
 | 小红书 | 标题、正文 | title≤20字符, content≤1000字符 |
-| 知乎 | 无真实发布表单（仅预览和模拟） | — |
+| 知乎 | 无表单（仅模拟） | — |
 
 ---
 
@@ -252,8 +240,6 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 | B站 | 视频 + 封面图 | `asset_ids.bilibili`，`platform_options.bilibili.video_asset_id`、`cover_asset_id` |
 | 小红书 | 封面图 + 图片/视频 | `asset_ids.xiaohongshu`，`platform_options.xiaohongshu.cover_asset_id` |
 
-小红书真实发布需要 myaibot 可访问的公网素材 URL。当前后端素材下载接口为 `/api/v1/assets/{asset_id}/download`，生产或演示环境应确保 `PUBLIC_BASE_URL` 指向外网可访问地址。
-
 ---
 
 ## 5. 后端 Adapter → 平台 API 映射
@@ -316,7 +302,7 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 | (自动判定) | — | `type` | `"normal"` (图文) / `"video"` (视频) |
 | (配置) | — | `api_key` | myaibot API 密钥 |
 
-> **发布流程**：提交后返回二维码 → 用户扫码在手机端完成发布。myaibot 支持 `uploading → pending → submitted` 状态查询，但当前后端任务刷新链路尚未完整接入小红书轮询展示。
+> **发布流程**：提交后返回二维码 → 用户扫码在手机端完成发布。状态查询：`uploading → pending → submitted`。
 
 ---
 
@@ -332,9 +318,8 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 | 图片 | 正文内插图 | — | ≤18 张, ≤32MB/张, PNG/JPG/WebP |
 | 视频 | — | 必填 | ≤20GB, ≤60min |
 | 鉴权方式 | OAuth (app_id+app_secret) | Cookie (SESSDATA+bili_jct) | API Key |
-| 发布模式 | simulate / draft / publish | simulate / draft / publish | simulate / draft / publish（代码路径已接入，联调待补齐） |
-
-知乎当前支持平台草稿预览和模拟发布，不进入真实发布 API。
+| 发布模式 | simulate / draft / publish | simulate / draft / publish | simulate / draft / publish |
+| 知乎 | — | — | **仅 simulate** |
 
 ---
 
@@ -371,6 +356,6 @@ Agent 或平台 renderer 为每个平台生成 `drafts.<platform>` 对象。各�
 │             评论设置、发布方式                    │
 │  B站 Tab: 封面/视频素材状态                      │
 │  小红书 Tab: 标题(20字)、正文(1000字)            │
-│  知乎 Tab: 仅预览和模拟，无真实发布表单          │
+│  知乎 Tab: 仅模拟，无表单                        │
 └────────────────────────────────────────────────┘
 ```
