@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { CircleCheck, InfoFilled, WarningFilled } from "@element-plus/icons-vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { CircleCheck, InfoFilled, Setting, Refresh, WarningFilled } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 
-import type { PlatformKey, PublishMode, ValidationIssue } from "@/api/client";
+import { getAccounts, type AccountConnection, type AccountStatus, type PlatformKey, type PublishMode, type ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
+import { getErrorMessage } from "@/utils/errors";
 import { PLATFORM_LABELS } from "@/utils/platforms";
+import AccountView from "@/views/AccountView.vue";
 import PublishFormView, { type PublishForms } from "@/views/PublishFormView.vue";
 
 const props = defineProps<{
@@ -52,6 +55,11 @@ independentForms.value.xiaohongshu.content = props.platformDrafts?.xiaohongshu?.
 const publishablePlatforms: PlatformKey[] = ["wechat", "bilibili", "xiaohongshu"];
 const selectedMode = ref<PublishMode>("simulate");
 const selectedConfirmPlatforms = ref<PlatformKey[]>([...props.selectedPlatforms]);
+const accounts = ref<AccountConnection[]>([]);
+const accountsLoading = ref(false);
+const accountsError = ref("");
+const accountConfigVisible = ref(false);
+const configuringPlatform = ref<PlatformKey | null>(null);
 
 const coverImage = computed(
   () => props.assets.coverImage ?? props.assets.images.find((image) => image.id === props.assets.coverImageId) ?? props.assets.images[0] ?? null
@@ -59,6 +67,9 @@ const coverImage = computed(
 const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
 const wechatIssues = computed(() => props.validationReport.wechat ?? []);
 const hasPublishablePlatform = computed(() => selectedConfirmPlatforms.value.some((p) => publishablePlatforms.includes(p)));
+const confirmPublishUnavailableReason = computed(() =>
+  selectedConfirmPlatforms.value.length ? "" : "请先选择一个已连接的平台"
+);
 const commonMissing = computed(() => [
   ...(!globalTitle.value.trim() ? ["标题"] : []),
   ...(!globalSummary.value.trim() ? ["摘要/简介"] : []),
@@ -84,14 +95,80 @@ const selectedIssues = computed(() =>
 );
 
 const hasRealPublish = computed(() => selectedMode.value === "draft" || selectedMode.value === "publish");
+const platformAccountOptions = computed(() =>
+  platformOptions.value.map((option) => ({
+    ...option,
+    account: accounts.value.find((account) => account.platform === option.value) ?? null
+  }))
+);
+const connectedPlatformValues = computed(() =>
+  platformAccountOptions.value
+    .filter((option) => option.account?.status === "connected")
+    .map((option) => option.value)
+);
+const configurablePlatforms: PlatformKey[] = ["wechat", "bilibili"];
+
+function isAccountConnected(account: AccountConnection | null) {
+  return account?.status === "connected";
+}
+
+function isAccountConfigurable(platform: PlatformKey) {
+  return configurablePlatforms.includes(platform);
+}
+
+function accountConfigTooltip(platform: PlatformKey) {
+  return isAccountConfigurable(platform) ? "配置账号" : "账号配置功能待上线";
+}
+
+function handlePlatformCardClick(account: AccountConnection | null) {
+  if (!isAccountConnected(account)) {
+    ElMessage.warning("该平台尚未连接，请先点击右侧配置按钮完成配置");
+  }
+}
+
+function openAccountConfig(platform: PlatformKey) {
+  if (!isAccountConfigurable(platform)) {
+    return;
+  }
+  configuringPlatform.value = platform;
+  accountConfigVisible.value = true;
+}
+
+function handleAccountConfigClosed() {
+  configuringPlatform.value = null;
+  void refreshAccountStatuses();
+}
+
+function accountStatusMeta(status?: AccountStatus) {
+  return status === "connected"
+    ? { label: "账号已连接", className: "is-connected" }
+    : { label: status === "expired" ? "账号已过期" : status === "error" ? "账号连接异常" : "账号未配置", className: "is-disconnected" };
+}
+
+async function refreshAccountStatuses() {
+  accountsLoading.value = true;
+  accountsError.value = "";
+  try {
+    accounts.value = await getAccounts();
+  } catch (error) {
+    accountsError.value = getErrorMessage(error, "账号状态刷新失败，请稍后重试。");
+  } finally {
+    accountsLoading.value = false;
+  }
+}
 
 watch(selectedMode, () => {
   const allowed = platformOptions.value.map((option) => option.value);
   selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => allowed.includes(platform));
-  if (!selectedConfirmPlatforms.value.length) {
-    selectedConfirmPlatforms.value = [...allowed];
-  }
 }, { immediate: true });
+
+watch(connectedPlatformValues, (connected) => {
+  selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => connected.includes(platform));
+}, { immediate: true });
+
+onMounted(() => {
+  void refreshAccountStatuses();
+});
 
 function effectiveForms(): PublishForms {
   const forms = cloneForms(useUnifiedSettings.value ? publishForms.value : independentForms.value);
@@ -124,15 +201,76 @@ function submit() {
 <template>
   <section class="publish-confirm-view">
 
-    <!-- 平台选择（放在最前面） -->
-    <div class="platform-select-section">
-      <label class="platform-select-label">发布平台</label>
-      <el-checkbox-group v-model="selectedConfirmPlatforms" class="platforms">
-        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </el-checkbox-button>
+    <section class="account-status-section">
+      <header class="account-status-header">
+        <div>
+          <strong>发布平台与账号联通</strong>
+          <small>勾选本次发布平台，并确认对应账号联通状态。</small>
+        </div>
+        <el-button :icon="Refresh" :loading="accountsLoading" @click="refreshAccountStatuses">
+          刷新账号状态
+        </el-button>
+      </header>
+
+      <el-alert
+        v-if="accountsError"
+        :title="accountsError"
+        type="error"
+        show-icon
+        :closable="false"
+      />
+
+      <el-checkbox-group v-model="selectedConfirmPlatforms" class="account-status-grid">
+        <article
+          v-for="item in platformAccountOptions"
+          :key="item.value"
+          class="account-status-card"
+          :class="{
+            'is-selected': selectedConfirmPlatforms.includes(item.value),
+            'is-disconnected': !isAccountConnected(item.account)
+          }"
+          @click="handlePlatformCardClick(item.account)"
+        >
+          <el-checkbox
+            :value="item.value"
+            :disabled="!isAccountConnected(item.account)"
+            class="account-platform-checkbox"
+          >
+            {{ item.label }}
+          </el-checkbox>
+          <el-tooltip :content="accountStatusMeta(item.account?.status).label" placement="top">
+            <span class="account-status-dot" :class="accountStatusMeta(item.account?.status).className" />
+          </el-tooltip>
+          <el-tooltip :content="accountConfigTooltip(item.value)" placement="top">
+            <span class="account-config-action" @click.stop>
+              <el-button
+                size="small"
+                text
+                circle
+                :icon="Setting"
+                :disabled="!isAccountConfigurable(item.value)"
+                :aria-label="accountConfigTooltip(item.value)"
+                @click="openAccountConfig(item.value)"
+              />
+            </span>
+          </el-tooltip>
+        </article>
       </el-checkbox-group>
-    </div>
+    </section>
+
+    <el-dialog
+      v-model="accountConfigVisible"
+      :title="configuringPlatform ? `配置${PLATFORM_LABELS[configuringPlatform]}账号` : '配置平台账号'"
+      width="min(92vw, 520px)"
+      destroy-on-close
+      @closed="handleAccountConfigClosed"
+    >
+      <AccountView
+        :focused-platform="configuringPlatform"
+        configuration-only
+        compact
+      />
+    </el-dialog>
 
     <!-- 发布设置 -->
     <section class="unified-publish-section">
@@ -304,11 +442,25 @@ function submit() {
     </div>
 
     <footer class="confirm-actions">
-      <el-button @click="$emit('back')">返回预览</el-button>
+      <el-button @click="$emit('back')">返回编辑所选平台</el-button>
       <div class="footer-spacer"></div>
-      <el-button type="primary" :icon="CircleCheck" :loading="loading" :disabled="!selectedConfirmPlatforms.length" @click="submit">
-        确认发布
-      </el-button>
+      <el-tooltip
+        :content="confirmPublishUnavailableReason"
+        placement="top"
+        :disabled="!confirmPublishUnavailableReason"
+      >
+        <span class="disabled-action-tooltip">
+          <el-button
+            type="primary"
+            :icon="CircleCheck"
+            :loading="loading"
+            :disabled="Boolean(confirmPublishUnavailableReason)"
+            @click="submit"
+          >
+            确认发布
+          </el-button>
+        </span>
+      </el-tooltip>
     </footer>
   </section>
 </template>
@@ -370,6 +522,10 @@ function submit() {
 
 .footer-spacer {
   flex: 1;
+}
+
+.disabled-action-tooltip {
+  display: inline-flex;
 }
 
 .unified-form {
@@ -434,15 +590,119 @@ function submit() {
   font-size: 14px;
 }
 
-.mode-group,
-.platforms {
+.mode-group {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.platform-select-section {
+.account-status-section {
+  display: grid;
+  gap: 12px;
   margin-bottom: 18px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+}
+
+.account-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-status-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-status-header small,
+.account-status-card small {
+  color: #607086;
+  font-size: 12px;
+}
+
+.account-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-status-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
+}
+
+.account-status-card.is-selected {
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.08);
+}
+
+.account-status-card.is-disconnected {
+  cursor: not-allowed;
+}
+
+.account-status-card.is-disconnected .account-platform-checkbox {
+  cursor: not-allowed;
+}
+
+.account-platform-checkbox {
+  min-width: 0;
+  flex: 1;
+  margin-right: 0;
+}
+
+.account-platform-checkbox :deep(.el-checkbox__label) {
+  overflow: hidden;
+  color: #253247;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-status-card .el-button {
+  flex-shrink: 0;
+}
+
+.account-config-action {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.account-status-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.account-status-dot.is-connected {
+  background: #2f9e64;
+  box-shadow: 0 0 0 3px rgba(47, 158, 100, 0.12);
+}
+
+.account-status-dot.is-disconnected {
+  background: #a8b4c4;
+}
+
+@media (max-width: 1280px) {
+  .account-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .account-status-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .platform-select-label {
@@ -454,7 +714,7 @@ function submit() {
 }
 
 .mode-group :deep(.el-radio-button__inner),
-.platforms :deep(.el-checkbox-button__inner) {
+.inline-radio-group :deep(.el-radio-button__inner) {
   border-left: 1px solid var(--el-border-color);
   border-radius: 8px;
 }
