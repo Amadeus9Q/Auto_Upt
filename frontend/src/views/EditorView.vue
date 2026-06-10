@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, type UploadFile, type UploadProps } from "element-plus";
-import { ArrowLeft, ArrowRight, Connection, Delete, EditPen, MagicStick, Plus, Promotion } from "@element-plus/icons-vue";
+import { ArrowLeft, Connection, Delete, EditPen, MagicStick, Plus, Right } from "@element-plus/icons-vue";
 
 import { importDocument, type AgentWritingStyle, type DraftPayload, type PlatformKey, type ValidationIssue } from "@/api/client";
 import MediaLibraryPanel from "@/components/MediaLibraryPanel.vue";
@@ -42,6 +42,7 @@ const props = defineProps<{
   hasPreview: boolean;
   platformDrafts: Partial<Record<PlatformKey, DraftPayload>>;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
+  workflowStage: 1 | 2;
 }>();
 
 const emit = defineEmits<{
@@ -100,6 +101,8 @@ const mediaPanelWidth = ref(340);
 const isResizing = ref(false);
 const agentUpdateTitle = ref(false);
 const agentUpdateTags = ref(false);
+const batchAgentUpdateTitle = ref(false);
+const batchAgentUpdateTags = ref(false);
 const platformWritingStyleValue = ref<AgentWritingStyle | string>("default");
 const batchWritingStyleValue = ref<AgentWritingStyle | string>("default");
 
@@ -129,7 +132,7 @@ function onGutterMouseDown(event: MouseEvent) {
 }
 
 const editorShellStyle = computed(() => {
-  if (mediaPanelCollapsed.value) return {};
+  if (props.workflowStage !== 1 || mediaPanelCollapsed.value) return {};
   return { gridTemplateColumns: `minmax(0, 1fr) 18px ${mediaPanelWidth.value}px` };
 });
 
@@ -153,6 +156,51 @@ const contentAssetReferences = computed<ContentAssetReference[]>(() => {
   return references;
 });
 const activePreviewDraft = computed(() => props.platformDrafts[activePreviewPlatform.value] ?? null);
+const selectedPlatformOptions = computed(() => platformOptions.filter((option) => platforms.value.includes(option.value)));
+const platformOptimizeUnavailableReason = computed(() => {
+  if (props.agentLoading) return "智能优化正在进行，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!props.hasPreview) return "请先生成平台预览。";
+  return "";
+});
+const batchOptimizeUnavailableReason = computed(() => {
+  if (props.agentLoading) return "智能优化正在进行，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!platforms.value.length) return "请至少勾选一个需要优化的平台。";
+  return "";
+});
+const generatePreviewUnavailableReason = computed(() => {
+  if (props.previewLoading) return "所选平台预览正在生成，请稍候。";
+  if (!content.value.trim()) return "请先填写正文内容。";
+  if (!platforms.value.length) return "请至少勾选一个需要生成预览的平台。";
+  return "";
+});
+const currentPreviewUnavailableReason = computed(() => {
+  if (props.previewLoading && !activePreviewDraft.value) return "当前平台预览正在生成，请稍候。";
+  if (!activePreviewDraft.value) return "请先生成当前平台的预览内容。";
+  return "";
+});
+const multiPreviewUnavailableReason = computed(() => {
+  if (props.previewLoading && !props.hasPreview) return "平台预览正在生成，请稍候。";
+  if (!props.hasPreview) return "请先生成至少一个平台的预览内容。";
+  return "";
+});
+const currentClearUnavailableReason = computed(() => {
+  if (!draftHasEditableContent(activePreviewDraft.value)) return "当前平台没有可清除的预览内容。";
+  return "";
+});
+const batchClearUnavailableReason = computed(() => {
+  if (!platforms.value.length) return "请至少勾选一个需要清除的平台。";
+  const hasSelectedDraftContent = platforms.value.some((platform) => draftHasEditableContent(props.platformDrafts[platform]));
+  if (!hasSelectedDraftContent) return "已勾选的平台没有可清除的预览内容。";
+  return "";
+});
+const publishConfirmUnavailableReason = computed(() => {
+  if (props.publishLoading) return "发布任务正在处理中，请稍候。";
+  if (!props.hasPreview) return "请先生成平台预览。";
+  if (!platforms.value.length) return "请至少选择一个发布平台。";
+  return "";
+});
 const activePreviewTitle = computed({
   get: () => activePreviewDraft.value?.title ?? "",
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { title: value })
@@ -165,6 +213,20 @@ const activePreviewTags = computed({
   get: () => activePreviewDraft.value?.tags?.join(", ") ?? "",
   set: (value: string) => emit("updatePlatformDraft", activePreviewPlatform.value, { tags: parseTagText(value) })
 });
+
+function selectPreviewPlatform(platform: PlatformKey) {
+  activePreviewPlatform.value = platform;
+}
+
+watch(platforms, (nextPlatforms) => {
+  if (nextPlatforms.length && !nextPlatforms.includes(activePreviewPlatform.value)) {
+    activePreviewPlatform.value = nextPlatforms[0];
+  }
+}, { deep: true });
+
+function draftHasEditableContent(draft?: DraftPayload | null) {
+  return Boolean(draft?.title?.trim() || draft?.body?.trim() || draft?.tags?.length);
+}
 
 async function handleImportClick() {
   importInputRef.value?.click();
@@ -227,27 +289,39 @@ function resolveWritingStyle(value: AgentWritingStyle | string): Pick<AgentOptim
   return { writingStyle: "custom", customWritingStyle: normalized };
 }
 
-function buildAgentOptimizeOptions(value: AgentWritingStyle | string): AgentOptimizeOptions | null {
+function buildAgentOptimizeOptions(
+  value: AgentWritingStyle | string,
+  updateTitle: boolean,
+  updateTags: boolean
+): AgentOptimizeOptions | null {
   const style = resolveWritingStyle(value);
   if (!style) {
     return null;
   }
   return {
-    updateTitle: agentUpdateTitle.value,
-    updateTags: agentUpdateTags.value,
+    updateTitle,
+    updateTags,
     ...style
   };
 }
 
 function emitOptimizeAllWithAgent() {
-  const options = buildAgentOptimizeOptions(batchWritingStyleValue.value);
+  const options = buildAgentOptimizeOptions(
+    batchWritingStyleValue.value,
+    batchAgentUpdateTitle.value,
+    batchAgentUpdateTags.value
+  );
   if (options) {
     emit("optimizeAllWithAgent", options);
   }
 }
 
 function emitOptimizeWithAgent() {
-  const options = buildAgentOptimizeOptions(platformWritingStyleValue.value);
+  const options = buildAgentOptimizeOptions(
+    platformWritingStyleValue.value,
+    agentUpdateTitle.value,
+    agentUpdateTags.value
+  );
   if (options) {
     emit("optimizeWithAgent", activePreviewPlatform.value, options);
   }
@@ -988,10 +1062,10 @@ function dropClass(tab: MediaTab, index: number) {
   <section class="editor-view">
     <div class="section-title">
       <div>
-        <p>内容编辑</p>
-        <h2>统一内容编辑区</h2>
+        <p>{{ workflowStage === 1 ? "统一内容编译" : "编辑所选平台" }}</p>
+        <h2>{{ workflowStage === 1 ? "统一内容编辑区" : "编辑与优化平台内容" }}</h2>
       </div>
-      <div class="section-actions">
+      <div v-if="workflowStage === 1" class="section-actions">
         <el-button type="primary" plain :icon="Plus" :loading="importLoading" @click="handleImportClick">
           导入文档（.md / .txt / .docx）
         </el-button>
@@ -1006,10 +1080,10 @@ function dropClass(tab: MediaTab, index: number) {
       @change="handleImportFileChange"
     />
 
-    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed }" :style="editorShellStyle">
+    <div class="editor-shell" :class="{ 'is-media-collapsed': mediaPanelCollapsed, 'is-flow-stage': workflowStage !== 1 }" :style="editorShellStyle">
       <div class="editor-main">
     <el-form label-position="top">
-      <section class="editor-panel editor-panel-meta">
+      <section v-if="workflowStage === 1" class="editor-panel editor-panel-meta">
         <div class="panel-kicker">基础信息</div>
       <div class="title-cover-row">
         <div class="title-tag-fields">
@@ -1061,7 +1135,7 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
       </section>
 
-      <section class="editor-panel editor-panel-content">
+      <section v-if="workflowStage === 1" class="editor-panel editor-panel-content">
       <el-form-item>
         <template #label>
           <div class="content-label-row">
@@ -1120,20 +1194,26 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
       </section>
 
-      <div class="asset-strip">
+      <div v-if="workflowStage === 1" class="asset-strip">
         <el-icon><MagicStick /></el-icon>
         <span>可拖拽多媒体库中素材至文本框以添加至正文，封面图将在发布时优先使用。</span>
       </div>
 
-      <section class="editor-panel editor-panel-platform">
+      <section v-if="workflowStage === 2" class="editor-panel editor-panel-platform">
       <el-form-item label="平台预览">
         <section class="platform-preview-box">
-          <div class="platform-preview-tabs">
-            <el-radio-group v-model="activePreviewPlatform" size="default">
-              <el-radio-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </el-radio-button>
-            </el-radio-group>
+          <div class="platform-edit-list">
+            <button
+              v-for="option in selectedPlatformOptions"
+              :key="option.value"
+              type="button"
+              class="platform-edit-card"
+              :class="{ 'is-active': activePreviewPlatform === option.value }"
+              @click="selectPreviewPlatform(option.value)"
+            >
+              {{ option.label }}
+            </button>
+            <el-empty v-if="!selectedPlatformOptions.length" description="请返回统一内容编译区选择需要编辑的平台" />
           </div>
 
           <div
@@ -1213,29 +1293,53 @@ function dropClass(tab: MediaTab, index: number) {
           <div class="platform-preview-actions">
             <span>{{ activePreviewDraft ? "当前平台内容已生成，可直接修改或拖放素材。" : "当前平台还没有生成内容。" }}</span>
             <div class="platform-preview-btns">
-              <el-button
-                :disabled="!hasPreview"
-                @click="$emit('openPreview', activePreviewPlatform)"
+              <el-tooltip
+                :content="currentPreviewUnavailableReason"
+                placement="top"
+                :disabled="!currentPreviewUnavailableReason"
               >
-                查看当前预览
-              </el-button>
-              <el-button
-                type="success"
-                :icon="MagicStick"
-                :loading="agentLoading"
-                :disabled="!hasPreview || !content.trim()"
-                @click="emitOptimizeWithAgent"
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    :disabled="Boolean(currentPreviewUnavailableReason)"
+                    @click="$emit('openPreview', activePreviewPlatform)"
+                  >
+                    查看当前预览
+                  </el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
+                :content="platformOptimizeUnavailableReason"
+                placement="top"
+                :disabled="!platformOptimizeUnavailableReason"
               >
-                智能优化
-              </el-button>
-              <el-button
-                type="danger"
-                text
-                :disabled="!hasPreview"
-                @click="handleClearPlatform"
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    type="success"
+                    :icon="MagicStick"
+                    :loading="agentLoading"
+                    :disabled="Boolean(platformOptimizeUnavailableReason)"
+                    @click="emitOptimizeWithAgent"
+                  >
+                    智能优化
+                  </el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
+                :content="currentClearUnavailableReason"
+                placement="top"
+                :disabled="!currentClearUnavailableReason"
               >
-                清除
-              </el-button>
+                <span class="disabled-action-tooltip">
+                  <el-button
+                    type="danger"
+                    text
+                    :disabled="Boolean(currentClearUnavailableReason)"
+                    @click="handleClearPlatform"
+                  >
+                    清除
+                  </el-button>
+                </span>
+              </el-tooltip>
             </div>
           </div>
         </section>
@@ -1246,7 +1350,7 @@ function dropClass(tab: MediaTab, index: number) {
       </div>
 
       <div
-        v-if="!mediaPanelCollapsed"
+        v-if="workflowStage === 1 && !mediaPanelCollapsed"
         class="editor-gutter"
         :class="{ 'is-resizing': isResizing }"
         @mousedown="onGutterMouseDown"
@@ -1254,68 +1358,164 @@ function dropClass(tab: MediaTab, index: number) {
         <span class="editor-gutter-handle" />
       </div>
 
-      <aside class="editor-media-side">
-        <el-button class="media-collapse-button" :icon="mediaPanelCollapsed ? ArrowLeft : ArrowRight" @click="mediaPanelCollapsed = !mediaPanelCollapsed">
-          {{ mediaPanelCollapsed ? "展开多媒体库" : "收起多媒体库" }}
+      <aside v-if="workflowStage === 1" class="editor-media-side">
+        <el-button v-if="mediaPanelCollapsed" class="media-collapse-button" :icon="ArrowLeft" @click="mediaPanelCollapsed = false">
+          展开多媒体库
         </el-button>
         <MediaLibraryPanel
           v-show="!mediaPanelCollapsed"
           v-model:assets="assets"
           v-model:folders="mediaFolders"
           compact
+          collapsible
           title="多媒体库"
           @insert="insertAssetReference"
           @rename="handleMediaRename"
           @delete="handleMediaDelete"
+          @collapse="mediaPanelCollapsed = true"
         />
       </aside>
+
+      <section v-if="workflowStage === 1" class="editor-panel platform-selection-panel">
+        <div class="platform-context-header">
+          <div class="platform-context-copy-header">
+            <strong>选择生成平台</strong>
+            <span>勾选需要适配的平台，生成后进入“编辑所选平台”。</span>
+          </div>
+          <div class="platform-context-actions">
+            <el-tag type="info" effect="plain">已选 {{ platforms.length }} 个平台</el-tag>
+          </div>
+        </div>
+
+        <div class="platform-selection-row">
+          <el-checkbox-group v-model="platforms" class="platform-context-list">
+            <div
+              v-for="option in platformOptions"
+              :key="option.value"
+              class="platform-context-card"
+              :class="{ 'is-selected': platforms.includes(option.value) }"
+            >
+              <el-checkbox :value="option.value" class="platform-context-checkbox">
+                {{ option.label }}
+              </el-checkbox>
+            </div>
+          </el-checkbox-group>
+
+          <el-tooltip
+            :content="generatePreviewUnavailableReason"
+            placement="top"
+            :disabled="!generatePreviewUnavailableReason"
+          >
+            <span class="disabled-action-tooltip platform-generate-action">
+              <el-button
+                type="primary"
+                :icon="Connection"
+                :loading="previewLoading"
+                :disabled="Boolean(generatePreviewUnavailableReason)"
+                @click="$emit('generatePreview')"
+              >
+                生成预览
+              </el-button>
+            </span>
+          </el-tooltip>
+        </div>
+      </section>
     </div>
 
-    <div class="platform-before-actions">
-      <el-checkbox-group v-model="platforms" class="platforms">
-        <el-checkbox-button v-for="option in platformOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </el-checkbox-button>
-      </el-checkbox-group>
-    </div>
+    <section v-if="workflowStage === 2" class="batch-agent-panel">
+      <div class="batch-agent-settings">
+        <div class="agent-option-row">
+          <span>一键优化范围</span>
+          <el-checkbox v-model="batchAgentUpdateTitle">修改标题</el-checkbox>
+          <el-checkbox v-model="batchAgentUpdateTags">修改关键词</el-checkbox>
+        </div>
+        <div class="batch-agent-style-row">
+          <span>一键优化风格</span>
+          <el-select
+            v-model="batchWritingStyleValue"
+            class="agent-style-select"
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="选择或输入发布风格"
+          >
+            <el-option
+              v-for="option in writingStyleOptions"
+              :key="`batch-${option.value}`"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+      </div>
 
-    <div class="batch-agent-style-row">
-      <span>一键优化风格</span>
-      <el-select
-        v-model="batchWritingStyleValue"
-        class="agent-style-select"
-        filterable
-        allow-create
-        default-first-option
-        :reserve-keyword="false"
-        placeholder="选择或输入发布风格"
-      >
-        <el-option
-          v-for="option in writingStyleOptions"
-          :key="`batch-${option.value}`"
-          :label="option.label"
-          :value="option.value"
-        />
-      </el-select>
-    </div>
-
-    <div class="action-row">
-      <el-button type="primary" :icon="Connection" :loading="previewLoading" @click="$emit('generatePreview')">
-        生成平台预览
-      </el-button>
-      <el-button type="success" :icon="MagicStick" :loading="agentLoading" :disabled="!content.trim()" @click="emitOptimizeAllWithAgent">
-        一键智能优化
-      </el-button>
-      <el-button :disabled="!hasPreview" @click="$emit('openPreview')">
-        多平台预览
-      </el-button>
-      <el-button type="primary" :icon="Promotion" @click="$emit('confirmPublish')">
-        发布
-      </el-button>
-      <el-button type="danger" text :disabled="!hasPreview" @click="handleClearCheckedPlatforms">
-        一键清除
-      </el-button>
-    </div>
+      <div class="platform-preview-actions">
+        <span>批量操作将应用于已勾选的 {{ platforms.length }} 个平台。</span>
+        <div class="platform-preview-btns">
+          <el-tooltip
+            :content="multiPreviewUnavailableReason"
+            placement="top"
+            :disabled="!multiPreviewUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button :disabled="Boolean(multiPreviewUnavailableReason)" @click="$emit('openPreview')">
+                多平台预览
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="batchOptimizeUnavailableReason"
+            placement="top"
+            :disabled="!batchOptimizeUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="success"
+                :icon="MagicStick"
+                :loading="agentLoading"
+                :disabled="Boolean(batchOptimizeUnavailableReason)"
+                @click="emitOptimizeAllWithAgent"
+              >
+                一键智能优化
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="batchClearUnavailableReason"
+            placement="top"
+            :disabled="!batchClearUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="danger"
+                text
+                :disabled="Boolean(batchClearUnavailableReason)"
+                @click="handleClearCheckedPlatforms"
+              >
+                一键清除
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip
+            :content="publishConfirmUnavailableReason"
+            placement="top"
+            :disabled="!publishConfirmUnavailableReason"
+          >
+            <span class="disabled-action-tooltip">
+              <el-button
+                type="primary"
+                :icon="Right"
+                :disabled="Boolean(publishConfirmUnavailableReason)"
+                @click="$emit('confirmPublish')"
+              >
+                进入发布确认
+              </el-button>
+            </span>
+          </el-tooltip>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -1360,6 +1560,10 @@ function dropClass(tab: MediaTab, index: number) {
 
 .editor-shell.is-media-collapsed {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.editor-shell.is-flow-stage {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .editor-gutter {
@@ -1428,6 +1632,13 @@ function dropClass(tab: MediaTab, index: number) {
   background: #f8fafc;
 }
 
+.platform-selection-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 12px;
+  margin-top: 16px;
+}
+
 .panel-kicker {
   margin-bottom: 12px;
   color: #607086;
@@ -1443,12 +1654,12 @@ function dropClass(tab: MediaTab, index: number) {
 }
 
 .editor-media-side {
-  position: sticky;
-  top: 18px;
+  position: relative;
+  align-self: start;
   display: grid;
   gap: 10px;
-  max-height: calc(100vh - 132px);
   min-width: 0;
+  overflow: hidden;
 }
 
 .media-collapse-button {
@@ -1577,23 +1788,14 @@ function dropClass(tab: MediaTab, index: number) {
 .platforms,
 .media-list,
 .media-actions,
-.action-row,
 .asset-strip {
   display: flex;
   align-items: center;
 }
 
-.platforms,
-.action-row {
+.platforms {
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.platform-before-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
 }
 
 .platforms :deep(.el-checkbox-button__inner) {
@@ -1765,15 +1967,152 @@ function dropClass(tab: MediaTab, index: number) {
   border-radius: 8px;
 }
 
-.platform-preview-tabs {
+.platform-context-header {
   display: flex;
+  align-items: center;
+}
+
+.platform-context-header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.platform-context-copy-header {
+  display: grid;
+  gap: 3px;
+}
+
+.platform-context-copy-header strong {
+  color: #253247;
+}
+
+.platform-context-copy-header span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.platform-context-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.platform-preview-tabs :deep(.el-radio-button__inner) {
+.platform-context-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.platform-selection-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.platform-generate-action,
+.platform-generate-action .el-button {
+  height: 100%;
+}
+
+.platform-context-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #dfe7f1;
   border-radius: 8px;
-  border-left: 1px solid var(--el-border-color);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.platform-context-card:hover {
+  border-color: #9fc2f7;
+}
+
+.platform-context-card.is-selected {
+  background: #f7faff;
+}
+
+.platform-context-card.is-active {
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+}
+
+.platform-context-card.is-active::after {
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  width: 14px;
+  height: 22px;
+  content: "";
+  background: #1f6feb;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+}
+
+.platform-edit-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.platform-edit-card {
+  position: relative;
+  min-height: 46px;
+  padding: 10px 14px;
+  overflow: hidden;
+  color: #253247;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+}
+
+.platform-edit-card:hover,
+.platform-edit-card.is-active {
+  border-color: #1f6feb;
+}
+
+.platform-edit-card.is-active {
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+}
+
+.platform-edit-card.is-active::after {
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  width: 14px;
+  height: 22px;
+  content: "";
+  background: #1f6feb;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+}
+
+.platform-context-checkbox {
+  width: 100%;
+  min-width: 0;
+  margin-right: 0;
+}
+
+.platform-context-checkbox :deep(.el-checkbox__label) {
+  min-width: 0;
+  overflow: hidden;
+  color: #253247;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .platform-preview-box :deep(.el-textarea__inner),
@@ -1822,7 +2161,22 @@ function dropClass(tab: MediaTab, index: number) {
 }
 
 .batch-agent-style-row {
-  margin: 2px 0 10px;
+  margin: 0;
+}
+
+.batch-agent-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-agent-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2eaf3;
+  border-radius: 8px;
 }
 
 .platform-preview-actions {
@@ -2052,10 +2406,6 @@ function dropClass(tab: MediaTab, index: number) {
   margin-top: 0;
 }
 
-.action-row {
-  margin-bottom: 14px;
-}
-
 @media (max-width: 1180px) {
   .editor-shell {
     grid-template-columns: 1fr;
@@ -2064,6 +2414,18 @@ function dropClass(tab: MediaTab, index: number) {
   .editor-media-side {
     position: static;
     max-height: none;
+  }
+
+  .platform-context-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .platform-selection-row {
+    align-items: stretch;
+  }
+
+  .platform-edit-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2112,6 +2474,10 @@ function dropClass(tab: MediaTab, index: number) {
   gap: 8px;
 }
 
+.disabled-action-tooltip {
+  display: inline-flex;
+}
+
 .asset-strip {
   gap: 8px;
   padding: 12px 14px;
@@ -2141,6 +2507,33 @@ function dropClass(tab: MediaTab, index: number) {
   }
 
   .media-card-audio {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-context-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .platform-context-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .platform-context-list {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-selection-row {
+    flex-direction: column;
+  }
+
+  .platform-generate-action,
+  .platform-generate-action .el-button {
+    width: 100%;
+  }
+
+  .platform-edit-list {
     grid-template-columns: 1fr;
   }
 }
