@@ -362,12 +362,12 @@ function assetFolderPath(asset: LocalAsset) {
   return [...names, asset.name].join("/");
 }
 
-function collectAssetPayloads(): AssetPayload[] {
+function collectAssetPayloads(sourceBody = content.value): AssetPayload[] {
   // Collect asset IDs referenced in the body via markers like 【图片：name】 or {{asset:image:id}}
   const referencedIds = new Set<string>();
   const markerPattern = /\{\{asset:(?:image|video|audio):([^}]+)\}\}|【(?:图片|视频|音频)：([^】]+)】/g;
   let match: RegExpExecArray | null;
-  while ((match = markerPattern.exec(content.value)) !== null) {
+  while ((match = markerPattern.exec(sourceBody)) !== null) {
     const displayToken = match[2]?.split("｜id:") ?? [];
     const idOrName = match[1] || displayToken[1] || displayToken[0];
     // Try to match by ID first, then by name
@@ -395,7 +395,7 @@ function collectAssetPayloads(): AssetPayload[] {
   ];
 }
 
-function collectContentBlocks(): ContentBlockPayload[] {
+function collectContentBlocks(sourceBody = content.value): ContentBlockPayload[] {
   const assetMap = new Map<string, LocalAsset>();
   const assetByDisplayToken = new Map<string, LocalAsset>();
   for (const asset of [...editorAssets.value.images, ...editorAssets.value.videos, ...editorAssets.value.audios]) {
@@ -412,8 +412,8 @@ function collectContentBlocks(): ContentBlockPayload[] {
   let cursor = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = markerPattern.exec(content.value)) !== null) {
-    const text = content.value.slice(cursor, match.index).trim();
+  while ((match = markerPattern.exec(sourceBody)) !== null) {
+    const text = sourceBody.slice(cursor, match.index).trim();
     if (text) {
       blocks.push({ type: "text", text });
     }
@@ -428,28 +428,30 @@ function collectContentBlocks(): ContentBlockPayload[] {
     cursor = match.index + match[0].length;
   }
 
-  const trailingText = content.value.slice(cursor).trim();
+  const trailingText = sourceBody.slice(cursor).trim();
   if (trailingText) {
     blocks.push({ type: "text", text: trailingText });
   }
 
-  if (!blocks.length && content.value.trim()) {
-    blocks.push({ type: "text", text: content.value.trim() });
+  if (!blocks.length && sourceBody.trim()) {
+    blocks.push({ type: "text", text: sourceBody.trim() });
   }
 
   return blocks;
 }
 
-function buildContentPayload(): ContentPayload {
+function buildContentPayload(overrides: Partial<Pick<ContentPayload, "title" | "body" | "tags" | "platforms">> = {}): ContentPayload {
+  const payloadBody = overrides.body ?? content.value;
+  const payloadTags = overrides.tags ?? tagList.value;
   return {
-    title: title.value.trim() || undefined,
-    body: content.value,
-    content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads().length ? "mixed" : "article",
-    tags: tagList.value,
-    assets: collectAssetPayloads(),
-    content_blocks: collectContentBlocks(),
+    title: overrides.title ?? (title.value.trim() || undefined),
+    body: payloadBody,
+    content_type: editorAssets.value.videos.length ? "video" : collectAssetPayloads(payloadBody).length ? "mixed" : "article",
+    tags: payloadTags,
+    assets: collectAssetPayloads(payloadBody),
+    content_blocks: collectContentBlocks(payloadBody),
     cover_asset_id: editorAssets.value.coverImage?.id ?? editorAssets.value.coverImageId ?? null,
-    platforms: selectedPlatforms.value
+    platforms: overrides.platforms ?? selectedPlatforms.value
   };
 }
 
@@ -464,13 +466,11 @@ function normalizeAgentOptimizeOptions(options?: AgentOptimizeOptions): AgentOpt
 
 function buildAgentMetadataPayload(
   basePayload: ContentPayload,
-  options: AgentOptimizeOptions,
-  platform?: PlatformKey
+  options: AgentOptimizeOptions
 ) {
-  const currentDraft = platform ? preview.value?.drafts[platform] : null;
   return {
-    title: !options.updateTitle && currentDraft ? currentDraft.title : basePayload.title,
-    tags: !options.updateTags && currentDraft ? currentDraft.tags : basePayload.tags,
+    title: basePayload.title,
+    tags: basePayload.tags,
     update_title: options.updateTitle,
     update_tags: options.updateTags,
     writing_style: options.writingStyle,
@@ -478,38 +478,52 @@ function buildAgentMetadataPayload(
   };
 }
 
-function preserveAgentDraftMetadata(
-  generatedDrafts: PreviewResponse["drafts"],
-  options: AgentOptimizeOptions,
-  platforms: PlatformKey[]
-): PreviewResponse["drafts"] {
-  const currentDrafts = preview.value?.drafts ?? {};
-  const nextDrafts: PreviewResponse["drafts"] = { ...generatedDrafts };
+function agentDraftPayloadForPlatform(
+  run: Awaited<ReturnType<typeof runAgentAdaptPreview>>,
+  platform: PlatformKey,
+  options: AgentOptimizeOptions
+): ContentPayload {
+  const generatedDraft = run.drafts[platform];
+  const generated = generatedDraft
+    ? {
+        title: generatedDraft.title,
+        body: generatedDraft.body,
+        tags: generatedDraft.tags
+      }
+    : {
+        title: run.rewritten_content.title,
+        body: run.rewritten_content.body,
+        tags: run.rewritten_content.tags
+      };
 
-  for (const platform of platforms) {
-    const generatedDraft = nextDrafts[platform];
-    const currentDraft = currentDrafts[platform];
-    if (!generatedDraft || !currentDraft) {
-      continue;
-    }
-
-    nextDrafts[platform] = {
-      ...generatedDraft,
-      title: options.updateTitle ? generatedDraft.title : currentDraft.title,
-      tags: options.updateTags ? generatedDraft.tags : currentDraft.tags
-    };
-  }
-
-  return nextDrafts;
+  return buildContentPayload({
+    title: options.updateTitle || !title.value.trim() ? generated.title : title.value.trim(),
+    body: generated.body,
+    tags: options.updateTags || !tagList.value.length ? generated.tags : tagList.value,
+    platforms: [platform]
+  });
 }
 
-function previewFromAgentRun(run: Awaited<ReturnType<typeof runAgentAdaptPreview>>): PreviewResponse {
+function mergePreviewResponses(
+  responses: PreviewResponse[],
+  previousDrafts: Partial<Record<PlatformKey, DraftPayload>>,
+  previousValidation: Partial<Record<PlatformKey, ValidationIssue[]>>
+): PreviewResponse | null {
+  const latest = responses[responses.length - 1];
+  if (!latest) {
+    return null;
+  }
+
   return {
-    preview_id: run.preview_id ?? "",
-    content_ir: run.content_ir,
-    drafts: run.drafts,
-    validation_report: run.validation_report,
-    created_at: run.created_at
+    ...latest,
+    drafts: responses.reduce<Partial<Record<PlatformKey, DraftPayload>>>(
+      (draftMap, response) => ({ ...draftMap, ...response.drafts }),
+      { ...previousDrafts }
+    ),
+    validation_report: responses.reduce<Partial<Record<PlatformKey, ValidationIssue[]>>>(
+      (validationMap, response) => ({ ...validationMap, ...response.validation_report }),
+      { ...previousValidation }
+    )
   };
 }
 
@@ -572,7 +586,16 @@ function updatePlatformDraft(platform: PlatformKey, patch: PreviewDraftUpdatePay
       ...preview.value.drafts,
       [platform]: {
         ...currentDraft,
-        ...patch
+        ...patch,
+        ...(patch.body !== undefined
+          ? {
+              body_blocks: [],
+              rich_body: [],
+              content_points: [],
+              highlights: [],
+              wechat_html: ""
+            }
+          : {})
       }
     }
   };
@@ -869,8 +892,15 @@ async function publishDraftFromTask(publicationId: string) {
 }
 
 async function generatePreview() {
-  // 输入文本框为空，不做处理
   if (!content.value.trim()) {
+    return;
+  }
+
+  const existingPreviewPlatforms = selectedPlatforms.value.filter(
+    (platform) => preview.value?.drafts[platform]?.body?.trim()
+  );
+  if (existingPreviewPlatforms.length) {
+    ElMessage.info("已有平台预览，请先清除后再生成。");
     return;
   }
 
@@ -881,44 +911,20 @@ async function generatePreview() {
   // 获取已有的平台草稿和校验报告
   const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
   const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
-
-  // 筛选需要生成新草稿的平台：已勾选 且 平台预览区无文本
-  const platformsNeedingDrafts = selectedPlatforms.value.filter(
-    p => !(previousDrafts[p]?.body?.trim())
-  );
-
-  // 如果所有已勾选平台都已有预览文本，无需调用后端
-  if (platformsNeedingDrafts.length === 0) {
-    if (preview.value) {
-      ElMessage.info("所有已勾选平台均已有预览内容，无需重新生成。");
-    }
-    return;
-  }
+  const payload = buildContentPayload({ platforms: [...selectedPlatforms.value] });
 
   previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
   try {
-    // 仅请求需要生成草稿的平台，避免覆盖已有内容
-    const payload = buildContentPayload();
-    payload.platforms = platformsNeedingDrafts;
     const response = await createPreview(payload);
-
-    // 合并草稿：保留已有文本的平台草稿（含未勾选平台），叠加新生成的草稿
-    const mergedDrafts: Partial<Record<PlatformKey, DraftPayload>> = { ...previousDrafts, ...response.drafts };
-
-    // 合并校验报告：已有 + 新生成（新覆盖旧）
-    const mergedValidation: Partial<Record<PlatformKey, ValidationIssue[]>> = { ...previousValidation, ...response.validation_report };
-
-    preview.value = {
-      ...response,
-      drafts: mergedDrafts,
-      validation_report: mergedValidation,
-    };
+    const mergedPreview = mergePreviewResponses([response], previousDrafts, previousValidation);
+    if (!mergedPreview) return;
+    preview.value = mergedPreview;
 
     // 回填：如果调用前标题为空且后端生成了标题，自动填入
-    const ir = response.content_ir as Record<string, unknown> | null;
+    const ir = response.content_ir as Record<string, unknown> | null | undefined;
     if (titleWasEmpty && ir) {
       const generatedTitle = ir["title"];
       if (typeof generatedTitle === "string" && generatedTitle.trim() && generatedTitle !== "Untitled Content") {
@@ -936,7 +942,7 @@ async function generatePreview() {
     ElMessage.success("预览已生成。");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "预览生成失败，请稍后重试。";
-    ElMessage.error("预览生成失败，请稍后重试。");
+    ElMessage.error(errorMessage.value);
   } finally {
     previewLoading.value = false;
   }
@@ -1005,28 +1011,16 @@ async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
       style_goal: editorAssets.value.videos.length ? "video" : "professional",
       rewrite_strength: "medium",
       use_llm: "auto",
-      persist_preview: !preview.value
+      persist_preview: false
     });
-    const optimizedDrafts = preserveAgentDraftMetadata(run.drafts, options, targetPlatforms);
-
-    if (!preview.value) {
-      preview.value = previewFromAgentRun({
-        ...run,
-        drafts: optimizedDrafts
-      });
-    } else {
-      preview.value = {
-        ...preview.value,
-        drafts: {
-          ...preview.value.drafts,
-          ...optimizedDrafts
-        },
-        validation_report: {
-          ...preview.value.validation_report,
-          ...run.validation_report
-        }
-      };
+    const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
+    const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
+    const responses: PreviewResponse[] = [];
+    for (const platform of targetPlatforms) {
+      responses.push(await createPreview(agentDraftPayloadForPlatform(run, platform, options)));
     }
+    const mergedPreview = mergePreviewResponses(responses, previousDrafts, previousValidation);
+    if (mergedPreview) preview.value = mergedPreview;
     ElMessage.success("所选平台的智能优化结果已生成。");
   } catch (error) {
     const message = error instanceof Error ? error.message : "智能优化失败。";
@@ -1055,7 +1049,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
     const basePayload = buildContentPayload();
     const run = await runAgentAdaptPreview({
       ...basePayload,
-      ...buildAgentMetadataPayload(basePayload, options, platform),
+      ...buildAgentMetadataPayload(basePayload, options),
       preview_id: preview.value.preview_id,
       body: basePayload.body,
       platforms: [platform],
@@ -1064,29 +1058,13 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
       use_llm: "auto",
       persist_preview: false
     });
-    const generatedDraft = run.drafts[platform];
-    if (!generatedDraft) {
-      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
-    }
-    const optimizedDraft = preserveAgentDraftMetadata(
-      { [platform]: generatedDraft },
-      options,
-      [platform]
-    )[platform];
-    if (!optimizedDraft) {
-      throw new Error(`${platformLabels[platform]}没有生成可用的优化内容。`);
-    }
-    preview.value = {
-      ...preview.value,
-      drafts: {
-        ...preview.value.drafts,
-        [platform]: optimizedDraft
-      },
-      validation_report: {
-        ...preview.value.validation_report,
-        [platform]: run.validation_report[platform] ?? []
-      }
-    };
+    const response = await createPreview(agentDraftPayloadForPlatform(run, platform, options));
+    const mergedPreview = mergePreviewResponses(
+      [response],
+      preview.value.drafts,
+      preview.value.validation_report
+    );
+    if (mergedPreview) preview.value = mergedPreview;
     ElMessage.success(`${platformLabels[platform]}内容已优化。`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "智能优化失败。";
