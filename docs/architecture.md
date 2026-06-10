@@ -33,7 +33,7 @@ flowchart LR
 
 ## 当前阶段范围
 
-第一阶段已经形成模拟闭环：
+第一阶段（已交付）：形成模拟闭环：
 
 1. 接收用户输入内容。
 2. 标准化为内容 IR。
@@ -42,12 +42,13 @@ flowchart LR
 5. 创建模拟发布任务。
 6. 返回预览、校验报告、任务状态和截图占位记录。
 
-第二阶段开始接入真实发布：
+第二阶段（核心已交付）：已接入真实发布：
 
-- 账号凭据加密保存，公众号使用 AppID/AppSecret，B站使用 passport 登录后获取的 Cookie 凭据。
-- 发布素材先上传到后端本地存储，再由平台 Adapter 上传到目标平台。
-- 真实发布任务交给 Celery worker 执行，FastAPI 只负责创建任务和查询状态。
-- `publication_records` 保存平台外部 ID、外部状态、响应快照和错误信息。
+- ✅ 账号凭据加密保存，公众号使用 AppID/AppSecret，B站使用 passport 登录后获取的 Cookie 凭据。
+- ✅ 发布素材先上传到后端本地存储，再由平台 Adapter 上传到目标平台。
+- ✅ 真实发布任务交给 Celery worker 执行，FastAPI 只负责创建任务和查询状态。
+- ✅ `publication_records` 保存平台外部 ID、外部状态、响应快照和错误信息。
+- 🔄 小红书 myaibot API Adapter 已就绪，前端账号登录入口和联调待补齐。
 
 当前平台状态：
 
@@ -58,15 +59,39 @@ flowchart LR
 | 小红书 | 已支持 | 已支持 | 已实现 myaibot API Adapter 和字段映射；账号入口与真实联调仍需补齐 |
 | 知乎 | 已支持 | 已支持 | 暂不进入真实发布 API |
 
-## 前端工作台数据流
+## 前端工作台架构
 
-前端以 `App.vue` 为状态枢纽，主要数据流如下：
+前端采用 **Vue 3 + TypeScript + Vite + Element Plus**，无 vue-router/Pinia，由 `App.vue` 通过 `activeTab` 内联管理四页签单页架构。
+
+```
+App.vue（状态枢纽）
+├── 内容工作台（preview）
+│   ├── EditorView           → 统一编辑 + 素材插入 + 文档导入 + Agent 触发
+│   ├── PreviewView（弹窗）   → 多平台预览（公众号手机窗格 / B站播放器 / 知乎文章 / 小红书笔记）
+│   │   └── WechatPreview    → 公众号手机模拟器样式
+│   ├── AgentPreviewView     → Agent 优化结果展示（元数据 + 改写内容 + 平台草稿）
+│   └── PublishConfirmView   → 发布确认（统一/独立配置切换）
+│       └── PublishFormView  → 分平台表单（B站 / 公众号 / 小红书）
+├── 任务看板（task）
+│   └── TaskView             → 发布任务列表 + 状态刷新 + 草稿发布
+├── 多媒体库（media）
+│   └── MediaLibraryView     → 独立素材管理页
+│       └── MediaLibraryPanel → 共享素材面板（图片/视频/音频/文件夹/IndexedDB）
+└── 账号管理（account）
+    └── AccountView          → 公众号连接 + B站验证码登录 + 密钥管理
+```
+
+主要数据流如下：
 
 1. `EditorView` 维护标题、正文、标签、目标平台和 Agent 优化选项。
 2. `MediaLibraryPanel` 维护共享素材库，素材数据通过 IndexedDB 和 localStorage 保存。
 3. `buildContentPayload()` 汇总编辑区和素材引用，传给普通预览或 Agent 预览。
 4. `PreviewView` 只读取 `preview.drafts.<platform>`，按平台分别渲染标题、摘要、章节标题、正文和素材。
-5. `PublishConfirmView` 在统一配置和分平台配置之间切换，生成用户确认后的发布字段。
-6. `buildPublishTaskPayload()` 合并 `platform_options`、`asset_ids`、`content_blocks` 和 `inline_drafts`，提交给 `/api/v1/publish-tasks`。
+5. `AgentPreviewView` 展示 `metadata`、`rewritten_content` 和各平台 draft，用户可选择应用 AI 建议。
+6. `PublishConfirmView` 在统一配置和独立配置之间切换，生成用户确认后的发布字段。
+7. `buildPublishTaskPayload()` 合并 `platform_options`、`asset_ids`、`content_blocks` 和 `inline_drafts`，提交给 `/api/v1/publish-tasks`。
+8. `TaskView` 轮询任务状态，支持 `refresh`（刷新）和 `draft → publish`（草稿发布）操作。
+9. `AccountView` 管理平台账号连接：公众号扫码、B站验证码登录、连接测试、密钥查看与删除。
+10. `api/client.ts` 约 600 行 TypeScript，集中管理全部 17 个 API 调用函数和类型定义。
 
 更细的字段来源见 [发布字段映射](./publish-field-mapping.md)。

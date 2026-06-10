@@ -6,6 +6,7 @@
 
 - `POST /api/v1/content/normalize`：将用户输入标准化为内容 IR，不落库。
 - `POST /api/v1/content/adapt`：生成多平台草稿和校验报告，不落库。
+- `POST /api/v1/content/import`：上传 .md / .txt / .docx 文档，后端解析后调用 LLM 提取标题、正文、标签、摘要、内容类型和媒体资源位置，返回可直接填入前端编辑器的结构化内容。
 - `GET /api/v1/content/platforms`：列出当前支持的平台。
 
 请求字段：
@@ -124,6 +125,16 @@
 - `recommendations`
 
 当前工具编排使用内置工具注册表模拟 MCP 调用规范；当 `use_llm=auto/enabled` 且环境变量中存在可用 `OPENAI_API_KEY` 时，可以尝试 LLM 增强，失败时回退到规则结果。工具编排不自动执行真实发布，真实发布仍需要用户基于 `preview_id` 进入发布确认流程。
+
+- `GET /api/v1/agent-runs/llm-health`：LLM 连通性健康检查。测试配置的 LLM API 端点可达性，返回 `configured`、`model`、`endpoint`、`reachable` 和 `message`。未配置 API key 时自动返回规则引擎提示。
+
+## 素材
+
+- `POST /api/v1/assets`：上传发布素材到后端本地存储，返回 `asset_id` 供预览和发布任务引用。支持 `asset_type`（image / video / file）和 `purpose`（cover / body_image / video）。
+
+## 内容分析
+
+- `POST /api/v1/analysis/content`：分析正文内容结构，返回章节划分（Markdown h1/h2/h3）、媒体识别、摘要和字数统计。当前阶段使用规则引擎，不调用外部 AI。
 
 ## 账号
 
