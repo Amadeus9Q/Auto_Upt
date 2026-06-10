@@ -168,12 +168,10 @@ function parseBodySegments(draft: PlatformDraft | null): BodySegment[] {
 
   const lines = draft.body.split("\n");
   const segments: BodySegment[] = [];
-  const summary = draft.summary?.trim();
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (summary && normalizeText(trimmed) === normalizeText(summary)) continue;
 
     const match = trimmed.match(ASSET_MARKER_RE);
     if (match) {
@@ -196,7 +194,6 @@ function parseStructuredBodySegments(draft: PlatformDraft, allAssets: DraftAsset
   if (!Array.isArray(blocks) || !blocks.length) return [];
 
   const segments: BodySegment[] = [];
-  const summary = draft.summary?.trim();
 
   for (const rawBlock of blocks) {
     if (!rawBlock || typeof rawBlock !== "object") continue;
@@ -212,7 +209,6 @@ function parseStructuredBodySegments(draft: PlatformDraft, allAssets: DraftAsset
     }
 
     if ((type === "paragraph" || type === "text" || type === "quote" || type === "conclusion") && text) {
-      if (summary && normalizeText(text) === normalizeText(summary)) continue;
       if (isLikelyHeading(text)) {
         segments.push(parseHeadingSegment(text));
       } else {

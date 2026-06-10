@@ -41,8 +41,8 @@ PLATFORM_DEFAULT_WRITING_STYLE_GUIDANCE: dict[str, str] = {
         "微信公众号平台风格指导：\n"
         "- 尽量保留原文的写作风格和整体结构，不要随意改变作者的表达方式。\n"
         "- 适合长文深度阅读，正文结构清晰，层次分明。\n"
-        "- 导语简短有力，能吸引读者继续阅读。\n"
-        "- 结尾可适当加入引导关注或互动话术，但不要喧宾夺主。\n"
+        "- 按原文自然段和自然章节组织内容，不要默认添加导语、正文、结语、关注我们等模板化小标题。\n"
+        "- 不要默认追加关注、点赞、在看、转发或关注 Auto_Upt 等运营话术。\n"
         "- 语言正式但不死板，保持专业调性。"
     ),
     "zhihu": (
@@ -587,29 +587,47 @@ class ToolDrivenAgentOrchestrator:
         cleaned: list[str] = []
         seen_recent_blocks: set[str] = set()
         structural_headings_seen: set[str] = set()
-        previous_non_empty = ""
+        previous_non_empty_key = ""
         boilerplate = "以上内容可作为发布前的结构化草稿，建议结合平台规则继续微调。"
+        template_headings = {"导语", "正文", "结语", "关注我们"}
+        boilerplate_patterns = (
+            r"关注[「\"“]?Auto_Upt",
+            r"获取更多优质内容",
+            r"点赞.*在看.*转发",
+            r"如果觉得这篇文章对你有帮助",
+        )
+
+        def heading_label(value: str) -> str:
+            label = value.strip().strip("*_` ")
+            label = label.lstrip("#>*- ").strip()
+            label = re.sub(r"^[^\u4e00-\u9fffA-Za-z0-9]+", "", label)
+            label = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+$", "", label)
+            return label.strip()
 
         for line in lines:
             stripped = line.strip()
             if stripped == boilerplate:
                 continue
+            if any(re.search(pattern, stripped) for pattern in boilerplate_patterns):
+                continue
             if ToolDrivenAgentOrchestrator._match_label_line(stripped):
                 continue
-            if stripped in {"导语", "正文", "结语"}:
-                if stripped in structural_headings_seen:
+            label = heading_label(stripped)
+            if label in template_headings:
+                if label in structural_headings_seen:
                     continue
-                structural_headings_seen.add(stripped)
-            if stripped in {"导语", "正文", "结语", "总结"} and stripped == previous_non_empty:
+                structural_headings_seen.add(label)
                 continue
             if stripped:
                 normalized_key = re.sub(r"\s+", "", stripped)
+                if normalized_key and normalized_key == previous_non_empty_key:
+                    continue
                 if len(normalized_key) > 20 and normalized_key in seen_recent_blocks:
                     continue
                 seen_recent_blocks.add(normalized_key)
                 if len(seen_recent_blocks) > 80:
                     seen_recent_blocks = set(list(seen_recent_blocks)[-40:])
-                previous_non_empty = stripped
+                previous_non_empty_key = normalized_key
             cleaned.append(line.rstrip())
 
         text = "\n".join(cleaned).strip()

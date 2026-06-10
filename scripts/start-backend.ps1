@@ -1,7 +1,7 @@
 param(
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8000,
-    [string]$PythonPath = "C:\Users\17325\.conda\envs\auto_upt\python.exe",
+    [string]$PythonPath = "",
     [switch]$Reload,
     [switch]$Foreground
 )
@@ -13,9 +13,9 @@ $PidFile = Join-Path $LogDir "backend.pid"
 $OutLog = Join-Path $LogDir "backend.out.log"
 $ErrLog = Join-Path $LogDir "backend.err.log"
 
-if (-not (Test-Path $PythonPath)) {
-    throw "Python executable not found: $PythonPath"
-}
+. (Join-Path $PSScriptRoot "load-env.ps1")
+$PythonPath = Resolve-AutoUptPythonPath -PythonPath $PythonPath -RepoRoot $RepoRoot
+$PythonPath = Resolve-AutoUptExecutablePath -ExecutablePath $PythonPath -DisplayName "Python"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
