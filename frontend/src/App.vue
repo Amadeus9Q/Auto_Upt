@@ -62,8 +62,6 @@ type AgentOptimizeOptions = {
 
 const activeTab = ref<WorkspaceTab>("preview");
 const activeContentStage = ref<ContentWorkflowStage>(1);
-const furthestContentStage = ref<ContentWorkflowStage>(1);
-const generatedSourceSignature = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 const title = ref("");
 const content = ref("");
@@ -139,29 +137,15 @@ const contentWorkflowSteps: Array<{ stage: ContentWorkflowStage; title: string; 
 ];
 
 const editorWorkflowStage = computed<1 | 2>(() => Math.min(activeContentStage.value, 2) as 1 | 2);
-const contentSourceSignature = computed(() => JSON.stringify({
-  title: title.value,
-  content: content.value,
-  tags: tags.value,
-  platforms: [...selectedPlatforms.value].sort(),
-  coverImageId: editorAssets.value.coverImageId,
-  assets: allAssets.value.map((asset) => ({
-    id: asset.id,
-    name: asset.name,
-    size: asset.size,
-    folderId: asset.folderId ?? null
-  })),
-  folders: mediaFolders.value.map((folder) => ({
-    id: folder.id,
-    name: folder.name,
-    parentId: folder.parentId ?? null
-  }))
-}));
-const sourceMatchesGeneratedPreview = computed(
-  () => Boolean(preview.value && generatedSourceSignature.value === contentSourceSignature.value)
-);
+function hasDraftContent(draft?: DraftPayload | null) {
+  return Boolean(draft?.title?.trim() || draft?.body?.trim() || (draft?.tags?.length ?? 0) > 0);
+}
+const hasGeneratedDraft = computed(() => {
+  const platformDrafts = preview.value?.drafts ?? {};
+  return Object.values(platformDrafts).some((draft) => hasDraftContent(draft));
+});
 const availableContentStage = computed<ContentWorkflowStage>(
-  () => sourceMatchesGeneratedPreview.value ? furthestContentStage.value : 1
+  () => hasGeneratedDraft.value ? 3 : 1
 );
 
 const validationReport = computed(() => preview.value?.validation_report ?? {});
@@ -233,16 +217,6 @@ const taskSteps = computed<TaskStep[]>(() => {
     { name: middleStep, state: "finish" },
     { name: finalStep, state: "finish" }
   ];
-});
-
-watch(title, (nextTitle) => {
-  publishForms.value.bilibili.title = nextTitle;
-  publishForms.value.wechat.title = nextTitle;
-  publishForms.value.xiaohongshu.title = nextTitle;
-});
-
-watch(tags, (nextTags) => {
-  publishForms.value.bilibili.tags = nextTags;
 });
 
 const { readAll: readStoredAssets, writeAll: writeStoredAssets } = useIndexedDB<StoredAssetRecord>(
@@ -655,19 +629,15 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
-function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+function buildPlatformOptions(platforms: PlatformKey[], forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
     const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
-      title: unified
-        ? forms.wechat.title.trim() || title.value.trim()
-        : forms.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      title: forms.wechat.title.trim() || wechatDraft?.title || "",
       author: forms.wechat.author.trim(),
-      digest: unified
-        ? forms.wechat.summary.trim()
-        : forms.wechat.summary.trim() || wechatDraft?.summary || "",
+      digest: forms.wechat.summary.trim() || wechatDraft?.summary || wechatDraft?.body?.slice(0, 120) || "",
       content_source_url: forms.wechat.contentSourceUrl.trim(),
       need_open_comment: forms.wechat.needOpenComment,
       only_fans_can_comment: forms.wechat.needOpenComment && forms.wechat.onlyFansCanComment,
@@ -678,12 +648,8 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
   if (platforms.includes("bilibili")) {
     const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
-      title: unified
-        ? forms.bilibili.title.trim() || title.value.trim()
-        : forms.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
-      description: unified
-        ? forms.bilibili.description.trim()
-        : forms.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      title: forms.bilibili.title.trim() || bilibiliDraft?.title || "",
+      description: forms.bilibili.description.trim() || bilibiliDraft?.body || "",
       tags: parseTagText(forms.bilibili.tags).length
         ? parseTagText(forms.bilibili.tags)
         : bilibiliDraft?.tags ?? [],
@@ -698,12 +664,8 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
   if (platforms.includes("xiaohongshu")) {
     const xhsDraft = preview.value?.drafts.xiaohongshu;
     platformOptions.xiaohongshu = {
-      title: unified
-        ? forms.xiaohongshu.title.trim() || title.value.trim()
-        : forms.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
-      content: unified
-        ? forms.xiaohongshu.content.trim()
-        : forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
+      title: forms.xiaohongshu.title.trim() || xhsDraft?.title || "",
+      content: forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
     };
   }
 
@@ -712,10 +674,10 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
 
 async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
-    throw new Error("请先生成内容预览。");
+    throw new Error("请先生成草稿。");
   }
 
-  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings, payload.forms);
+  const platformOptions = buildPlatformOptions(payload.platforms, payload.forms);
 
   if (payload.mode === "simulate") {
     return {
@@ -930,12 +892,10 @@ async function generatePreview() {
       }
     }
 
-    ElMessage.success("预览已生成。");
-    generatedSourceSignature.value = contentSourceSignature.value;
-    furthestContentStage.value = 2;
+    ElMessage.success("草稿已生成。");
     activeContentStage.value = 2;
   } catch (error) {
-    errorMessage.value = getErrorMessage(error, "预览生成失败，请稍后重试。");
+    errorMessage.value = getErrorMessage(error, "草稿生成失败，请稍后重试。");
     ElMessage.error(errorMessage.value);
   } finally {
     previewLoading.value = false;
@@ -1070,23 +1030,18 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
 }
 
 function enterPublishConfirm() {
-  if (!preview.value) {
-    ElMessage.warning("请先生成预览。");
-    return;
-  }
-  if (!sourceMatchesGeneratedPreview.value) {
-    ElMessage.warning("统一内容或平台选择已修改，请重新生成预览后再进入发布确认。");
+  if (!hasGeneratedDraft.value) {
+    ElMessage.warning("请先生成草稿。");
     return;
   }
   previewDialogVisible.value = false;
   activeTab.value = "preview";
-  furthestContentStage.value = 3;
   activeContentStage.value = 3;
 }
 
 async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }) {
-  if (!preview.value) {
-    ElMessage.warning("请先生成预览。");
+  if (!preview.value || !hasGeneratedDraft.value) {
+    ElMessage.warning("请先生成草稿。");
     return;
   }
 
@@ -1140,17 +1095,13 @@ function selectContentStage(stage: ContentWorkflowStage) {
       return;
     }
     if (stage === 3) {
-      ElMessage.warning(
-        sourceMatchesGeneratedPreview.value
-          ? "请点击编辑所选平台页面底部的“进入发布确认”按钮首次进入发布确认。"
-          : "统一内容或平台选择已修改，请重新生成预览后再进入发布确认。"
-      );
+      ElMessage.warning("请先生成草稿。");
       return;
     }
     ElMessage.warning(
-      !sourceMatchesGeneratedPreview.value && Boolean(preview.value)
-        ? "统一内容或平台选择已修改，请重新生成预览后再返回后续流程。"
-        : "请点击“选择生成平台”区域右侧的“生成预览”按钮进入编辑所选平台。"
+      hasGeneratedDraft.value
+        ? "请先进入编辑所选平台。"
+        : "请点击“选择生成平台”区域右侧的“生成草稿”按钮进入编辑所选平台。"
     );
     return;
   }
@@ -1292,7 +1243,6 @@ onMounted(async () => {
           :loading="taskLoading"
           :validation-report="validationReport"
           :assets="editorAssets"
-          :editor-title="title"
           :platform-drafts="preview?.drafts"
           @back="activeContentStage = 2"
           @submit="submitPublish"
