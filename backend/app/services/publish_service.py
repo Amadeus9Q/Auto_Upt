@@ -49,6 +49,7 @@ class PublishService:
             return await self._create_simulation_task(drafts, content_ir, request, platforms)
 
         self._validate_real_publish_request(request, platforms)
+        await self._validate_real_publish_accounts(request, platforms)
         task = PublishTaskRecord(
             preview_id=preview_id,
             mode=request.mode,
@@ -509,6 +510,68 @@ class PublishService:
                 f"Unsupported: {', '.join(unsupported)}."
             )
 
+    async def _validate_real_publish_accounts(
+        self,
+        request: PublishTaskCreateRequest,
+        platforms: list[str],
+    ) -> None:
+        account_service = AccountService(self.session)
+        for platform in platforms:
+            account = await self._resolve_publish_account(platform, request.account_ids.get(platform))
+            credentials = await self._resolve_credentials(account, account_service)
+            self._validate_account_credentials(platform, credentials)
+
+    async def _resolve_publish_account(
+        self,
+        platform: str,
+        account_id: str | None,
+    ) -> ConnectedAccountRecord:
+        if account_id:
+            account = await self.session.get(ConnectedAccountRecord, account_id)
+            if account is None:
+                raise PlatformClientError(
+                    f"Account {account_id} not found.",
+                    platform_code="ACCOUNT_NOT_FOUND",
+                    next_action="请刷新账号列表，重新选择已连接账号后再提交发布任务。",
+                )
+            if account.platform != platform:
+                raise PlatformClientError(
+                    f"Account {account_id} does not belong to {platform}.",
+                    platform_code="ACCOUNT_PLATFORM_MISMATCH",
+                    next_action="请重新选择与发布平台匹配的账号。",
+                )
+            if account.status != "connected":
+                raise PlatformClientError(
+                    f"{platform} account is not connected.",
+                    platform_code="ACCOUNT_NOT_CONNECTED",
+                    next_action=f"请先在账号管理中重新连接 {platform} 账号。",
+                )
+            return account
+
+        account = await self._default_account_for_platform(platform)
+        if account is None:
+            raise PlatformClientError(
+                f"No connected account found for {platform}. Please connect an account first.",
+                platform_code="ACCOUNT_REQUIRED",
+                next_action=f"请先在账号管理中连接 {platform} 账号，然后再提交草稿或真实发布任务。",
+            )
+        return account
+
+    @staticmethod
+    def _validate_account_credentials(platform: str, credentials: dict[str, Any]) -> None:
+        if platform == "wechat" and (not credentials.get("app_id") or not credentials.get("app_secret")):
+            raise PlatformClientError(
+                "公众号账号凭据不完整，无法执行草稿或真实发布。",
+                platform_code="WECHAT_CREDENTIALS_MISSING",
+                next_action="请在账号管理中重新连接公众号账号。",
+            )
+        if platform == "bilibili" and (not credentials.get("SESSDATA") or not credentials.get("bili_jct")):
+            raise PlatformClientError(
+                "B站登录凭据不完整或已失效，无法执行草稿或真实发布。",
+                platform_code="BILIBILI_CREDENTIALS_MISSING",
+                next_action="请在账号管理中重新完成 B站 登录。",
+            )
+
     @staticmethod
     def _enqueue_real_publish(task_id: str) -> bool:
         try:
@@ -529,28 +592,10 @@ class PublishService:
         draft: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         account_id = task.account_ids.get(platform) if task.account_ids else None
-
-        # ---- 自动查找平台默认账号。公众号只使用账号管理中标记 active 的账号。----
-        if not account_id:
-            account = await self._default_account_for_platform(platform)
-            if account is None:
-                raise PlatformClientError(
-                    f"No connected account found for {platform}. Please connect an account first.",
-                    platform_code="ACCOUNT_REQUIRED",
-                    next_action=f"请先在「账号管理」中连接 {platform} 账号。",
-                )
-            account_id = account.id
-        else:
-            account = await self.session.get(ConnectedAccountRecord, account_id)
-            if account is None:
-                raise PlatformClientError(
-                    f"Account {account_id} not found.",
-                    platform_code="ACCOUNT_NOT_FOUND",
-                    next_action="请重新连接账号并选择正确的 account_id。",
-                )
-
+        account = await self._resolve_publish_account(platform, account_id)
         account_service = AccountService(self.session)
         credentials = await self._resolve_credentials(account, account_service)
+        self._validate_account_credentials(platform, credentials)
 
         # ---- 合并显式 asset_ids + 从 content_ir 自动发现的正文图片 ----
         explicit_ids = list(task.asset_ids.get(platform, []) if task.asset_ids else [])
@@ -676,8 +721,16 @@ class PublishService:
                 "Connected account not found.",
                 platform_code="ACCOUNT_NOT_FOUND",
             )
+        if account.status != "connected":
+            raise PlatformClientError(
+                f"{publication.platform} account is not connected.",
+                platform_code="ACCOUNT_NOT_CONNECTED",
+                next_action=f"请先在账号管理中重新连接 {publication.platform} 账号。",
+            )
         account_service = AccountService(self.session)
-        return await self._resolve_credentials(account, account_service)
+        credentials = await self._resolve_credentials(account, account_service)
+        self._validate_account_credentials(publication.platform, credentials)
+        return credentials
 
     async def _resolve_credentials(
         self,
