@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
-import { ElMessage, type FormInstance, type FormRules } from "element-plus";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "element-plus";
 import {
+  ArrowDown,
   ChatDotRound,
   Close,
   CircleCheck,
@@ -38,12 +39,18 @@ const props = withDefaults(defineProps<{
   autoOpenConfig?: boolean;
   compact?: boolean;
   configurationOnly?: boolean;
+  initialAccounts?: AccountConnection[];
 }>(), {
   focusedPlatform: null,
   autoOpenConfig: false,
   compact: false,
-  configurationOnly: false
+  configurationOnly: false,
+  initialAccounts: () => []
 });
+
+const emit = defineEmits<{
+  accountUpdated: [account: AccountConnection];
+}>();
 
 interface GeetestValidation {
   geetest_challenge: string;
@@ -86,10 +93,12 @@ const bilibiliCaptchaInstance = ref<GeetestInstance | null>(null);
 const loadingAction = ref<string>("");
 const loadError = ref("");
 const wechatSavedCredentials = ref<SavedCredentialOption[]>([]);
+const wechatSelectVersion = ref(0);
 const wechatConfigVisible = ref(false);
 const bilibiliConfigVisible = ref(false);
 
 let geetestScriptPromise: Promise<void> | null = null;
+let accountStateVersion = 0;
 
 const wechatForm = reactive<WechatConnectPayload>({
   app_id: "",
@@ -169,6 +178,7 @@ const platforms = reactive<PlatformConfig[]>([
 ]);
 
 const isBusy = computed(() => Boolean(loadingAction.value));
+const wechatCredentialOptions = computed(() => [...wechatSavedCredentials.value]);
 const visiblePlatforms = computed(() =>
   props.focusedPlatform
     ? platforms.filter((platform) => platform.key === props.focusedPlatform)
@@ -244,10 +254,11 @@ function findWechatCredential(appId: string) {
 
 function queryWechatCredentials(query: string, callback: (items: SavedCredentialOption[]) => void) {
   const normalizedQuery = query.trim().toLowerCase();
-  const options = normalizedQuery
-    ? wechatSavedCredentials.value.filter((item) => item.app_id.toLowerCase().includes(normalizedQuery))
-    : wechatSavedCredentials.value;
-  callback(options);
+  callback(
+    normalizedQuery
+      ? wechatCredentialOptions.value.filter((item) => item.app_id.toLowerCase().includes(normalizedQuery))
+      : wechatCredentialOptions.value
+  );
 }
 
 async function selectWechatCredential(option: SavedCredentialOption) {
@@ -271,17 +282,27 @@ async function selectWechatCredential(option: SavedCredentialOption) {
 }
 
 function clearWechatCredentialSelection() {
+  wechatForm.app_id = "";
+  detachWechatCredential();
+  void nextTick(() => {
+    wechatSelectVersion.value += 1;
+  });
+}
+
+function detachWechatCredential() {
   wechatForm.account_id = null;
   wechatForm.app_secret = "";
+  void wechatFormRef.value?.clearValidate?.();
 }
 
 function handleWechatAppIdInput(value: string) {
+  wechatForm.app_id = value;
   const option = findWechatCredential(value);
   if (option) {
     void selectWechatCredential(option);
     return;
   }
-  clearWechatCredentialSelection();
+  detachWechatCredential();
 }
 
 function handleWechatAppIdBlur() {
@@ -331,6 +352,16 @@ function applyAccounts(accounts: AccountConnection[]) {
     }
   }
 }
+
+watch(
+  () => props.initialAccounts,
+  (accounts) => {
+    if (accounts.length) {
+      applyAccounts(accounts);
+    }
+  },
+  { immediate: true }
+);
 
 function resetBilibiliCaptcha() {
   bilibiliCaptchaInstance.value = null;
@@ -431,11 +462,15 @@ async function initializeBilibiliCaptcha() {
 }
 
 async function refreshAccounts(showToast = false) {
+  const requestedAtVersion = accountStateVersion;
   loadingAction.value = "refresh";
   loadError.value = "";
 
   try {
     const accounts = await getAccounts();
+    if (requestedAtVersion !== accountStateVersion) {
+      return;
+    }
     applyAccounts(accounts);
     if (showToast) {
       ElMessage.success("账号状态已刷新");
@@ -446,7 +481,9 @@ async function refreshAccounts(showToast = false) {
       ElMessage.error("暂时无法读取账号状态");
     }
   } finally {
-    loadingAction.value = "";
+    if (loadingAction.value === "refresh") {
+      loadingAction.value = "";
+    }
   }
 }
 
@@ -470,7 +507,9 @@ async function connectWechat() {
       app_secret: appSecret || null,
       account_id: wechatForm.account_id ?? null
     });
+    accountStateVersion += 1;
     applyAccounts([account]);
+    emit("accountUpdated", account);
     ElMessage.success("公众号登录成功");
   } catch (error) {
     const platform = platformByKey("wechat");
@@ -523,7 +562,9 @@ async function connectBilibili() {
       seccode: bilibiliForm.seccode
     });
     const platform = platformByKey("bilibili");
+    accountStateVersion += 1;
     applyAccounts([result.account]);
+    emit("accountUpdated", result.account);
     if (platform) {
       platform.loginResult = result.message;
       platform.note = result.message;
@@ -556,7 +597,9 @@ async function testConnection(platformKey: SupportedPlatform) {
 
   try {
     const result = await testAccountConnection(platformKey);
+    accountStateVersion += 1;
     applyAccounts([result.account]);
+    emit("accountUpdated", result.account);
     const platform = platformByKey(platformKey);
     if (platform) {
       platform.status = result.ok ? "connected" : "error";
@@ -586,7 +629,9 @@ async function disconnect(platformKey: SupportedPlatform) {
   loadingAction.value = `${platformKey}-disconnect`;
 
   try {
-    await deleteAccount(accountId);
+    const account = await deleteAccount(accountId);
+    accountStateVersion += 1;
+    emit("accountUpdated", account);
     platform.account = undefined;
     platform.status = "disconnected";
     platform.note = platformKey === "bilibili" ? "等待登录" : "尚未连接";
@@ -610,9 +655,25 @@ async function deleteWechatCredential(credential: SavedCredentialOption, event: 
   event.preventDefault();
   event.stopPropagation();
 
+  try {
+    await ElMessageBox.confirm(
+      `确认清除已保存的公众号账号记录 ${credential.app_id}？清除后需要重新输入 AppSecret 才能再次使用。`,
+      "清除账号记录",
+      {
+        confirmButtonText: "确认清除",
+        cancelButtonText: "取消",
+        type: "warning"
+      }
+    );
+  } catch {
+    return;
+  }
+
   loadingAction.value = `wechat-delete-${credential.account_id}`;
   try {
-    await deleteAccount(credential.account_id);
+    const account = await deleteAccount(credential.account_id);
+    accountStateVersion += 1;
+    emit("accountUpdated", account);
     wechatSavedCredentials.value = wechatSavedCredentials.value.filter((item) => item.account_id !== credential.account_id);
     const platform = platformByKey("wechat");
     const deletedActive = credential.is_active || platform?.account?.account_id === credential.account_id;
@@ -677,6 +738,7 @@ onMounted(async () => {
       >
         <el-form-item label="AppID" prop="app_id">
           <el-autocomplete
+            :key="`direct-wechat-select-${wechatSelectVersion}`"
             v-model="wechatForm.app_id"
             clearable
             value-key="app_id"
@@ -687,6 +749,9 @@ onMounted(async () => {
             @blur="handleWechatAppIdBlur"
             @clear="clearWechatCredentialSelection"
           >
+            <template #suffix>
+              <el-icon class="credential-dropdown-icon"><ArrowDown /></el-icon>
+            </template>
             <template #default="{ item: credential }">
               <div class="credential-option">
                 <span>{{ credential.app_id }}</span>
@@ -696,6 +761,8 @@ onMounted(async () => {
                   circle
                   :icon="Close"
                   :loading="loadingAction === `wechat-delete-${credential.account_id}`"
+                  aria-label="清除已保存账号记录"
+                  title="清除已保存账号记录"
                   @click="deleteWechatCredential(credential, $event)"
                 />
               </div>
@@ -827,6 +894,7 @@ onMounted(async () => {
               </div>
               <el-form-item label="AppID" prop="app_id">
                 <el-autocomplete
+                  :key="`account-wechat-select-${wechatSelectVersion}`"
                   v-model="wechatForm.app_id"
                   clearable
                   value-key="app_id"
@@ -837,6 +905,9 @@ onMounted(async () => {
                   @blur="handleWechatAppIdBlur"
                   @clear="clearWechatCredentialSelection"
                 >
+                  <template #suffix>
+                    <el-icon class="credential-dropdown-icon"><ArrowDown /></el-icon>
+                  </template>
                   <template #default="{ item: credential }">
                     <div class="credential-option">
                       <span>{{ credential.app_id }}</span>
@@ -846,6 +917,8 @@ onMounted(async () => {
                         circle
                         :icon="Close"
                         :loading="loadingAction === `wechat-delete-${credential.account_id}`"
+                        aria-label="清除已保存账号记录"
+                        title="清除已保存账号记录"
                         @click="deleteWechatCredential(credential, $event)"
                       />
                     </div>
@@ -1132,6 +1205,10 @@ onMounted(async () => {
 .credential-delete {
   flex: 0 0 auto;
   color: #607086;
+}
+
+.credential-dropdown-icon {
+  color: #8492a6;
 }
 
 .captcha-panel,
