@@ -48,7 +48,14 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173",
         ]
     )
-    cors_origin_regex: str = r"^http://(localhost|127\.0\.0\.1):517[3-9]$"
+    cors_origin_regex: str = (
+        r"^http://("
+        r"localhost|127\.0\.0\.1|\[::1\]|"
+        r"10(?:\.\d{1,3}){3}|"
+        r"192\.168(?:\.\d{1,3}){2}|"
+        r"172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}"
+        r"):\d+$"
+    )
     sql_echo: bool = False
 
     model_config = SettingsConfigDict(
