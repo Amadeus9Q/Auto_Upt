@@ -26,7 +26,7 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
         "tone": "保留原始风格，专业深度长文，结构化表达",
         "supported_media": ["image"],
         "template": "article",
-        "structure_hint": "导语 + 正文（按章节展开）+ 结尾引导关注。尽量保留原文风格和结构。",
+        "structure_hint": "正文按原文段落和自然章节展开，不额外包裹导语或关注引导。",
         "media_sizing": {
             "image": {
                 "cover": {"width": 900, "height": 383, "ratio": "2.35:1", "note": "公众号封面图，建议 ≤2MB。"},
@@ -40,9 +40,9 @@ PLATFORM_STYLES: dict[str, dict[str, Any]] = {
             },
         },
         "style_notes": [
-            "使用清晰的导语引导读者进入正文。",
+            "保留原文正文段落和自然章节。",
             "每个章节之间可用分隔线或插图过渡。",
-            "正文末尾添加引导关注或互动话术。",
+            "不要默认追加关注、点赞、在看、转发等运营话术。",
             "避免过于营销化的用词，保持内容调性。",
         ],
     },
@@ -317,11 +317,11 @@ class PlatformStylistAgent:
         """构建长文风格的章节内容列表。"""
         sections: list[dict[str, Any]] = []
 
-        # 导语
-        if analysis.subtitle or analysis.summary:
+        # 非公众号平台可补充引言；公众号正文不自动添加导语包装。
+        if platform != "wechat" and (analysis.subtitle or analysis.summary):
             sections.append(
                 {
-                    "heading": "📖 导语" if platform == "wechat" else "引言",
+                    "heading": "引言",
                     "paragraphs": [analysis.subtitle or analysis.summary],
                     "media_hints": [],
                     "platform_hints": [],
@@ -370,19 +370,7 @@ class PlatformStylistAgent:
             )
 
         # 结尾引导
-        if platform == "wechat":
-            sections.append(
-                {
-                    "heading": "📢 关注我们",
-                    "paragraphs": [
-                        "如果觉得这篇文章对你有帮助，欢迎点赞、在看、转发支持我们！",
-                        "关注「Auto_Upt」，获取更多优质内容。",
-                    ],
-                    "media_hints": [],
-                    "platform_hints": ["此处可放置公众号二维码图片。"],
-                }
-            )
-        elif platform == "zhihu":
+        if platform == "zhihu":
             sections.append(
                 {
                     "heading": "总结",
@@ -577,12 +565,29 @@ class PlatformStylistAgent:
     ) -> str:
         """将结构化章节展开为纯文本正文。"""
         lines: list[str] = []
+        previous_key = ""
+
+        def normalized_line(value: str) -> str:
+            return re.sub(r"\s+", "", value.strip().lstrip("#").strip())
+
+        def append_line(value: str) -> None:
+            nonlocal previous_key
+            text = value.strip()
+            if not text:
+                return
+            key = normalized_line(text)
+            if key and key == previous_key:
+                return
+            lines.append(text)
+            previous_key = key
+
         for sec in sections:
             heading = sec.get("heading", "")
-            if heading:
-                lines.append(heading)
-            for p in sec.get("paragraphs", []):
-                lines.append(p)
+            paragraphs = [str(p).strip() for p in sec.get("paragraphs", []) if str(p).strip()]
+            if heading and (not paragraphs or normalized_line(heading) != normalized_line(paragraphs[0])):
+                append_line(heading)
+            for p in paragraphs:
+                append_line(p)
             lines.append("")  # 空行分隔
         body = "\n".join(lines).strip()
         max_len = style.get("body_max_length", 0 if style.get("template") == "social" else 20000)

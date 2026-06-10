@@ -15,7 +15,6 @@ const props = defineProps<{
   loading: boolean;
   validationReport: Partial<Record<PlatformKey, ValidationIssue[]>>;
   assets: EditorAssets;
-  editorTitle: string;
   platformDrafts?: Record<string, { title?: string; body?: string; summary?: string }>;
 }>();
 
@@ -27,14 +26,29 @@ const emit = defineEmits<{
 const publishForms = defineModel<PublishForms>("publishForms", { required: true });
 const useUnifiedSettings = ref(true);
 
+type ConfirmPlatformDraft = { title?: string; body?: string; summary?: string };
+
+function draftFor(platform: PlatformKey): ConfirmPlatformDraft | undefined {
+  return props.platformDrafts?.[platform];
+}
+
+function normalizedText(value?: string) {
+  return value?.trim() ?? "";
+}
+
+function draftTitle(platform: PlatformKey) {
+  return normalizedText(draftFor(platform)?.title);
+}
+
+function draftSummary(platform: PlatformKey) {
+  const draft = draftFor(platform);
+  return normalizedText(draft?.summary) || normalizedText(draft?.body?.slice(0, 120));
+}
+
 // ---- 全局字段（独立状态，同步至各平台） ----
-// 统一配置下默认值来自编辑页标题；独立配置下各平台默认值来自 Agent 输出
-const globalTitle = ref(props.editorTitle);
-const globalSummary = ref(
-  props.platformDrafts?.wechat?.summary
-  || props.platformDrafts?.bilibili?.body?.slice(0, 120)
-  || ""
-);
+// 统一配置留空时使用各平台草稿兜底；独立配置默认值来自对应平台草稿。
+const globalTitle = ref("");
+const globalSummary = ref("");
 
 function cloneForms(forms: PublishForms): PublishForms {
   return {
@@ -71,8 +85,16 @@ const confirmPublishUnavailableReason = computed(() =>
   selectedConfirmPlatforms.value.length ? "" : "请先选择一个已连接的平台"
 );
 const commonMissing = computed(() => [
-  ...(!globalTitle.value.trim() ? ["标题"] : []),
-  ...(!globalSummary.value.trim() ? ["摘要/简介"] : []),
+  ...(
+    !globalTitle.value.trim() && selectedConfirmPlatforms.value.some((platform) => !draftTitle(platform))
+      ? ["标题"]
+      : []
+  ),
+  ...(
+    !globalSummary.value.trim() && selectedConfirmPlatforms.value.some((platform) => !draftSummary(platform))
+      ? ["摘要/简介"]
+      : []
+  ),
   ...(!coverImage.value ? ["封面图片"] : [])
 ]);
 
@@ -329,7 +351,7 @@ function submit() {
                 v-model="globalTitle"
                 maxlength="64"
                 show-word-limit
-                placeholder="发布时显示的文章标题"
+                placeholder="留空则使用各平台草稿标题"
               />
             </el-form-item>
             <el-form-item label="全局摘要 / 简介">
@@ -340,7 +362,7 @@ function submit() {
                 resize="none"
                 maxlength="120"
                 show-word-limit
-                placeholder="发布时显示的文章摘要或视频简介"
+                placeholder="留空则使用各平台草稿摘要或正文"
               />
             </el-form-item>
 

@@ -62,8 +62,6 @@ type AgentOptimizeOptions = {
 
 const activeTab = ref<WorkspaceTab>("preview");
 const activeContentStage = ref<ContentWorkflowStage>(1);
-const furthestContentStage = ref<ContentWorkflowStage>(1);
-const generatedSourceSignature = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 const title = ref("");
 const content = ref("");
@@ -139,29 +137,15 @@ const contentWorkflowSteps: Array<{ stage: ContentWorkflowStage; title: string; 
 ];
 
 const editorWorkflowStage = computed<1 | 2>(() => Math.min(activeContentStage.value, 2) as 1 | 2);
-const contentSourceSignature = computed(() => JSON.stringify({
-  title: title.value,
-  content: content.value,
-  tags: tags.value,
-  platforms: [...selectedPlatforms.value].sort(),
-  coverImageId: editorAssets.value.coverImageId,
-  assets: allAssets.value.map((asset) => ({
-    id: asset.id,
-    name: asset.name,
-    size: asset.size,
-    folderId: asset.folderId ?? null
-  })),
-  folders: mediaFolders.value.map((folder) => ({
-    id: folder.id,
-    name: folder.name,
-    parentId: folder.parentId ?? null
-  }))
-}));
-const sourceMatchesGeneratedPreview = computed(
-  () => Boolean(preview.value && generatedSourceSignature.value === contentSourceSignature.value)
-);
+function hasDraftContent(draft?: DraftPayload | null) {
+  return Boolean(draft?.title?.trim() || draft?.body?.trim() || (draft?.tags?.length ?? 0) > 0);
+}
+const hasGeneratedDraft = computed(() => {
+  const platformDrafts = preview.value?.drafts ?? {};
+  return Object.values(platformDrafts).some((draft) => hasDraftContent(draft));
+});
 const availableContentStage = computed<ContentWorkflowStage>(
-  () => sourceMatchesGeneratedPreview.value ? furthestContentStage.value : 1
+  () => hasGeneratedDraft.value ? 3 : 1
 );
 
 const validationReport = computed(() => preview.value?.validation_report ?? {});
@@ -235,16 +219,6 @@ const taskSteps = computed<TaskStep[]>(() => {
   ];
 });
 
-watch(title, (nextTitle) => {
-  publishForms.value.bilibili.title = nextTitle;
-  publishForms.value.wechat.title = nextTitle;
-  publishForms.value.xiaohongshu.title = nextTitle;
-});
-
-watch(tags, (nextTags) => {
-  publishForms.value.bilibili.tags = nextTags;
-});
-
 const { readAll: readStoredAssets, writeAll: writeStoredAssets } = useIndexedDB<StoredAssetRecord>(
   STORAGE_KEYS.MEDIA_LIBRARY_DB,
   STORAGE_KEYS.MEDIA_LIBRARY_STORE
@@ -273,6 +247,7 @@ function assetsToStoredRecords(): StoredAssetRecord[] {
 }
 
 async function hydrateMediaLibrary() {
+  localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
   const storedFolders = localStorage.getItem(STORAGE_KEYS.MEDIA_FOLDERS);
   if (storedFolders) {
     try {
@@ -284,8 +259,7 @@ async function hydrateMediaLibrary() {
 
   try {
     const records = await readStoredAssets();
-    const storedCoverImageId = localStorage.getItem(STORAGE_KEYS.COVER_IMAGE_ID);
-    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: storedCoverImageId };
+    const nextAssets: EditorAssets = { images: [], videos: [], audios: [], coverImage: null, coverImageId: null };
     for (const record of records) {
       const asset: LocalAsset = {
         ...record,
@@ -295,7 +269,6 @@ async function hydrateMediaLibrary() {
       const tab: MediaTab = asset.kind === "image" ? "images" : asset.kind === "video" ? "videos" : "audios";
       nextAssets[tab].push(asset);
     }
-    nextAssets.coverImage = nextAssets.images.find((image) => image.id === storedCoverImageId) ?? null;
     editorAssets.value = nextAssets;
   } catch (error) {
     console.warn("[MediaLibrary] 恢复本地素材失败", error);
@@ -309,11 +282,7 @@ function scheduleMediaLibraryPersist() {
   if (mediaPersistTimer) window.clearTimeout(mediaPersistTimer);
   mediaPersistTimer = window.setTimeout(() => {
     localStorage.setItem(STORAGE_KEYS.MEDIA_FOLDERS, JSON.stringify(mediaFolders.value));
-    if (editorAssets.value.coverImageId) {
-      localStorage.setItem(STORAGE_KEYS.COVER_IMAGE_ID, editorAssets.value.coverImageId);
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
-    }
+    localStorage.removeItem(STORAGE_KEYS.COVER_IMAGE_ID);
     void writeStoredAssets(assetsToStoredRecords()).catch((error) => {
       console.warn("[MediaLibrary] 保存本地素材失败", error);
     });
@@ -362,12 +331,13 @@ function collectAssetPayloads(sourceBody = content.value): AssetPayload[] {
     if (byName) referencedIds.add(byName.id);
   }
 
-  const coverImageId = editorAssets.value.coverImageId ?? editorAssets.value.images[0]?.id;
-  // Always include cover image
-  if (editorAssets.value.coverImage) referencedIds.add(editorAssets.value.coverImage.id);
+  const coverImage = editorAssets.value.coverImage
+    ?? editorAssets.value.images.find((asset) => asset.id === editorAssets.value.coverImageId)
+    ?? null;
+  const coverImageId = coverImage?.id ?? null;
+  if (coverImage) referencedIds.add(coverImage.id);
 
   return [
-    ...(editorAssets.value.coverImage ? [assetToPayload(editorAssets.value.coverImage, "cover", "default_cover")] : []),
     ...editorAssets.value.images
       .filter((asset) => referencedIds.has(asset.id))
       .map((asset) => assetToPayload(asset, "image", asset.id === coverImageId ? "default_cover" : "body_image")),
@@ -512,6 +482,27 @@ function mergePreviewResponses(
   };
 }
 
+async function optimizePlatformDraft(
+  platform: PlatformKey,
+  options: AgentOptimizeOptions,
+  previewId: string | null
+): Promise<PreviewResponse> {
+  const basePayload = buildContentPayload({ platforms: [platform] });
+  const run = await runAgentAdaptPreview({
+    ...basePayload,
+    ...buildAgentMetadataPayload(basePayload, options),
+    preview_id: previewId,
+    body: basePayload.body,
+    platforms: [platform],
+    style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
+    rewrite_strength: "medium",
+    use_llm: "auto",
+    persist_preview: false
+  });
+
+  return createPreview(agentDraftPayloadForPlatform(run, platform, options));
+}
+
 function scheduleDraftSync(platform: PlatformKey) {
   if (!preview.value?.preview_id) {
     return;
@@ -616,7 +607,7 @@ function createFailedLocalTask(previewId: string, platforms: PlatformKey[], mode
 }
 
 function getCoverImage(): LocalAsset | null {
-  return editorAssets.value.coverImage ?? editorAssets.value.images.find((image) => image.id === editorAssets.value.coverImageId) ?? editorAssets.value.images[0] ?? null;
+  return editorAssets.value.coverImage ?? editorAssets.value.images.find((image) => image.id === editorAssets.value.coverImageId) ?? null;
 }
 
 function getUploadAssetType(asset: LocalAsset): "image" | "video" | "file" {
@@ -655,19 +646,15 @@ async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Par
   return accountIds;
 }
 
-function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
+function buildPlatformOptions(platforms: PlatformKey[], forms: PublishForms): NonNullable<PublishTaskCreatePayload["platform_options"]> {
   const platformOptions: NonNullable<PublishTaskCreatePayload["platform_options"]> = {};
 
   if (platforms.includes("wechat")) {
     const wechatDraft = preview.value?.drafts.wechat;
     platformOptions.wechat = {
-      title: unified
-        ? forms.wechat.title.trim() || title.value.trim()
-        : forms.wechat.title.trim() || wechatDraft?.title || title.value.trim(),
+      title: forms.wechat.title.trim() || wechatDraft?.title || "",
       author: forms.wechat.author.trim(),
-      digest: unified
-        ? forms.wechat.summary.trim()
-        : forms.wechat.summary.trim() || wechatDraft?.summary || "",
+      digest: forms.wechat.summary.trim() || wechatDraft?.summary || wechatDraft?.body?.slice(0, 120) || "",
       content_source_url: forms.wechat.contentSourceUrl.trim(),
       need_open_comment: forms.wechat.needOpenComment,
       only_fans_can_comment: forms.wechat.needOpenComment && forms.wechat.onlyFansCanComment,
@@ -678,12 +665,8 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
   if (platforms.includes("bilibili")) {
     const bilibiliDraft = preview.value?.drafts.bilibili;
     platformOptions.bilibili = {
-      title: unified
-        ? forms.bilibili.title.trim() || title.value.trim()
-        : forms.bilibili.title.trim() || bilibiliDraft?.title || title.value.trim(),
-      description: unified
-        ? forms.bilibili.description.trim()
-        : forms.bilibili.description.trim() || bilibiliDraft?.body || content.value,
+      title: forms.bilibili.title.trim() || bilibiliDraft?.title || "",
+      description: forms.bilibili.description.trim() || bilibiliDraft?.body || "",
       tags: parseTagText(forms.bilibili.tags).length
         ? parseTagText(forms.bilibili.tags)
         : bilibiliDraft?.tags ?? [],
@@ -698,12 +681,8 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
   if (platforms.includes("xiaohongshu")) {
     const xhsDraft = preview.value?.drafts.xiaohongshu;
     platformOptions.xiaohongshu = {
-      title: unified
-        ? forms.xiaohongshu.title.trim() || title.value.trim()
-        : forms.xiaohongshu.title.trim() || xhsDraft?.title || title.value.trim(),
-      content: unified
-        ? forms.xiaohongshu.content.trim()
-        : forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
+      title: forms.xiaohongshu.title.trim() || xhsDraft?.title || "",
+      content: forms.xiaohongshu.content.trim() || xhsDraft?.body || "",
     };
   }
 
@@ -712,10 +691,10 @@ function buildPlatformOptions(platforms: PlatformKey[], unified: boolean, forms:
 
 async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }): Promise<PublishTaskCreatePayload> {
   if (!preview.value) {
-    throw new Error("请先生成内容预览。");
+    throw new Error("请先生成草稿。");
   }
 
-  const platformOptions = buildPlatformOptions(payload.platforms, payload.useUnifiedSettings, payload.forms);
+  const platformOptions = buildPlatformOptions(payload.platforms, payload.forms);
 
   if (payload.mode === "simulate") {
     return {
@@ -883,16 +862,23 @@ async function publishDraftFromTask(publicationId: string) {
 }
 
 async function generatePreview() {
-  if (!content.value.trim()) {
+  if (previewLoading.value || !content.value.trim()) {
     return;
   }
 
-  const existingPreviewPlatforms = selectedPlatforms.value.filter(
-    (platform) => preview.value?.drafts[platform]?.body?.trim()
-  );
-  if (existingPreviewPlatforms.length) {
-    ElMessage.info("已有平台预览，请先清除后再生成。");
-    return;
+  const existingDraftPlatforms = selectedPlatforms.value.filter((platform) => hasDraftContent(preview.value?.drafts[platform]));
+  previewLoading.value = true;
+  if (existingDraftPlatforms.length) {
+    try {
+      await ElMessageBox.confirm("生成草稿会覆盖已有平台草稿，是否继续？", "确认生成草稿", {
+        confirmButtonText: "确认",
+        cancelButtonText: "取消",
+        type: "warning"
+      });
+    } catch {
+      previewLoading.value = false;
+      return;
+    }
   }
 
   // 记录调用前标题和关键词是否为空，用于回填判断
@@ -904,7 +890,6 @@ async function generatePreview() {
   const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
   const payload = buildContentPayload({ platforms: [...selectedPlatforms.value] });
 
-  previewLoading.value = true;
   errorMessage.value = "";
   task.value = null;
 
@@ -930,12 +915,10 @@ async function generatePreview() {
       }
     }
 
-    ElMessage.success("预览已生成。");
-    generatedSourceSignature.value = contentSourceSignature.value;
-    furthestContentStage.value = 2;
+    ElMessage.success("草稿已生成。");
     activeContentStage.value = 2;
   } catch (error) {
-    errorMessage.value = getErrorMessage(error, "预览生成失败，请稍后重试。");
+    errorMessage.value = getErrorMessage(error, "草稿生成失败，请稍后重试。");
     ElMessage.error(errorMessage.value);
   } finally {
     previewLoading.value = false;
@@ -996,22 +979,12 @@ async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
   errorMessage.value = "";
 
   try {
-    const basePayload = buildContentPayload();
-    const run = await runAgentAdaptPreview({
-      ...basePayload,
-      ...buildAgentMetadataPayload(basePayload, options),
-      preview_id: preview.value?.preview_id ?? null,
-      platforms: targetPlatforms,
-      style_goal: editorAssets.value.videos.length ? "video" : "professional",
-      rewrite_strength: "medium",
-      use_llm: "auto",
-      persist_preview: false
-    });
     const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
     const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
+    const previewId = preview.value?.preview_id ?? null;
     const responses: PreviewResponse[] = [];
     for (const platform of targetPlatforms) {
-      responses.push(await createPreview(agentDraftPayloadForPlatform(run, platform, options)));
+      responses.push(await optimizePlatformDraft(platform, options, previewId));
     }
     const mergedPreview = mergePreviewResponses(responses, previousDrafts, previousValidation);
     if (mergedPreview) preview.value = mergedPreview;
@@ -1031,7 +1004,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
     return;
   }
   if (!preview.value) {
-    ElMessage.warning("请先生成预览，再优化当前平台内容。");
+    ElMessage.warning("请先生成草稿，再优化当前平台内容。");
     return;
   }
 
@@ -1040,19 +1013,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
   errorMessage.value = "";
 
   try {
-    const basePayload = buildContentPayload();
-    const run = await runAgentAdaptPreview({
-      ...basePayload,
-      ...buildAgentMetadataPayload(basePayload, options),
-      preview_id: preview.value.preview_id,
-      body: basePayload.body,
-      platforms: [platform],
-      style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
-      rewrite_strength: "medium",
-      use_llm: "auto",
-      persist_preview: false
-    });
-    const response = await createPreview(agentDraftPayloadForPlatform(run, platform, options));
+    const response = await optimizePlatformDraft(platform, options, preview.value.preview_id);
     const mergedPreview = mergePreviewResponses(
       [response],
       preview.value.drafts,
@@ -1070,23 +1031,18 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
 }
 
 function enterPublishConfirm() {
-  if (!preview.value) {
-    ElMessage.warning("请先生成预览。");
-    return;
-  }
-  if (!sourceMatchesGeneratedPreview.value) {
-    ElMessage.warning("统一内容或平台选择已修改，请重新生成预览后再进入发布确认。");
+  if (!hasGeneratedDraft.value) {
+    ElMessage.warning("请先生成草稿。");
     return;
   }
   previewDialogVisible.value = false;
   activeTab.value = "preview";
-  furthestContentStage.value = 3;
   activeContentStage.value = 3;
 }
 
 async function submitPublish(payload: { platforms: PlatformKey[]; mode: PublishMode; useUnifiedSettings: boolean; forms: PublishForms }) {
-  if (!preview.value) {
-    ElMessage.warning("请先生成预览。");
+  if (!preview.value || !hasGeneratedDraft.value) {
+    ElMessage.warning("请先生成草稿。");
     return;
   }
 
@@ -1140,17 +1096,13 @@ function selectContentStage(stage: ContentWorkflowStage) {
       return;
     }
     if (stage === 3) {
-      ElMessage.warning(
-        sourceMatchesGeneratedPreview.value
-          ? "请点击编辑所选平台页面底部的“进入发布确认”按钮首次进入发布确认。"
-          : "统一内容或平台选择已修改，请重新生成预览后再进入发布确认。"
-      );
+      ElMessage.warning("请先生成草稿。");
       return;
     }
     ElMessage.warning(
-      !sourceMatchesGeneratedPreview.value && Boolean(preview.value)
-        ? "统一内容或平台选择已修改，请重新生成预览后再返回后续流程。"
-        : "请点击“选择生成平台”区域右侧的“生成预览”按钮进入编辑所选平台。"
+      hasGeneratedDraft.value
+        ? "请先进入编辑所选平台。"
+        : "请点击“选择生成平台”区域右侧的“生成草稿”按钮进入编辑所选平台。"
     );
     return;
   }
@@ -1292,7 +1244,6 @@ onMounted(async () => {
           :loading="taskLoading"
           :validation-report="validationReport"
           :assets="editorAssets"
-          :editor-title="title"
           :platform-drafts="preview?.drafts"
           @back="activeContentStage = 2"
           @submit="submitPublish"

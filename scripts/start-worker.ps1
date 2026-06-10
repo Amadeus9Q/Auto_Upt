@@ -1,5 +1,5 @@
 param(
-    [string]$PythonPath = "C:\Users\17325\.conda\envs\auto_upt\python.exe",
+    [string]$PythonPath = "",
     [switch]$Foreground
 )
 
@@ -10,9 +10,9 @@ $PidFile = Join-Path $LogDir "worker.pid"
 $OutLog = Join-Path $LogDir "worker.out.log"
 $ErrLog = Join-Path $LogDir "worker.err.log"
 
-if (-not (Test-Path $PythonPath)) {
-    throw "Python executable not found: $PythonPath"
-}
+. (Join-Path $PSScriptRoot "load-env.ps1")
+$PythonPath = Resolve-AutoUptPythonPath -PythonPath $PythonPath -RepoRoot $RepoRoot
+$PythonPath = Resolve-AutoUptExecutablePath -ExecutablePath $PythonPath -DisplayName "Python"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
