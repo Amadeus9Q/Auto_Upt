@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { UploadFile, UploadProps } from "element-plus";
-import { Back, Delete, EditPen, FolderAdd, FolderOpened, UploadFilled } from "@element-plus/icons-vue";
+import { ArrowRight, Back, Delete, EditPen, FolderAdd, FolderOpened, UploadFilled } from "@element-plus/icons-vue";
 
 import type { EditorAssets, LocalAsset, MediaFolder, MediaKind, MediaTab } from "@/types/media";
 
@@ -16,16 +16,19 @@ const props = withDefaults(defineProps<{
   compact?: boolean;
   insertEnabled?: boolean;
   title?: string;
+  collapsible?: boolean;
 }>(), {
   compact: false,
   insertEnabled: true,
-  title: "多媒体库"
+  title: "多媒体库",
+  collapsible: false
 });
 
 const emit = defineEmits<{
   insert: [asset: LocalAsset];
   rename: [payload: { asset: LocalAsset; oldName: string; newName: string }];
   delete: [asset: LocalAsset];
+  collapse: [];
 }>();
 
 const assets = defineModel<EditorAssets>("assets", { required: true });
@@ -427,7 +430,12 @@ function cancelRename() {
         <p>素材管理</p>
         <h2>{{ title }}</h2>
       </div>
-      <el-tag type="info">{{ assetCount }} 个素材</el-tag>
+      <div class="library-header-actions">
+        <el-tag type="info">{{ assetCount }} 个素材</el-tag>
+        <el-tooltip v-if="collapsible" content="收起多媒体库" placement="top">
+          <el-button text circle :icon="ArrowRight" aria-label="收起多媒体库" @click="$emit('collapse')" />
+        </el-tooltip>
+      </div>
     </header>
 
     <div class="folder-toolbar">
@@ -548,6 +556,7 @@ function cancelRename() {
 }
 
 .library-header,
+.library-header-actions,
 .folder-toolbar,
 .media-actions {
   display: flex;
@@ -557,6 +566,11 @@ function cancelRename() {
 .library-header {
   justify-content: space-between;
   gap: 12px;
+}
+
+.library-header-actions {
+  flex-shrink: 0;
+  gap: 4px;
 }
 
 .library-header p,
