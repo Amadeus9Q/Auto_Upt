@@ -486,6 +486,27 @@ function mergePreviewResponses(
   };
 }
 
+async function optimizePlatformDraft(
+  platform: PlatformKey,
+  options: AgentOptimizeOptions,
+  previewId: string | null
+): Promise<PreviewResponse> {
+  const basePayload = buildContentPayload({ platforms: [platform] });
+  const run = await runAgentAdaptPreview({
+    ...basePayload,
+    ...buildAgentMetadataPayload(basePayload, options),
+    preview_id: previewId,
+    body: basePayload.body,
+    platforms: [platform],
+    style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
+    rewrite_strength: "medium",
+    use_llm: "auto",
+    persist_preview: false
+  });
+
+  return createPreview(agentDraftPayloadForPlatform(run, platform, options));
+}
+
 function scheduleDraftSync(platform: PlatformKey) {
   if (!preview.value?.preview_id) {
     return;
@@ -956,22 +977,12 @@ async function optimizeAllWithAgent(rawOptions?: AgentOptimizeOptions) {
   errorMessage.value = "";
 
   try {
-    const basePayload = buildContentPayload();
-    const run = await runAgentAdaptPreview({
-      ...basePayload,
-      ...buildAgentMetadataPayload(basePayload, options),
-      preview_id: preview.value?.preview_id ?? null,
-      platforms: targetPlatforms,
-      style_goal: editorAssets.value.videos.length ? "video" : "professional",
-      rewrite_strength: "medium",
-      use_llm: "auto",
-      persist_preview: false
-    });
     const previousDrafts = preview.value?.drafts ?? {} as Partial<Record<PlatformKey, DraftPayload>>;
     const previousValidation = preview.value?.validation_report ?? {} as Partial<Record<PlatformKey, ValidationIssue[]>>;
+    const previewId = preview.value?.preview_id ?? null;
     const responses: PreviewResponse[] = [];
     for (const platform of targetPlatforms) {
-      responses.push(await createPreview(agentDraftPayloadForPlatform(run, platform, options)));
+      responses.push(await optimizePlatformDraft(platform, options, previewId));
     }
     const mergedPreview = mergePreviewResponses(responses, previousDrafts, previousValidation);
     if (mergedPreview) preview.value = mergedPreview;
@@ -991,7 +1002,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
     return;
   }
   if (!preview.value) {
-    ElMessage.warning("请先生成预览，再优化当前平台内容。");
+    ElMessage.warning("请先生成草稿，再优化当前平台内容。");
     return;
   }
 
@@ -1000,19 +1011,7 @@ async function optimizeWithAgent(platform: PlatformKey, rawOptions?: AgentOptimi
   errorMessage.value = "";
 
   try {
-    const basePayload = buildContentPayload();
-    const run = await runAgentAdaptPreview({
-      ...basePayload,
-      ...buildAgentMetadataPayload(basePayload, options),
-      preview_id: preview.value.preview_id,
-      body: basePayload.body,
-      platforms: [platform],
-      style_goal: PLATFORM_AGENT_STYLE_GOALS[platform],
-      rewrite_strength: "medium",
-      use_llm: "auto",
-      persist_preview: false
-    });
-    const response = await createPreview(agentDraftPayloadForPlatform(run, platform, options));
+    const response = await optimizePlatformDraft(platform, options, preview.value.preview_id);
     const mergedPreview = mergePreviewResponses(
       [response],
       preview.value.drafts,
