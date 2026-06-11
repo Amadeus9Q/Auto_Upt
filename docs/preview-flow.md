@@ -7,53 +7,46 @@
 ## 泳道图
 
 ```mermaid
-flowchart TB
-    subgraph USER["👤 创作者（EditorView）"]
-        U1["输入标题 / 正文 / 标签"]
-        U2["选择目标平台"]
-        U3["上传素材"]
-        U4["点击「生成预览」"]
-        U5["查看各平台预览<br/>切换 Tab + 校验提示"]
+sequenceDiagram
+    autonumber
+    actor User as 创作者
+    participant Editor as 前端 EditorView / App
+    participant Preview as 后端 PreviewService
+    participant Adapter as 平台 Adapter
+
+    rect rgb(234, 242, 255)
+        Note over User,Editor: 流程节点 1：统一内容编译
+        User->>Editor: 编辑标题、正文和标签
+        User->>Editor: 插入素材并选择生成平台
+        User->>Editor: 点击生成预览
+        activate Editor
+        Editor->>Editor: 解析素材标记并构建 ContentPayload
+        Editor->>Preview: POST /api/v1/previews
+        deactivate Editor
     end
 
-    subgraph FE["🖥️ 前端"]
-        F1["汇总为 ContentPayload"]
-        F2["POST /api/v1/previews"]
-        F3["接收 PreviewResponse<br/>按平台拆解 draft"]
-        F4["PreviewView 渲染各平台组件"]
+    activate Preview
+    Preview->>Preview: 标准化为 Content IR
+    Preview->>Preview: 分析章节结构与媒体位置
+    loop 每个所选平台
+        Preview->>Adapter: 加载 profile 并 render(content_ir)
+        activate Adapter
+        Adapter->>Adapter: 生成平台草稿
+        Adapter->>Adapter: validate(draft)
+        Adapter-->>Preview: draft + validation_report
+        deactivate Adapter
     end
+    Preview-->>Editor: PreviewResponse
+    deactivate Preview
 
-    subgraph BE["⚙️ 后端（FastAPI + PreviewService）"]
-        B1["标准化内容 → content_ir<br/>LLM 补全标题/标签/摘要"]
-        B2["内容分析<br/>章节划分 / 媒体识别"]
-        B3["逐平台 Adapter.render()<br/>content_ir → 平台草稿"]
-        B4["逐平台 Adapter.validate()<br/>格式校验 → 警告/错误"]
-        B5["汇总返回<br/>preview_id + drafts + validation_report"]
+    rect rgb(237, 248, 241)
+        Note over User,Editor: 流程节点 2：编辑所选平台
+        activate Editor
+        Editor->>Editor: 保存 preview、drafts 与校验结果
+        Editor-->>User: 展示平台预览与校验提示
+        deactivate Editor
+        User->>Editor: 调整平台内容或继续发布确认
     end
-
-    subgraph ADP["🎨 平台 Adapter"]
-        D1["加载平台规则 profile.yaml"]
-        D2["渲染 draft：标题/正文/富文本/媒体槽位"]
-        D3["校验：字数/图片/标签/链接"]
-    end
-
-    U1 & U2 & U3 --> U4
-    U4 --> F1
-    F1 --> F2
-    F2 -->|"HTTP POST"| B1
-    B1 --> B2
-    B2 --> B3
-    B3 --> D1 --> D2 --> D3
-    D3 --> B4
-    B4 --> B5
-    B5 -->|"PreviewResponse"| F3
-    F3 --> F4
-    F4 --> U5
-
-    style USER fill:#e3f2fd,stroke:#1565c0
-    style FE fill:#e8f5e9,stroke:#2e7d32
-    style BE fill:#f3e5f5,stroke:#7b1fa2
-    style ADP fill:#fce4ec,stroke:#c62828
 ```
 
 ---

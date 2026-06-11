@@ -7,60 +7,53 @@
 ## 泳道图
 
 ```mermaid
-flowchart TB
-    subgraph USER["👤 创作者（PublishConfirmView）"]
-        U1["查看各平台校验报告"]
-        U2["选择发布模式<br/>模拟 / 存草稿 / 直接发布"]
-        U3["配置发布字段<br/>统一配置 / 独立配置"]
-        U4["选择已连接账号的平台"]
-        U5["点击「提交发布」"]
-        U6["查看任务看板<br/>各平台步骤与状态"]
+sequenceDiagram
+    autonumber
+    actor User as 创作者
+    participant Confirm as 前端 PublishConfirmView
+    participant API as 后端 PublishService
+    participant Worker as Celery Worker / Adapter
+    participant Platform as 外部平台
+    participant Board as 前端任务看板
+
+    rect rgb(234, 242, 255)
+        Note over User,Confirm: 流程节点 3：发布确认
+        Confirm->>API: GET /api/v1/accounts
+        API-->>Confirm: 账号状态、账号名称与平台 ID
+        Confirm-->>User: 展示可选平台和连接状态
+        User->>Confirm: 选择账号、发布模式并确认字段
+        User->>Confirm: 点击确认发布
+        Confirm->>Confirm: 准备封面与正文引用素材
+        Confirm->>API: POST /api/v1/publish-tasks
     end
 
-    subgraph FE["🖥️ 前端"]
-        F1["GET /api/v1/accounts<br/>加载账号连接状态"]
-        F2["构建发布 Payload<br/>合并草稿/配置/账号/素材"]
-        F3["POST /api/v1/publish-tasks"]
-        F4["跳转任务看板<br/>GET 刷新任务列表"]
+    activate API
+    API->>API: 校验模式、平台、账号与素材
+    alt 模拟发布
+        API->>API: 同步生成模拟结果
+        API-->>Board: 返回模拟任务结果
+    else 保存草稿或真实发布
+        API->>API: 保存任务快照
+        API->>Worker: 推送异步发布任务
+        API-->>Board: 返回 pending 任务
+
+        loop 每个目标平台
+            Worker->>Platform: 上传素材并提交草稿 / 发布
+            alt 平台处理成功
+                Platform-->>Worker: external_id / external_status
+                Worker->>API: 保存 PublicationRecord 与成功结果
+            else 平台处理失败
+                Platform-->>Worker: 错误码与失败原因
+                Worker->>API: 保存失败结果与处理建议
+            end
+        end
+        API-->>Board: 返回最新任务状态
     end
+    deactivate API
 
-    subgraph BE["⚙️ 后端（FastAPI + PublishService）"]
-        B1["校验请求<br/>模式 / 平台 / 账号"]
-        B2{"发布模式？"}
-        B3["模拟发布<br/>同步返回假结果"]
-        B4["创建 PublishTask<br/>保存草稿快照<br/>推送 Celery 队列"]
-        B5["Celery Worker 异步执行<br/>逐平台 Adapter.publish()"]
-        B6["保存 PublicationRecord<br/>external_id / url / 状态"]
+    rect rgb(237, 248, 241)
+        Board-->>User: 展示平台步骤、状态和失败原因
     end
-
-    subgraph PLATFORM["🌐 外部平台"]
-        P1["微信公众平台<br/>上传素材 → 创建草稿 → 发布"]
-        P2["B站创作中心<br/>上传视频 → 提交稿件"]
-        P3["小红书<br/>上传图片 → 创建笔记"]
-    end
-
-    U1 --> U2
-    U2 --> U3
-    U3 --> U4
-    U4 --> U5
-    F1 -->|"账号列表"| U4
-    U5 --> F2
-    F2 --> F3
-    F3 -->|"HTTP POST"| B1
-    B1 --> B2
-    B2 -->|"simulate"| B3
-    B2 -->|"draft / publish"| B4
-    B3 -->|"同步返回"| F4
-    B4 --> B5
-    B5 --> P1 & P2 & P3
-    P1 & P2 & P3 -->|"external_id"| B6
-    B6 -->|"任务状态"| F4
-    F4 --> U6
-
-    style USER fill:#e3f2fd,stroke:#1565c0
-    style FE fill:#e8f5e9,stroke:#2e7d32
-    style BE fill:#f3e5f5,stroke:#7b1fa2
-    style PLATFORM fill:#e0e0e0,stroke:#424242
 ```
 
 ---

@@ -8,86 +8,56 @@
 ## 泳道图
 
 ```mermaid
-flowchart TB
-    subgraph USER["👤 创作者（AccountView）"]
-        U1["进入账号配置页"]
-        U2["公众号：填写 AppID / AppSecret"]
-        U3["B站：填写用户名密码<br/>完成极验验证码"]
-        U4["测试连接<br/>验证凭据是否有效"]
-        U5["断开连接 / 清除历史凭据"]
+sequenceDiagram
+    autonumber
+    actor User as 创作者
+    participant Account as 前端 AccountView
+    participant Confirm as 前端 PublishConfirmView
+    participant API as 后端 AccountService
+    participant WeChat as 微信公众号
+    participant Bilibili as B站
+
+    User->>Account: 打开账号配置
+    Account->>API: GET /api/v1/accounts
+    API-->>Account: 账号状态与历史凭据选项
+    Account-->>User: 展示账号下拉项与连接状态
+
+    alt 配置微信公众号
+        User->>Account: 选择历史 AppID 或填写 AppID / AppSecret
+        opt 复用历史凭据
+            Account->>API: POST /reveal-secret
+            API-->>Account: 解密后的 AppSecret
+        end
+        User->>Account: 确认连接
+        Account->>API: POST /wechat/connect
+        API->>WeChat: 获取 access_token 并验证凭据
+        alt 验证成功
+            WeChat-->>API: access_token
+            API->>API: 加密保存凭据与连接状态
+            API-->>Account: AccountConnection
+        else 验证失败
+            WeChat-->>API: 平台错误码与原因
+            API-->>Account: 连接失败与处理建议
+        end
+    else 配置 B站
+        User->>Account: 填写账号与密码
+        Account->>API: GET /bilibili/captcha
+        API->>Bilibili: 获取验证码参数
+        Bilibili-->>API: gt / challenge / token
+        API-->>Account: CaptchaResponse
+        Account-->>User: 展示验证码
+        User->>Account: 完成验证码并提交登录
+        Account->>API: POST /bilibili/login
+        API->>Bilibili: 登录并验证 Cookie
+        Bilibili-->>API: 登录结果
+        API->>API: 加密保存 Cookie 与连接状态
+        API-->>Account: AccountConnection
     end
 
-    subgraph FE["🖥️ 前端"]
-        F1["GET /api/v1/accounts<br/>加载各平台账号状态"]
-        F2["公众号：匹配历史 AppID<br/>POST /reveal-secret 自动填充"]
-        F3["POST /wechat/connect"]
-        F4["GET /bilibili/captcha<br/>加载极验 SDK 渲染滑块"]
-        F5["POST /bilibili/login"]
-        F6["POST /{platform}/test"]
-        F7["DELETE /{account_id}"]
+    rect rgb(237, 248, 241)
+        Account->>Confirm: 立即同步账号状态、名称与平台 ID
+        Confirm-->>User: 发布确认中显示已连接账号
     end
-
-    subgraph BE["⚙️ 后端（FastAPI + AccountService）"]
-        B1["查询各平台最新账号记录"]
-        B2["公众号连接<br/>解密历史凭据 / 获取 access_token<br/>AES-256-GCM 加密保存"]
-        B3["B站获取验证码参数<br/>{gt, challenge, token}"]
-        B4["B站登录<br/>获取 RSA 公钥 → 加密密码<br/>提交登录 → 获取 Cookie<br/>加密保存 Cookie"]
-        B5["测试连接<br/>解密凭据 → 调用平台 API 验证"]
-        B6["删除账号记录"]
-    end
-
-    subgraph PLATFORM["🌐 外部平台"]
-        P1["微信公众平台<br/>/cgi-bin/token"]
-        P2["B站登录 API<br/>captcha → RSA key → login"]
-    end
-
-    %% 初始化
-    U1 --> F1
-    F1 -->|"HTTP GET"| B1
-    B1 -->|"AccountListResponse"| F1
-    F1 -->|"展示状态卡片"| U1
-
-    %% 公众号连接
-    U2 -->|"输入/选择 AppID"| F2
-    F2 -->|"自动填充 AppSecret"| U2
-    U2 --> F3
-    F3 -->|"HTTP POST"| B2
-    B2 --> P1
-    P1 -->|"access_token"| B2
-    B2 -->|"AccountPlatformResponse"| F3
-    F3 -->|"连接成功"| U1
-
-    %% B站连接
-    U3 -->|"获取验证码"| F4
-    F4 -->|"HTTP GET"| B3
-    B3 --> P2
-    P2 -->|"gt/challenge/token"| B3
-    B3 -->|"CaptchaResponse"| F4
-    F4 -->|"渲染滑块"| U3
-    U3 -->|"滑块通过 + 密码"| F5
-    F5 -->|"HTTP POST"| B4
-    B4 --> P2
-    P2 -->|"Cookie"| B4
-    B4 -->|"BilibiliLoginResponse"| F5
-    F5 -->|"登录成功"| U1
-
-    %% 测试 / 断开
-    U4 --> F6
-    F6 -->|"HTTP POST"| B5
-    B5 --> P1 & P2
-    P1 & P2 -->|"验证结果"| B5
-    B5 -->|"AccountTestResponse"| F6
-    F6 -->|"ok / fail"| U1
-
-    U5 --> F7
-    F7 -->|"HTTP DELETE"| B6
-    B6 -->|"deleted"| F7
-    F7 -->|"已断开"| U1
-
-    style USER fill:#e3f2fd,stroke:#1565c0
-    style FE fill:#e8f5e9,stroke:#2e7d32
-    style BE fill:#f3e5f5,stroke:#7b1fa2
-    style PLATFORM fill:#e0e0e0,stroke:#424242
 ```
 
 ---
