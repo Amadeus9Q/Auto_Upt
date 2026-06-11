@@ -54,10 +54,11 @@ raw input
 
 ## 前端使用方式
 
-`adapt-preview` 的输出会进入两条前端路径：
+`adapt-preview` 的输出会进入三条前端路径：
 
-1. **平台预览**：`run.drafts` 写入 `preview.drafts`，`PreviewView` 只读取各平台 draft。公众号、B站、知乎、小红书分别渲染标题、摘要、章节标题、正文、标签和素材。
-2. **发布确认**：独立配置模式下，`PublishConfirmView` 会用 `preview.drafts.<platform>` 初始化各平台表单字段；统一配置模式下，则优先使用编辑页标题和全局摘要/简介。
+1. **Agent 结果展示**：`AgentPreviewView` 读取 `run.metadata`、`run.rewritten_content`、`run.drafts`，分面板展示元数据、改写内容和各平台草稿。用户可选择应用 AI 建议替换编辑器中的原始内容。
+2. **平台预览**：`run.drafts` 写入 `preview.drafts`，`PreviewView` 只读取各平台 draft。公众号、B站、知乎、小红书分别渲染标题、摘要、章节标题、正文、标签和素材。
+3. **发布确认**：独立配置模式下，`PublishConfirmView` 会用 `preview.drafts.<platform>` 初始化各平台表单字段；统一配置模式下，则优先使用编辑页标题和全局摘要/简介。
 
 Agent 输出不会自动发布。真实发布必须由用户进入发布确认页，确认平台、字段、素材和发布模式后，再创建发布任务。
 

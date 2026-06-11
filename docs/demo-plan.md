@@ -30,18 +30,23 @@
 本地服务建议启动：
 
 ```powershell
+# 方式一：使用便捷脚本
+.\scripts\start-containers.ps1    # 启动 PostgreSQL + Redis
+.\scripts\start-backend.ps1       # 启动 FastAPI（后台运行）
+.\scripts\start-worker.ps1        # 启动 Celery worker（后台运行）
+
+# 方式二：手动命令
 docker compose up -d postgres redis
 uvicorn backend.app.main:app --reload
-cd frontend
-npm run dev
+cd frontend && npm run dev
 ```
 
 如需演示真实发布任务，还需要：
 
-- PostgreSQL、Redis 可用。
+- PostgreSQL、Redis 可用（`docker compose up -d`）。
 - Celery worker 已启动。
-- `.env` 中配置 `OPENAI_API_KEY`、公众号/B站/小红书相关参数。
-- 账号管理中至少连接公众号或 B站账号。
+- `.env` 中配置 `OPENAI_API_KEY`、公众号 AppID/AppSecret、B站账号、小红书 myaibot API Key。
+- 前端账号管理中至少连接公众号或 B站账号。
 
 ### 演示素材准备
 

@@ -58,6 +58,9 @@ class WechatAdapter(PlatformAdapter):
 
         # ---- 准备正文 HTML ----
         content_html = draft.get("wechat_html") or self._build_fallback_html(draft)
+        body_blocks = draft.get("body_blocks") or []
+        if any(block.get("type") == "asset" for block in body_blocks):
+            content_html = render_wechat_html(draft)
 
         # ---- 上传正文内图片并替换 URL ----
         content_html = await self._upload_and_replace_content_images(
@@ -167,14 +170,15 @@ class WechatAdapter(PlatformAdapter):
         匹配 <img data-src=\"...\"> 或 <img src=\"...\">，如果 src/data-src
         指向本地文件路径，则上传到微信获取公网 URL 后替换。
         """
+        import html
         import re
+        from urllib.parse import unquote, urlparse
 
         # 按文件名建立 asset 索引
         asset_by_filename: dict[str, LocalAsset] = {}
         for a in assets:
             name = a.original_filename.lower()
             asset_by_filename[name] = a
-
         async def replace_img(m: re.Match) -> str:
             tag = m.group(0)
             src = m.group("src") or ""
@@ -182,9 +186,11 @@ class WechatAdapter(PlatformAdapter):
                 return tag
 
             # 尝试按文件名匹配本地 asset
-            src_path = Path(src)
-            filename = src_path.name.lower()
-            matched = asset_by_filename.get(filename)
+            alt_match = re.search(r'alt="(?P<alt>[^"]*)"', tag)
+            alt = html.unescape(alt_match.group("alt")).strip() if alt_match else ""
+            src_filename = Path(unquote(urlparse(src).path)).name.lower()
+            alt_filename = Path(alt).name.lower()
+            matched = asset_by_filename.get(src_filename) or asset_by_filename.get(alt_filename)
 
             if matched and matched.file_path:
                 try:
@@ -198,23 +204,37 @@ class WechatAdapter(PlatformAdapter):
                     if wechat_url:
                         return re.sub(
                             r'(data-src|src)="[^"]*"',
-                            f'data-src="{_escape_html(wechat_url)}"',
+                            f'src="{_escape_html(wechat_url)}"',
                             tag,
                         )
-                except PlatformClientError:
-                    pass  # 上传失败则保留原始标签
+                except PlatformClientError as exc:
+                    raise PlatformClientError(
+                        f"WeChat body image upload failed: {matched.original_filename}",
+                        platform_code=exc.platform_code or "WECHAT_BODY_IMAGE_UPLOAD_FAILED",
+                        platform_message=exc.platform_message,
+                        retryable=exc.retryable,
+                        next_action=exc.next_action,
+                        details={**exc.details, "filename": matched.original_filename},
+                    ) from exc
+
+            if src.startswith("blob:"):
+                raise PlatformClientError(
+                    f"WeChat body image could not be matched to an uploaded asset: {alt or src}",
+                    platform_code="WECHAT_BODY_IMAGE_ASSET_NOT_FOUND",
+                    retryable=False,
+                    next_action="请重新生成公众号预览，并确认正文图片仍存在于素材库中。",
+                    details={"src": src, "alt": alt},
+                )
 
             return tag
 
         # 匹配 <img ... src="..." ...> 或 <img ... data-src="..." ...>
         pattern = re.compile(r'<img\s+[^>]*(?:data-src|src)="(?P<src>[^"]*)"[^>]*>')
 
-        # 逐个匹配（同步上传）
         result = html_content
-        for m in pattern.finditer(html_content):
-            replacement = await replace_img(m)
-            result = result.replace(m.group(0), replacement, 1)
-
+        for match in pattern.finditer(html_content):
+            replacement = await replace_img(match)
+            result = result.replace(match.group(0), replacement, 1)
         return result
 
 

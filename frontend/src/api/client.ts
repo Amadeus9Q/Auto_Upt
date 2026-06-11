@@ -196,6 +196,7 @@ export interface PublishResult {
   external_url?: string;
   external_status?: string;
   platform_code?: string;
+  platform_message?: string;
   platform_options?: Record<string, unknown>;
   api_payload?: Record<string, unknown>;
   retryable?: boolean;
