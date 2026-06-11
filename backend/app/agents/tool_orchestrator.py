@@ -79,12 +79,20 @@ class _LlmStatusTracker:
     def __init__(self) -> None:
         self.attempted = False
         self.succeeded = False
+        self.failed = False
 
     def on_attempt(self) -> None:
         self.attempted = True
 
     def on_success(self) -> None:
         self.succeeded = True
+
+    def on_failure(self) -> None:
+        self.failed = True
+
+    @property
+    def can_attempt(self) -> bool:
+        return not self.failed
 
 
 class ToolDrivenAgentOrchestrator:
@@ -227,10 +235,10 @@ class ToolDrivenAgentOrchestrator:
             llm_status = "disabled"
         elif self._llm_tracker.succeeded:
             llm_status = "available"
-        elif self._llm_tracker.attempted:
+        elif self._llm_tracker.failed:
             llm_status = "degraded"
         else:
-            llm_status = "disabled"
+            llm_status = "available"
 
         response = AgentAdaptPreviewResponse(
             run_id=run_id,
@@ -784,6 +792,8 @@ class ToolDrivenAgentOrchestrator:
             return None
         if not self.settings.openai_api_key:
             return None
+        if not self._llm_tracker.can_attempt:
+            return None
 
         self._llm_tracker.on_attempt()
 
@@ -816,7 +826,7 @@ class ToolDrivenAgentOrchestrator:
         }
         try:
             endpoint = f"{self.settings.openai_base_url.rstrip('/')}/chat/completions"
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=self.settings.agent_llm_timeout_seconds) as client:
                 response = client.post(
                     endpoint,
                     headers={
@@ -831,8 +841,10 @@ class ToolDrivenAgentOrchestrator:
             if isinstance(parsed, dict):
                 self._llm_tracker.on_success()
                 return parsed
+            self._llm_tracker.on_failure()
             return None
         except httpx.HTTPStatusError as exc:
+            self._llm_tracker.on_failure()
             logger.warning(
                 "LLM request failed [purpose=%s] HTTP %s: %s  model=%s endpoint=%s",
                 purpose,
@@ -844,13 +856,14 @@ class ToolDrivenAgentOrchestrator:
             return None
         except httpx.TimeoutException:
             logger.warning(
-                "LLM request timed out [purpose=%s]  model=%s endpoint=%s",
+                "LLM request timed out without disabling later LLM steps [purpose=%s]  model=%s endpoint=%s",
                 purpose,
                 self.settings.openai_model,
                 self.settings.openai_base_url,
             )
             return None
         except json.JSONDecodeError as exc:
+            self._llm_tracker.on_failure()
             logger.warning(
                 "LLM response was not valid JSON [purpose=%s]: %s  model=%s",
                 purpose,
@@ -859,6 +872,7 @@ class ToolDrivenAgentOrchestrator:
             )
             return None
         except Exception as exc:
+            self._llm_tracker.on_failure()
             logger.warning(
                 "LLM request unexpected error [purpose=%s]: %s: %s  model=%s endpoint=%s",
                 purpose,

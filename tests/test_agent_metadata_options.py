@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+
 from backend.app.adapters.xiaohongshu.renderer import render_draft as render_xiaohongshu_draft
-from backend.app.agents.tool_orchestrator import ToolDrivenAgentOrchestrator
+from backend.app.agents.tool_orchestrator import ToolDrivenAgentOrchestrator, _LlmStatusTracker
 from backend.app.schemas.agent import AgentAdaptPreviewRequest, AgentGeneratedMetadata
 
 
@@ -41,6 +43,40 @@ def _request(**overrides: Any) -> AgentAdaptPreviewRequest:
     }
     payload.update(overrides)
     return AgentAdaptPreviewRequest(**payload)
+
+
+def test_agent_llm_timeout_does_not_disable_later_calls(monkeypatch) -> None:
+    calls = 0
+
+    class TimeoutClient:
+        def __init__(self, timeout: float) -> None:
+            assert timeout == 12
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectTimeout("unavailable")
+
+    monkeypatch.setattr(httpx, "Client", TimeoutClient)
+    orchestrator = ToolDrivenAgentOrchestrator.__new__(ToolDrivenAgentOrchestrator)
+    orchestrator.settings = SimpleNamespace(
+        openai_api_key="test-key",
+        openai_base_url="https://example.invalid",
+        openai_model="test-model",
+        agent_llm_timeout_seconds=12,
+    )
+    orchestrator._llm_tracker = _LlmStatusTracker()
+
+    assert orchestrator._try_llm_json(_request(), "metadata", "prompt") is None
+    assert orchestrator._try_llm_json(_request(), "rewrite", "prompt") is None
+    assert calls == 2
+    assert orchestrator._llm_tracker.failed is False
 
 
 def test_rule_metadata_respects_individual_update_flags() -> None:
