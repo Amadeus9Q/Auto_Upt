@@ -152,12 +152,6 @@ function accountConfigTooltip(platform: PlatformKey) {
   return isAccountConfigurable(platform) ? "配置账号" : "账号配置功能待上线";
 }
 
-function handlePlatformCardClick(account: AccountConnection | null) {
-  if (!isAccountConnected(account)) {
-    ElMessage.info("该平台账号尚未连接，当前可用于模拟；保存草稿或真实发布前请先完成配置");
-  }
-}
-
 function openAccountConfig(platform: PlatformKey) {
   if (!isAccountConfigurable(platform)) {
     return;
@@ -213,6 +207,13 @@ watch(realPublishUnavailableReason, (reason) => {
     selectedMode.value = "simulate";
   }
 }, { immediate: true });
+
+watch(selectedConfirmPlatforms, (selected, previous) => {
+  const newlySelected = selected.filter((platform) => !previous.includes(platform));
+  if (newlySelected.some((platform) => !connectedPlatformValues.value.includes(platform))) {
+    ElMessage.info("未连接账号的平台当前可用于模拟；保存草稿或真实发布前请先完成配置");
+  }
+});
 
 onMounted(() => {
   void refreshAccountStatuses();
@@ -277,7 +278,6 @@ function submit() {
             'is-selected': selectedConfirmPlatforms.includes(item.value),
             'is-disconnected': !isAccountConnected(item.account)
           }"
-          @click="handlePlatformCardClick(item.account)"
         >
           <el-checkbox
             :value="item.value"
