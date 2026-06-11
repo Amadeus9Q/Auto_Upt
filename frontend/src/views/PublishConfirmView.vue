@@ -82,7 +82,7 @@ const bilibiliVideo = computed(() => props.assets.videos[0] ?? null);
 const wechatIssues = computed(() => props.validationReport.wechat ?? []);
 const hasPublishablePlatform = computed(() => selectedConfirmPlatforms.value.some((p) => publishablePlatforms.includes(p)));
 const confirmPublishUnavailableReason = computed(() =>
-  selectedConfirmPlatforms.value.length ? "" : "请先选择一个已连接的平台"
+  selectedConfirmPlatforms.value.length ? "" : "请先选择一个平台"
 );
 const commonMissing = computed(() => [
   ...(
@@ -103,8 +103,7 @@ function issueType(issue: ValidationIssue) {
 }
 
 const platformOptions = computed(() => {
-  const allowed = selectedMode.value === "simulate" ? props.selectedPlatforms : props.selectedPlatforms.filter((platform) => publishablePlatforms.includes(platform));
-  return allowed.map((platform) => ({ label: PLATFORM_LABELS[platform], value: platform }));
+  return props.selectedPlatforms.map((platform) => ({ label: PLATFORM_LABELS[platform], value: platform }));
 });
 
 const selectedIssues = computed(() =>
@@ -128,6 +127,17 @@ const connectedPlatformValues = computed(() =>
     .filter((option) => option.account?.status === "connected")
     .map((option) => option.value)
 );
+const realPublishUnavailableReason = computed(() => {
+  const unsupported = selectedConfirmPlatforms.value.filter((platform) => !publishablePlatforms.includes(platform));
+  if (unsupported.length) {
+    return `${unsupported.map((platform) => PLATFORM_LABELS[platform]).join("、")}当前仅支持模拟`;
+  }
+  const disconnected = selectedConfirmPlatforms.value.filter((platform) => !connectedPlatformValues.value.includes(platform));
+  if (disconnected.length) {
+    return `${disconnected.map((platform) => PLATFORM_LABELS[platform]).join("、")}账号未连接，仅可选择模拟`;
+  }
+  return "";
+});
 const configurablePlatforms: PlatformKey[] = ["wechat", "bilibili"];
 
 function isAccountConnected(account: AccountConnection | null) {
@@ -140,12 +150,6 @@ function isAccountConfigurable(platform: PlatformKey) {
 
 function accountConfigTooltip(platform: PlatformKey) {
   return isAccountConfigurable(platform) ? "配置账号" : "账号配置功能待上线";
-}
-
-function handlePlatformCardClick(account: AccountConnection | null) {
-  if (!isAccountConnected(account)) {
-    ElMessage.warning("该平台尚未连接，请先点击右侧配置按钮完成配置");
-  }
 }
 
 function openAccountConfig(platform: PlatformKey) {
@@ -198,14 +202,18 @@ async function refreshAccountStatuses() {
   }
 }
 
-watch(selectedMode, () => {
-  const allowed = platformOptions.value.map((option) => option.value);
-  selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => allowed.includes(platform));
+watch(realPublishUnavailableReason, (reason) => {
+  if (reason && selectedMode.value !== "simulate") {
+    selectedMode.value = "simulate";
+  }
 }, { immediate: true });
 
-watch(connectedPlatformValues, (connected) => {
-  selectedConfirmPlatforms.value = selectedConfirmPlatforms.value.filter((platform) => connected.includes(platform));
-}, { immediate: true });
+watch(selectedConfirmPlatforms, (selected, previous) => {
+  const newlySelected = selected.filter((platform) => !previous.includes(platform));
+  if (newlySelected.some((platform) => !connectedPlatformValues.value.includes(platform))) {
+    ElMessage.info("未连接账号的平台当前可用于模拟；保存草稿或真实发布前请先完成配置");
+  }
+});
 
 onMounted(() => {
   void refreshAccountStatuses();
@@ -270,11 +278,9 @@ function submit() {
             'is-selected': selectedConfirmPlatforms.includes(item.value),
             'is-disconnected': !isAccountConnected(item.account)
           }"
-          @click="handlePlatformCardClick(item.account)"
         >
           <el-checkbox
             :value="item.value"
-            :disabled="!isAccountConnected(item.account)"
             class="account-platform-checkbox"
           >
             {{ item.label }}
@@ -383,9 +389,10 @@ function submit() {
             <el-form-item v-if="hasPublishablePlatform" label="发布方式">
               <el-radio-group v-model="selectedMode" class="mode-group">
                 <el-radio-button value="simulate">模拟</el-radio-button>
-                <el-radio-button value="draft">保存草稿</el-radio-button>
-                <el-radio-button value="publish">真实发布</el-radio-button>
+                <el-radio-button value="draft" :disabled="Boolean(realPublishUnavailableReason)">保存草稿</el-radio-button>
+                <el-radio-button value="publish" :disabled="Boolean(realPublishUnavailableReason)">真实发布</el-radio-button>
               </el-radio-group>
+              <small v-if="realPublishUnavailableReason" class="mode-disabled-reason">{{ realPublishUnavailableReason }}</small>
             </el-form-item>
 
             <!-- 公众号专属 -->
@@ -440,9 +447,10 @@ function submit() {
           <el-form-item v-if="hasPublishablePlatform" label="发布方式">
             <el-radio-group v-model="selectedMode" class="mode-group">
               <el-radio-button value="simulate">模拟</el-radio-button>
-              <el-radio-button value="draft">保存草稿</el-radio-button>
-              <el-radio-button value="publish">真实发布</el-radio-button>
+              <el-radio-button value="draft" :disabled="Boolean(realPublishUnavailableReason)">保存草稿</el-radio-button>
+              <el-radio-button value="publish" :disabled="Boolean(realPublishUnavailableReason)">真实发布</el-radio-button>
             </el-radio-group>
+            <small v-if="realPublishUnavailableReason" class="mode-disabled-reason">{{ realPublishUnavailableReason }}</small>
           </el-form-item>
         </el-form>
         <PublishFormView
@@ -694,11 +702,11 @@ function submit() {
 }
 
 .account-status-card.is-disconnected {
-  cursor: not-allowed;
+  background: #fbfcfe;
 }
 
 .account-status-card.is-disconnected .account-platform-checkbox {
-  cursor: not-allowed;
+  cursor: pointer;
 }
 
 .account-platform-checkbox {
@@ -764,6 +772,13 @@ function submit() {
 .inline-radio-group :deep(.el-radio-button__inner) {
   border-left: 1px solid var(--el-border-color);
   border-radius: 8px;
+}
+
+.mode-disabled-reason {
+  display: block;
+  margin-top: 8px;
+  color: #9a6700;
+  font-size: 12px;
 }
 
 .confirm-alert {
