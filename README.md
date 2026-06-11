@@ -1,102 +1,166 @@
 # Auto_Upt
 
-多平台创作内容自动发布工具。
+Auto_Upt 是一个多平台内容创作、适配、预览与发布工作台。
 
-本项目采用“内容中台 + 平台适配器 + AI Agent 发布助理”的架构：
+项目采用“内容中台 + 平台 Adapter + AI Agent 编排”的架构，将统一正文、素材和元数据转换为公众号、B站、知乎、小红书等平台草稿，并通过人工确认后的发布任务执行模拟、保存草稿或真实发布。
 
-- 内容中台负责把用户输入的 Markdown、富文本、视频信息统一转换为内容 IR。
-- 平台适配器负责把内容 IR 渲染成公众号、B站、知乎、小红书等平台的草稿。
-- AI Agent 编排层负责内容分析、平台风格改写、格式校验、合规检查和失败恢复建议。
-- 发布链路采用“预览 → 人工确认 → 创建发布任务”的方式，真实发布能力按平台逐步接入。
+## 工作流程
 
-## 演示视频链接
+前端工作台围绕三个可回退的流程节点组织：
 
-- 百度网盘链接: https://pan.baidu.com/s/1oQ5dcYsLzLt2VmYnB0rnCw?pwd=fst3 提取码: fst3
-- bilibili: https://www.bilibili.com/video/BV1rbVQ6HEo5/
+1. **统一内容编译**：编辑标题、正文与标签，管理素材库，在正文指定位置插入图片、视频或音频引用，并选择生成平台。
+2. **编辑所选平台**：生成多平台预览，独立调整平台内容，执行单平台或批量智能优化。
+3. **发布确认**：检查账号、发布字段、封面和素材，选择模拟、保存草稿或真实发布，并在任务看板查看结果。
+
+未连接账号的平台仍可参与模拟；保存草稿和真实发布仅对已连接且已支持的平台开放。
 
 ## 当前能力
 
-输入一篇文章后，可以生成四类平台预览：
+### 内容与预览
 
-- 公众号长文版
-- 知乎回答/专栏版
-- 小红书图文笔记版
-- B站视频简介/动态版
+- 统一编辑标题、正文、标签和目标平台。
+- 共享素材库支持图片、视频、音频、封面、多级文件夹和正文素材引用。
+- 正文素材标记决定图片在平台内容中的具体位置。
+- 生成公众号、B站、知乎和小红书平台草稿与校验报告。
+- Agent 支持内容分析、平台风格改写、标题与关键词优化；未配置 LLM 时使用规则回退。
 
-当前前端工作台包含：
+### 账号与发布
 
-- 统一内容编辑区：标题、正文、标签、目标平台、Agent 优化选项。
-- 共享素材库：图片、视频、音频、封面、多级文件夹和正文素材引用。
-- 平台预览窗口：按公众号、B站、知乎、小红书分别渲染标题、摘要、正文、章节标题、标签和素材。
-- 发布确认页：统一配置或分平台配置发布字段，再创建模拟、草稿或发布任务。
-- 账号管理页：公众号和 B站连接入口已接入；知乎和小红书仍是占位。
-- 任务看板：展示发布任务、平台结果、真实发布记录和可继续操作的草稿。
+- 发布确认中展示账号连接状态、账号名称和平台 ID。
+- 未连接平台仅允许模拟，连接完成后可立即用于发布确认。
+- 任务看板展示平台步骤、原始失败原因和处理建议。
+- 公众号支持正文图片上传、封面上传、创建草稿、提交发布和状态查询。
+- B站支持登录凭据保存、视频与封面上传、稿件提交和状态查询。
+- 小红书已实现 API Adapter 与字段映射，账号连接和真实联调仍需补齐。
+- 知乎当前仅支持预览和模拟。
 
-当前后端能力：
+### 平台支持矩阵
 
-- 内容标准化、平台草稿生成、校验报告和预览快照。
-- Agent 预览编排：规则引擎默认可用，配置 `OPENAI_API_KEY` 后可尝试 LLM 增强并失败回退。
-- 公众号：素材上传、草稿创建、草稿提交发布、状态查询。
-- B站：登录凭据保存、视频/封面上传、稿件提交、状态查询、测试稿件删除。
-- 小红书：已实现 myaibot API Adapter 和字段映射；账号管理连接入口与真实联调仍需补齐。
-- 知乎：当前仅支持预览和模拟，不进入真实发布 API。
+| 平台 | 预览 | 模拟 | 保存草稿 | 真实发布 | 账号配置 |
+|---|:---:|:---:|:---:|:---:|---|
+| 公众号 | 支持 | 支持 | 支持 | 支持 | AppID / AppSecret |
+| B站 | 支持 | 支持 | 支持 | 支持 | 账号登录 |
+| 小红书 | 支持 | 支持 | 联调中 | 联调中 | 待补齐 |
+| 知乎 | 支持 | 支持 | 暂不支持 | 暂不支持 | 待上线 |
 
-## 技术栈规划
+## 架构概览
 
-- 后端：Python + FastAPI
-- 任务队列：Celery + Redis
+- **内容中台**：将正文、素材和元数据标准化为统一 Content IR。
+- **平台 Adapter**：负责平台规则、草稿渲染、校验、模拟和发布。
+- **AI Agent 编排**：负责内容分析、平台改写、格式检查与建议。
+- **发布服务**：保存任务快照，通过 Celery Worker 执行平台发布并记录结果。
+
+新增平台时，优先在 `backend/app/adapters/<platform>/` 中实现 Adapter、Renderer 和 `profile.yaml`，避免把平台规则写入核心服务。
+
+## 技术栈
+
+- 前端：Vue 3、TypeScript、Vite、Element Plus
+- 后端：Python、FastAPI、SQLAlchemy
+- 任务队列：Celery、Redis
 - 数据库：PostgreSQL
-- 浏览器自动化：Playwright
-- 前端：Vue 3 + Element Plus
-- AI Agent：OpenAI Responses API / Agents SDK 或兼容 Agent 框架
+- 平台自动化：Playwright
+- AI Agent：OpenAI 兼容 API 与规则回退
 
-## 目录
+## 目录结构
 
 ```text
-backend/   FastAPI、Celery、平台 Adapter、AI Agent、服务层骨架
-frontend/  Vue3 + Element Plus 前端工作台骨架
-docs/      架构、接口、平台扩展和阶段路线说明
-tests/     后续测试用例目录
+backend/app/api/        FastAPI 路由
+backend/app/services/   业务用例与发布任务
+backend/app/adapters/   平台渲染、校验与发布 Adapter
+backend/app/agents/     AI Agent 编排
+frontend/src/           Vue 3 前端工作台
+docs/                   架构、API、流程与平台扩展文档
+scripts/                本地开发启动脚本
+tests/                  后端回归测试
 ```
 
-## 当前状态
+## 快速开始
 
-当前已实现第一阶段 MVP，并扩展了部分第二阶段发布能力：
+### 1. 安装依赖
 
-- 第一阶段：内容输入、多平台预览、校验报告、模拟发布任务和 Agent 预览编排。
-- 第二阶段：公众号、B站真实发布链路已接入；小红书 API Adapter 已加入但仍需账号入口和联调；知乎暂不接入真实发布。
+```powershell
+python -m pip install -r requirements.txt
+cd frontend
+npm install
+cd ..
+```
 
-真实平台联调需要配置数据库、Redis、Celery worker、平台账号凭据和对应开放平台参数。
+### 2. 配置环境变量
 
-## 部署注意事项
-
-### 环境变量
-
-Docker Compose 部署前，请在项目根目录创建 `.env` 文件（可参考 `.env.example`）：
+在项目根目录创建 `.env`，可参考 `.env.example`：
 
 ```ini
-# 必须配置
-CREDENTIAL_ENCRYPTION_KEY=<用 fernet 生成的密钥>
-OPENAI_API_KEY=<你的 API Key>
-
-# 可选
-OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-chat
-PUBLIC_BASE_URL=http://你的服务器IP或域名
+CREDENTIAL_ENCRYPTION_KEY=<用 Fernet 生成的密钥>
+OPENAI_API_KEY=<可选，用于 LLM 增强>
+OPENAI_BASE_URL=<可选，OpenAI 兼容接口地址>
+OPENAI_MODEL=<可选，模型名称>
+PUBLIC_BASE_URL=http://你的服务地址
 ```
 
-> ⚠️ **`CREDENTIAL_ENCRYPTION_KEY` 一旦设定不可更改**，否则所有已保存的平台账号凭据将永久无法解密。
->
-> 生成方式：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+`CREDENTIAL_ENCRYPTION_KEY` 一旦用于保存账号凭据，请勿更换，否则已有凭据将无法解密。
 
-### 数据卷保护
+生成密钥：
 
-```bash
-# ✅ 正常停止（保留所有数据）
-docker compose down
-
-# ❌ 危险操作：会删除 PostgreSQL 数据卷，所有账号设置、发布记录等将永久丢失
-docker compose down -v
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-生产环境请定期备份 PostgreSQL 数据卷，或使用外部管理的数据库服务。
+### 3. 启动服务
+
+推荐使用项目脚本：
+
+```powershell
+.\scripts\start-containers.ps1
+.\scripts\start-backend.ps1
+.\scripts\start-worker.ps1
+cd frontend
+npm run dev
+```
+
+需要统一重启后端、Worker 和依赖容器时，可使用 `.\scripts\restart-all.ps1`。
+
+也可以手动启动：
+
+```powershell
+docker compose up -d postgres redis
+uvicorn backend.app.main:app --reload
+celery -A backend.app.tasks.celery_app.celery_app worker --loglevel=info
+cd frontend
+npm run dev
+```
+
+更多脚本说明见 [scripts/README.md](./scripts/README.md)。
+
+## 验证
+
+```powershell
+cd frontend
+npm run build
+cd ..
+python -m pytest
+python -m compileall backend
+git diff --check
+```
+
+## 真实发布注意事项
+
+- 真实发布需要 PostgreSQL、Redis 和 Celery Worker 正常运行。
+- 公众号发布前，需要将当前服务公网出口 IP 加入微信公众号后台 IP 白名单。
+- 公众号正文图片会先上传至微信正文图片接口，再替换为微信 CDN 地址。
+- `PUBLIC_BASE_URL` 必须是平台能够访问的地址，本地 `blob:` URL 不能直接用于真实发布。
+- 正常停止容器请使用 `docker compose down`；`docker compose down -v` 会删除数据库卷。
+
+## 核心文档
+
+- [架构设计](./docs/architecture.md)
+- [API 契约](./docs/api-contract.md)
+- [生成预览时序图](./docs/preview-flow.md)
+- [发布确认时序图](./docs/publish-flow.md)
+- [账号配置时序图](./docs/account-flow.md)
+- [平台 Adapter 扩展](./docs/adapter-extension.md)
+- [发布字段映射](./docs/publish-field-mapping.md)
+
+## 演示视频
+
+- [百度网盘](https://pan.baidu.com/s/1oQ5dcYsLzLt2VmYnB0rnCw?pwd=fst3)，提取码：`fst3`
+- [Bilibili](https://www.bilibili.com/video/BV1rbVQ6HEo5/)
