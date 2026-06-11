@@ -12,5 +12,10 @@ echo "PostgreSQL ready."
 cd /app
 python -m alembic upgrade head
 
-# 启动 FastAPI
+# Compose may provide a service-specific command, such as the Celery worker.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+
+# Default to the FastAPI server when no command is provided.
 exec uvicorn backend.app.main:app --host 0.0.0.0 --port 8000

@@ -74,7 +74,104 @@ scripts/                本地开发启动脚本
 tests/                  后端回归测试
 ```
 
-## 快速开始
+## Docker 部署
+
+Docker Compose 会统一构建并启动完整运行环境，适合首次体验、联调验证和服务器部署：
+
+| 服务 | 作用 | 默认端口 |
+|---|---|---:|
+| `frontend` | 构建 Vue 前端，并通过 Nginx 提供页面与 API 反向代理 | `80` |
+| `backend` | FastAPI 接口、数据库迁移和 Agent 编排 | `8000` |
+| `worker` | Celery 发布任务 Worker | 无宿主机端口 |
+| `postgres` | 业务数据库 | `5432` |
+| `redis` | Celery Broker、任务结果与缓存 | `6379` |
+
+### 1. 准备环境变量
+
+复制 `.env.example` 为 `.env`，至少建议配置以下内容：
+
+```ini
+# 用于加密账号凭据，首次部署后请勿更换
+CREDENTIAL_ENCRYPTION_KEY=<用 Fernet 生成的密钥>
+
+# 可选：用于文档提取、智能优化和多平台适配
+OPENAI_API_KEY=<OpenAI 兼容 API 密钥>
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
+
+# 平台需要访问素材时，应填写可公开访问的服务地址
+PUBLIC_BASE_URL=http://你的服务地址
+```
+
+生成凭据加密密钥：
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+文档导入默认启用 LLM 提取。网络较慢时，导入接口会等待模型响应，最长等待时间可通过 `IMPORT_LLM_TIMEOUT_SECONDS` 调整。Agent 请求超时时间可通过 `AGENT_LLM_TIMEOUT_SECONDS` 调整。
+
+### 2. 构建并启动
+
+在项目根目录执行：
+
+```powershell
+docker compose up -d --build
+```
+
+首次启动会下载基础镜像、安装依赖并构建前后端，耗时通常比后续启动更长。启动后访问：
+
+- 前端工作台：<http://localhost>
+- 后端接口文档：<http://localhost:8000/docs>
+- 后端健康检查：<http://localhost:8000/health>
+
+### 3. 查看状态与日志
+
+```powershell
+# 查看服务状态
+docker compose ps
+
+# 查看全部服务日志
+docker compose logs -f
+
+# 仅查看后端和 Worker 日志
+docker compose logs -f backend worker
+```
+
+`backend` 和 `worker` 启动时都会等待 PostgreSQL 就绪并执行数据库迁移。正常状态下，`backend`、`worker`、`frontend`、`postgres` 和 `redis` 均应处于运行状态。
+
+### 4. 更新与停止
+
+代码或依赖发生变化后，重新构建并启动：
+
+```powershell
+docker compose up -d --build
+```
+
+仅重建后端和 Worker：
+
+```powershell
+docker compose build backend worker
+docker compose up -d --force-recreate backend worker
+```
+
+停止服务但保留数据：
+
+```powershell
+docker compose down
+```
+
+素材与日志分别挂载到项目根目录的 `storage/` 和 `logs/`。PostgreSQL 数据保存在 Docker 卷 `postgres_data` 中。请谨慎使用 `docker compose down -v`，该命令会删除数据库卷。
+
+### 5. 常见问题
+
+- **端口占用**：启动前确认本机 `80`、`8000`、`5432` 和 `6379` 端口未被其他程序占用。
+- **修改 `.env` 后未生效**：执行 `docker compose up -d --force-recreate backend worker` 重新创建容器。
+- **Agent 或文档导入较慢**：检查 `OPENAI_BASE_URL`、模型服务网络和后端日志；文档导入与多平台 Agent 适配会同步等待 LLM 响应。
+- **无法真实发布素材**：确认 `PUBLIC_BASE_URL` 是目标平台能够访问的地址，而不是容器内部地址或本地 `blob:` URL。
+- **排查 Compose 配置**：执行 `docker compose config` 查看环境变量展开后的配置，但不要将包含密钥的输出公开。
+
+## 本地开发
 
 ### 1. 安装依赖
 
@@ -98,12 +195,6 @@ PUBLIC_BASE_URL=http://你的服务地址
 ```
 
 `CREDENTIAL_ENCRYPTION_KEY` 一旦用于保存账号凭据，请勿更换，否则已有凭据将无法解密。
-
-生成密钥：
-
-```powershell
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
 
 ### 3. 启动服务
 

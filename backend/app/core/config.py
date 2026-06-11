@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "deepseek-chat"
+    agent_llm_timeout_seconds: float = 12.0
     import_use_llm: bool = True
     import_llm_timeout_seconds: float = 25.0
     import_llm_max_chars: int = 12000
