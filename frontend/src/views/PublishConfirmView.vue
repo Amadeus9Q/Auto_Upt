@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { CircleCheck, InfoFilled, Setting, Refresh, WarningFilled } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
-import { getAccounts, type AccountConnection, type AccountStatus, type PlatformKey, type PublishMode, type ValidationIssue } from "@/api/client";
+import { getAccounts, type AccountConnection, type PlatformKey, type PublishMode, type ValidationIssue } from "@/api/client";
 import type { EditorAssets } from "@/types/media";
 import { getErrorMessage } from "@/utils/errors";
 import { PLATFORM_LABELS } from "@/utils/platforms";
@@ -171,10 +171,19 @@ function handleAccountUpdated(account: AccountConnection) {
   accountsError.value = "";
 }
 
-function accountStatusMeta(status?: AccountStatus) {
-  return status === "connected"
-    ? { label: "账号已连接", className: "is-connected" }
-    : { label: status === "expired" ? "账号已过期" : status === "error" ? "账号连接异常" : "账号未配置", className: "is-disconnected" };
+function connectedAccountLabel(account: AccountConnection) {
+  const name = account.display_name?.trim();
+  const id = account.external_user_id?.trim() || account.account_id?.trim();
+  if (name && id && name !== id) {
+    return `账号已连接：${name}（ID：${id}）`;
+  }
+  return `账号已连接：${name || id || "已配置账号"}`;
+}
+
+function accountStatusMeta(account: AccountConnection | null) {
+  return account?.status === "connected"
+    ? { label: connectedAccountLabel(account), className: "is-connected" }
+    : { label: account?.status === "expired" ? "账号已过期" : account?.status === "error" ? "账号连接异常" : "账号未配置", className: "is-disconnected" };
 }
 
 async function refreshAccountStatuses() {
@@ -270,8 +279,12 @@ function submit() {
           >
             {{ item.label }}
           </el-checkbox>
-          <el-tooltip :content="accountStatusMeta(item.account?.status).label" placement="top">
-            <span class="account-status-dot" :class="accountStatusMeta(item.account?.status).className" />
+          <el-tooltip :content="accountStatusMeta(item.account).label" placement="top">
+            <span
+              class="account-status-dot"
+              :class="accountStatusMeta(item.account).className"
+              :aria-label="accountStatusMeta(item.account).label"
+            />
           </el-tooltip>
           <el-tooltip :content="accountConfigTooltip(item.value)" placement="top">
             <span class="account-config-action" @click.stop>

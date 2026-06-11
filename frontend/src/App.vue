@@ -46,6 +46,7 @@ import {
 } from "@/utils";
 import { useDebounce } from "@/composables/useDebounce";
 import { useIndexedDB } from "@/composables/useIndexedDB";
+import { ASSET_MARKER_PATTERN } from "@/utils/assetMarkers";
 
 type WorkspaceTab = "preview" | "task" | "media" | "account";
 type ContentWorkflowStage = 1 | 2 | 3;
@@ -433,6 +434,19 @@ function buildAgentMetadataPayload(
   };
 }
 
+function preserveAssetMarkers(sourceBody: string, generatedBody: string) {
+  const collectMarkers = (body: string) => {
+    const pattern = new RegExp(ASSET_MARKER_PATTERN.source, "g");
+    return Array.from(body.matchAll(pattern), (match) => match[0]);
+  };
+  const generatedMarkers = new Set(collectMarkers(generatedBody));
+  const missingMarkers = collectMarkers(sourceBody).filter((marker) => !generatedMarkers.has(marker));
+  if (!missingMarkers.length) {
+    return generatedBody;
+  }
+  return `${generatedBody.trim()}\n\n${missingMarkers.join("\n\n")}`.trim();
+}
+
 function agentDraftPayloadForPlatform(
   run: Awaited<ReturnType<typeof runAgentAdaptPreview>>,
   platform: PlatformKey,
@@ -453,7 +467,7 @@ function agentDraftPayloadForPlatform(
 
   return buildContentPayload({
     title: options.updateTitle || !title.value.trim() ? generated.title : title.value.trim(),
-    body: generated.body,
+    body: preserveAssetMarkers(content.value, generated.body),
     tags: options.updateTags || !tagList.value.length ? generated.tags : tagList.value,
     platforms: [platform]
   });
@@ -631,6 +645,45 @@ async function ensureBackendAsset(asset: LocalAsset, purpose: string): Promise<s
   return uploaded.asset_id;
 }
 
+function referencedPlatformImages(platform: PlatformKey): LocalAsset[] {
+  const referencedIds = new Set<string>();
+  for (const block of preview.value?.drafts[platform]?.body_blocks ?? []) {
+    if (block.type === "asset" && block.asset_kind === "image" && block.asset?.id) {
+      referencedIds.add(block.asset.id);
+    }
+  }
+
+  if (!referencedIds.size) {
+    for (const asset of collectAssetPayloads(content.value)) {
+      if (asset.type === "image" || asset.type === "body_image") {
+        referencedIds.add(asset.id);
+      }
+    }
+  }
+  return editorAssets.value.images.filter((image) => referencedIds.has(image.id));
+}
+
+async function preparePlatformImages(
+  platform: "wechat" | "xiaohongshu",
+  cover: LocalAsset,
+): Promise<{ coverAssetId: string; assetIds: string[] }> {
+  const purposePrefix = platform === "wechat" ? "wechat" : "xiaohongshu";
+  const images = [...new Map([cover, ...referencedPlatformImages(platform)].map((image) => [image.id, image])).values()];
+  const uploaded = await Promise.all(
+    images.map(async (image) => ({
+      image,
+      assetId: await ensureBackendAsset(
+        image,
+        image.id === cover.id ? `${purposePrefix}_cover` : `${purposePrefix}_body_image`,
+      ),
+    })),
+  );
+  return {
+    coverAssetId: uploaded.find(({ image }) => image.id === cover.id)!.assetId,
+    assetIds: uploaded.map(({ assetId }) => assetId),
+  };
+}
+
 async function resolveConnectedAccountIds(platforms: PlatformKey[]): Promise<Partial<Record<PlatformKey, string>>> {
   const accounts = await getAccounts();
   const accountIds: Partial<Record<PlatformKey, string>> = {};
@@ -724,16 +777,11 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
       throw new Error("公众号发布需要先上传封面图。");
     }
 
-    const coverAssetId = await ensureBackendAsset(cover, "wechat_cover");
-    const wechatAssetIds = new Set<string>([coverAssetId]);
-    for (const image of editorAssets.value.images) {
-      wechatAssetIds.add(await ensureBackendAsset(image, image.id === cover.id ? "wechat_cover" : "wechat_body_image"));
-    }
-
-    assetIds.wechat = [...wechatAssetIds];
+    const prepared = await preparePlatformImages("wechat", cover);
+    assetIds.wechat = prepared.assetIds;
     platformOptions.wechat = {
       ...(platformOptions.wechat ?? {}),
-      cover_asset_id: coverAssetId,
+      cover_asset_id: prepared.coverAssetId,
     };
   }
 
@@ -761,11 +809,8 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
       throw new Error("小红书发布需要先上传封面图。");
     }
 
-    const coverAssetId = await ensureBackendAsset(cover, "xiaohongshu_cover");
-    const xhsAssetIds = new Set<string>([coverAssetId]);
-    for (const image of editorAssets.value.images) {
-      xhsAssetIds.add(await ensureBackendAsset(image, image.id === cover.id ? "xiaohongshu_cover" : "xiaohongshu_body_image"));
-    }
+    const prepared = await preparePlatformImages("xiaohongshu", cover);
+    const xhsAssetIds = new Set<string>(prepared.assetIds);
 
     // 视频笔记：需要视频素材
     const video = editorAssets.value.videos[0] ?? null;
@@ -776,7 +821,7 @@ async function buildPublishTaskPayload(payload: { platforms: PlatformKey[]; mode
     assetIds.xiaohongshu = [...xhsAssetIds];
     platformOptions.xiaohongshu = {
       ...(platformOptions.xiaohongshu ?? {}),
-      cover_asset_id: coverAssetId,
+      cover_asset_id: prepared.coverAssetId,
     };
   }
 

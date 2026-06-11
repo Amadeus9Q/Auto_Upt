@@ -91,6 +91,7 @@ const taskItems = computed(() =>
         result,
         failed,
         succeeded,
+        resultMessage: failed ? result?.platform_message || result?.message : result?.message,
         progressText: progressTextForMode(task.mode),
         canPublishDraft:
           task.mode === "draft" &&
@@ -104,7 +105,7 @@ const taskItems = computed(() =>
     return {
       task,
       finalStepText,
-      canRefresh: task.mode !== "simulate" && !task.task_id.startsWith("local-failed-"),
+      canRefresh: task.mode === "publish" && !task.task_id.startsWith("local-failed-"),
       platformTasks
     };
   })
@@ -181,7 +182,8 @@ function stepIcon(step: TaskStep) {
             <div class="platform-result">
               <el-icon><DocumentChecked /></el-icon>
               <div>
-                <span>{{ item.result?.message || "任务已提交，等待平台返回结果。" }}</span>
+                <span>{{ item.resultMessage || "任务已提交，等待平台返回结果。" }}</span>
+                <small v-if="item.failed && item.result?.next_action">处理建议：{{ item.result.next_action }}</small>
                 <small v-if="item.result?.external_status">平台返回：{{ item.result.external_status }}</small>
                 <small v-if="item.result?.external_url">{{ item.result.external_url }}</small>
                 <small v-if="item.result?.preview_url">{{ item.result.preview_url }}</small>
