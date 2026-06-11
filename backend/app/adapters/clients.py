@@ -187,11 +187,15 @@ class WechatOfficialAccountClient:
 
         errcode = data.get("errcode", 0)
         if response.is_error or errcode not in (0, None):
+            next_action = "请检查账号授权、平台参数和平台接口返回。"
+            if errcode == 40164:
+                next_action = "请在微信公众号后台的开发配置中，将错误信息里的公网 IP 加入 IP 白名单后重试。"
             raise PlatformClientError(
                 data.get("errmsg", "WeChat API request failed."),
                 platform_code=str(errcode or response.status_code),
                 platform_message=data.get("errmsg"),
                 retryable=response.status_code >= 500 or errcode in {-1, 45009},
+                next_action=next_action,
                 details=data,
             )
         return data

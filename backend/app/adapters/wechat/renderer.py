@@ -48,6 +48,7 @@ def render_wechat_html(content_ir: dict[str, Any]) -> str:
     title = content_ir.get("title", "")
     subtitle = content_ir.get("subtitle", "")
     summary = content_ir.get("summary", "")
+    body_blocks = content_ir.get("body_blocks") or []
 
     # ---- 标题区 ----
     if title:
@@ -66,7 +67,9 @@ def render_wechat_html(content_ir: dict[str, Any]) -> str:
         parts.append("</section>")
 
     # ---- 章节正文 ----
-    if chapters:
+    if any(block.get("type") == "asset" for block in body_blocks):
+        parts.append(_render_body_blocks_html(body_blocks))
+    elif chapters:
         for i, ch in enumerate(chapters):
             parts.append(_render_chapter_html(ch, is_first=(i == 0)))
     else:
@@ -83,6 +86,26 @@ def render_wechat_html(content_ir: dict[str, Any]) -> str:
         '</section>'
     )
 
+    return "\n".join(parts)
+
+
+def _render_body_blocks_html(body_blocks: list[dict[str, Any]]) -> str:
+    """Render normalized body blocks so inline assets keep their source position."""
+    parts = ['<section style="margin-bottom:24px;">']
+    for block in body_blocks:
+        if block.get("type") == "text":
+            parts.extend(_render_paragraphs_html(block.get("text", "")))
+            continue
+
+        asset = block.get("asset") or {}
+        kind = block.get("asset_kind") or asset.get("type")
+        if kind == "image":
+            parts.append(_render_image_html(asset))
+        elif kind == "video":
+            parts.append(_render_media_placeholder("视频", asset))
+        elif kind == "audio":
+            parts.append(_render_media_placeholder("音频", asset))
+    parts.append("</section>")
     return "\n".join(parts)
 
 

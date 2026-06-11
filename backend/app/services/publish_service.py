@@ -665,14 +665,18 @@ class PublishService:
         return list(result.scalars().all())
 
     async def _refresh_publication(self, publication: PublicationRecord) -> dict[str, Any]:
-        credentials = await self._credentials_for_publication(publication)
         if publication.platform == "wechat":
             if publication.mode != PublishMode.PUBLISH or not publication.external_id:
+                original_result = dict(publication.response_payload or {})
                 return {
+                    **original_result,
                     "status": publication.status,
                     "external_status": publication.external_status,
-                    "message": "WeChat draft status does not require refresh.",
+                    "message": original_result.get("message")
+                    or publication.error_message
+                    or ("公众号草稿已创建。" if publication.status == "succeeded" else "公众号任务状态未发生变化。"),
                 }
+            credentials = await self._credentials_for_publication(publication)
             token = await WechatOfficialAccountClient().get_access_token(
                 credentials.get("app_id", ""),
                 credentials.get("app_secret", ""),
@@ -682,6 +686,7 @@ class PublishService:
                 publication.external_id,
             )
         elif publication.platform == "bilibili":
+            credentials = await self._credentials_for_publication(publication)
             if not publication.external_id:
                 return {
                     "status": publication.status,

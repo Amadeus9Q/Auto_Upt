@@ -126,4 +126,4 @@ class XiaohongshuAdapter(PlatformAdapter):
 
         settings = get_settings()
         public_base = settings.public_base_url.rstrip("/")
-        return f"{public_base}/api/v1/assets/{asset.asset_id}/file"
+        return f"{public_base}/api/v1/assets/{asset.asset_id}/download"
