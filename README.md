@@ -74,7 +74,7 @@ scripts/                本地开发启动脚本
 tests/                  后端回归测试
 ```
 
-完整的文档关系、阅读路径和维护规则见 [文档总览](./docs/README.md)。
+完整的文档关系、阅读路径和维护规则见 [文档总览](./docs/README.md)。参与开发前请阅读 [贡献指南](./CONTRIBUTING.md)。
 
 ## Docker 部署
 

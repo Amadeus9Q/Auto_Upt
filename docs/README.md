@@ -52,6 +52,9 @@ flowchart TB
         Architecture["architecture.md<br/>系统架构"]
         API["api-contract.md<br/>API 契约"]
         Adapter["adapter-extension.md<br/>平台扩展设计"]
+        Storage["storage-and-data.md<br/>数据与素材存储"]
+        Database["database-schema.md<br/>数据库模型"]
+        FrontendState["frontend-state-flow.md<br/>前端状态流"]
     end
 
     subgraph Delivery["规划、演示与验证"]
@@ -67,6 +70,9 @@ flowchart TB
 
     Architecture --> API
     Architecture --> Adapter
+    Architecture --> Storage
+    Architecture --> FrontendState
+    Storage --> Database
     PreviewFlow --> AgentFlow
     PreviewFlow --> PublishFlow
     AccountFlow --> PublishFlow
@@ -96,6 +102,8 @@ flowchart TB
 3. [账号管理流程](./account-flow.md)：了解账号配置与状态同步。
 4. [发布确认字段映射](./publish-field-mapping.md)：了解最终表单、回退链和素材映射。
 5. [API 契约](./api-contract.md)：确认请求、响应和接口边界。
+6. [数据与素材存储设计](./storage-and-data.md)：了解浏览器素材与后端发布素材的边界。
+7. [前端状态流](./frontend-state-flow.md)：了解 `App.vue` 状态所有权、流程切换和同步规则。
 
 ### 后端与平台 Adapter 开发
 
@@ -104,6 +112,7 @@ flowchart TB
 3. [平台扩展设计](./adapter-extension.md)：了解新增平台约定。
 4. [发布确认字段映射](./publish-field-mapping.md)：了解 Adapter 接收的字段与素材。
 5. [发布确认流程](./publish-flow.md)：了解同步模拟和异步真实任务。
+6. [数据库模型说明](./database-schema.md)：了解表、快照、真实外键和逻辑引用。
 
 ### 测试与交付
 
@@ -124,6 +133,9 @@ flowchart TB
 | [发布确认流程](./publish-flow.md) | 用户如何创建发布任务，任务如何执行和刷新？ | 前后端、产品 |
 | [发布确认字段映射](./publish-field-mapping.md) | 最终字段和素材从哪里来，如何传给 Adapter？ | 前后端、Adapter |
 | [平台扩展设计](./adapter-extension.md) | 如何新增平台并保持核心服务解耦？ | 后端、Adapter |
+| [数据与素材存储设计](./storage-and-data.md) | 浏览器素材、后端文件、数据库和 Redis 分别保存什么？ | 前后端、运维 |
+| [数据库模型说明](./database-schema.md) | 核心表如何关联，哪些是外键或逻辑引用？ | 后端、数据库 |
+| [前端状态流](./frontend-state-flow.md) | 工作区、流程阶段、草稿、素材和任务状态如何流转？ | 前端 |
 | [MVP 路线](./mvp-roadmap.md) | 哪些能力已实现、部分实现或待实现？ | 项目维护者 |
 | [项目演示方案](./demo-plan.md) | 如何准备并演示完整业务链路？ | 产品、测试 |
 | [自动化测试说明](./automated-testing.md) | 自动化测试如何分层和执行？ | 测试、开发 |
@@ -135,10 +147,13 @@ flowchart TB
 |---|---|
 | 新增或修改 API | `api-contract.md`、对应业务流程文档；涉及模块边界时更新 `architecture.md` |
 | 修改预览、流程节点或回退规则 | `preview-flow.md`、`demo-plan.md`；影响接口时更新 `api-contract.md` |
+| 修改前端全局状态、页面导航或组件状态所有权 | `frontend-state-flow.md`、对应业务流程文档 |
 | 修改 Agent 工具、超时、降级或持久化 | `agent-workflow.md`、`api-contract.md`、`architecture.md` |
 | 修改账号配置或连接状态 | `account-flow.md`、`publish-flow.md`、`api-contract.md` |
 | 修改发布表单、字段回退或素材要求 | `publish-field-mapping.md`、`publish-flow.md`、`api-contract.md` |
 | 新增平台或修改 Adapter 能力 | `adapter-extension.md`、`architecture.md`、`mvp-roadmap.md`、发布相关文档 |
+| 修改素材持久化、目录或公开 URL | `storage-and-data.md`、`database-schema.md`、`api-contract.md` |
+| 修改数据库模型、外键或迁移 | `database-schema.md`、`architecture.md`、对应业务流程和 API 文档 |
 | 完成或取消规划能力 | `mvp-roadmap.md`、`README.md`、对应设计和流程文档 |
 | 新增测试场景或自动化脚本 | `test-cases-full-lifecycle.csv`、`automated-testing.md` |
 
