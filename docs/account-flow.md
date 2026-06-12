@@ -5,8 +5,6 @@
 
 ---
 
-## 泳道图
-
 ```mermaid
 sequenceDiagram
     autonumber
